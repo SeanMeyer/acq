@@ -28,13 +28,13 @@ help:
 .PHONY: setup
 setup:
 	(cd shared && uv sync --group dev)
-	(cd plugins/cq/server && uv sync --group dev)
+	(cd plugins/acq/server && uv sync --group dev)
 	(cd team-api && uv sync --group dev)
 	(cd team-ui && pnpm install $(if $(CI),--frozen-lockfile,))
 
 .PHONY: install-claude
 install-claude:
-	claude plugin install --path plugins/cq
+	claude plugin install --path plugins/acq
 
 .PHONY: uninstall-claude
 uninstall-claude:
@@ -89,19 +89,19 @@ dev-ui:
 .PHONY: lint
 lint:
 	cd shared && uv run ruff check . && uv run ruff format --check .
-	cd plugins/cq/server && uv run ruff check . && uv run ruff format --check .
+	cd plugins/acq/server && uv run ruff check . && uv run ruff format --check .
 	cd team-api && uv run ruff check . && uv run ruff format --check .
 
 .PHONY: format
 format:
 	cd shared && uv run ruff format .
-	cd plugins/cq/server && uv run ruff format .
+	cd plugins/acq/server && uv run ruff format .
 	cd team-api && uv run ruff format .
 
 .PHONY: format-check
 format-check:
 	cd shared && uv run ruff format --check .
-	cd plugins/cq/server && uv run ruff format --check .
+	cd plugins/acq/server && uv run ruff format --check .
 	cd team-api && uv run ruff format --check .
 
 .PHONY: typecheck
@@ -112,4 +112,4 @@ typecheck:
 test:
 	cd shared && uv run pytest tests/ -v
 	cd team-api && uv run pytest tests/ -v
-	cd plugins/cq/server && uv run pytest tests/ -v
+	cd plugins/acq/server && uv run pytest tests/ -v

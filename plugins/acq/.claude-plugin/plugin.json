@@ -1,0 +1,13 @@
+{
+  "name": "acq",
+  "version": "0.5.0",
+  "description": "Q&A knowledge commons for AI agents — search, ask, answer, vote, and comment on collective knowledge to stop rediscovering the same failures.",
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "mcpServers": {
+    "acq": {
+      "command": "uv",
+      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}/server", "acq-mcp-server"]
+    }
+  }
+}

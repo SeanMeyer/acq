@@ -1,11 +1,11 @@
 ---
-name: cq:reflect
-description: Mine the current session for knowledge worth sharing — identify learnings, present them for approval, and propose each approved candidate to the cq knowledge store.
+name: acq:reflect
+description: Mine the current session for knowledge worth sharing — identify Q&A candidates, present them for approval, and submit each approved pair to the acq knowledge store.
 ---
 
-# /cq:reflect
+# /acq:reflect
 
-Retrospectively mine this session for shareable knowledge units and submit approved candidates to cq.
+Retrospectively mine this session for shareable Q&A pairs and submit approved candidates to acq.
 
 ## Instructions
 
@@ -31,11 +31,11 @@ Call the `reflect` MCP tool, passing the session summary as `session_context`.
 reflect(session_context="<your session summary>")
 ```
 
-The tool may return a `candidates` list or may return an empty list with `status: "stub"`. In both cases, proceed to Step 3.
+The tool may return a `candidates` list or may return a message directing you to use `ask`/`answer` directly. In both cases, proceed to Step 3.
 
 If the tool call fails (MCP server unavailable, timeout, or any error), note this briefly to the user and continue to Step 3 using local reasoning only — the reflect flow does not require the tool to succeed.
 
-### Step 3 — Identify candidate knowledge units
+### Step 3 — Identify candidate Q&A pairs
 
 Using your own reasoning, scan the session for insights worth sharing. Use any candidates returned by `reflect` as a starting point; if none were returned, identify candidates independently.
 
@@ -59,18 +59,14 @@ Do **not** include:
 
 - Standard usage of a well-documented API.
 - Project-specific business logic or implementation details that cannot be generalised.
-- Insights already surfaced and confirmed during the session (i.e. knowledge units you retrieved via `query` and subsequently called `confirm` on to record that they proved correct).
+- Insights already surfaced during the session (i.e. questions you found via `search` and voted on).
 
-For each candidate, assign:
+For each candidate, draft:
 
-- **summary** — one concise sentence describing what was discovered.
-- **detail** — two to four sentences explaining the context and why this behaviour exists or matters.
-- **action** — a concrete instruction on what to do (start with an imperative verb).
-- **domain** — two to five lowercase domain tags (e.g. `["api", "stripe", "rate-limiting"]`).
-- **estimated_relevance** — a float between 0.0 and 1.0:
-  - 0.8–1.0: broadly applicable across many languages, frameworks, or teams.
-  - 0.5–0.8: applicable to a specific ecosystem or toolchain.
-  - 0.2–0.5: applicable only under narrow conditions.
+- **title** — one concise sentence phrased as a question (e.g. "Why does webpack 5 fail with stream imports?")
+- **body** — two to four sentences describing the problem context.
+- **answer** — a concrete solution (start with what to do).
+- **tags** — two to five lowercase tags (e.g. `["webpack", "nodejs", "bundler"]`).
 - Optionally: **language**, **framework**, **pattern** if relevant.
 
 If the session contained no events meeting the above criteria, skip Steps 4–6 and follow the "no candidates" instruction in Step 7.
@@ -80,18 +76,17 @@ If the session contained no events meeting the above criteria, skip Steps 4–6 
 Open with:
 
 ```
-I identified {N} potential learning candidates from this session worth sharing with the commons.
+I identified {N} potential Q&A candidates from this session worth sharing with the commons.
 ```
 
 Present each candidate as a numbered entry:
 
 ```
-{N}. {summary}
-   Domain: {domain tags}
-   Relevance: {estimated_relevance}
+{N}. {title}
+   Tags: {tags}
    ---
-   {detail}
-   Action: {action}
+   {body}
+   Answer: {answer}
 ```
 
 After listing all candidates, ask:
@@ -103,28 +98,39 @@ You can also reply "all" to approve everything, or "none" to discard everything.
 
 ### Step 5 — Handle edits
 
-If the user requests an edit, show the current field values and ask which field to change. Apply the changes and confirm the updated candidate before proposing.
+If the user requests an edit, show the current field values and ask which field to change. Apply the changes and confirm the updated candidate before submitting.
 
-### Step 6 — Propose approved candidates
+### Step 6 — Submit approved candidates
 
-For each approved candidate, call `propose`:
+For each approved candidate, call `ask` then `answer`:
 
 ```
-propose(
-  summary=<summary>,
-  detail=<detail>,
-  action=<action>,
-  domain=<domain list>,
+ask(
+  title=<title>,
+  body=<body>,
+  tags=<tag list>,
   language=<language or omit>,
   framework=<framework or omit>,
   pattern=<pattern or omit>
 )
 ```
 
-Confirm each inline after the call:
+If `ask` returns similar existing questions, evaluate them. If a match exists, vote on it instead of creating a new question. If the question is genuinely distinct, re-call with `force_create=true`.
+
+Then answer the question:
 
 ```
-Stored: {id} — "{summary}"
+answer(
+  question_id=<returned question ID>,
+  body=<answer>,
+  supervised=true
+)
+```
+
+Confirm each inline after the calls:
+
+```
+Stored: {question_id} — "{title}"
 ```
 
 ### Step 7 — Final summary
@@ -132,11 +138,11 @@ Stored: {id} — "{summary}"
 ```
 ## Session Reflect Complete
 
-{approved} of {total} candidates proposed to cq.
+{approved} of {total} candidates submitted to acq.
 {skipped} skipped.
 
-IDs stored this session:
-- {id}: "{summary}"
+Questions created this session:
+- {question_id}: "{title}"
 - ...
 ```
 
@@ -149,6 +155,6 @@ No shareable learnings identified in this session. Sessions with debugging, work
 ## Edge Cases
 
 - **Empty session** — If the session contained only routine tasks, say so and stop after Step 3.
-- **All candidates skipped** — Display the summary with 0 proposed.
-- **`propose` error** — Report the error inline for that candidate and continue with the next one. Do not abort.
-- **`reflect` returns candidates** — Present them alongside any additional candidates you identified. Deduplicate by summary similarity before presenting.
+- **All candidates skipped** — Display the summary with 0 submitted.
+- **`ask` or `answer` error** — Report the error inline for that candidate and continue with the next one. Do not abort.
+- **`reflect` returns candidates** — Present them alongside any additional candidates you identified. Deduplicate by title similarity before presenting.
