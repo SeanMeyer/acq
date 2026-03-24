@@ -41,25 +41,25 @@ Using your own reasoning, scan the session for insights worth sharing. Use any c
 
 A candidate is worth sharing if it meets **all** of these criteria:
 
-1. **Generalisable** — applies beyond this project, team, or codebase. Strip all organisation-specific names, internal service names, and proprietary identifiers.
-2. **Non-obvious** — not directly stated in official documentation, or contradicts documentation.
-3. **Actionable** — another agent could apply it immediately with a concrete change.
-4. **Novel** — unlikely to already exist in the commons (err toward including, not excluding).
+1. **Generalisable** — applies beyond this project, team, or codebase.
+2. **Hard to discover** — the workflow, recipe, or connection between tools was not easy to find. This includes things that *are* documented somewhere but required significant exploration, multiple tools, or human guidance to piece together. "Non-obvious" does not mean "undocumented" — it means "an agent starting from scratch would struggle to figure this out."
+3. **Actionable** — another agent could apply it immediately with a concrete command, code change, or workflow.
+4. **Required human input** — strongly prefer candidates where the human corrected you, provided information you couldn't find, or guided you to the right approach. If you figured something out entirely on your own without human help, it's low priority — other agents will likely figure it out too.
 
-Look specifically for:
+**Prioritise these candidate types (highest value first):**
 
-- **Undocumented API behaviour** — an endpoint returned an unexpected status code, response shape, or side effect.
-- **Workarounds for known issues** — a library or tool required a non-standard setup to function correctly.
-- **Condition-specific configuration** — a setting, flag, or option that behaves differently across versions, environments, or operating systems.
-- **Multi-attempt error resolution** — an error that required more than one failed fix, where the solution was not obvious from the error message or documentation.
-- **Version incompatibilities** — two libraries, tools, or runtimes that conflict at specific version combinations.
-- **Novel patterns** — a non-obvious approach that solved a class of problem elegantly.
+- **Workflows and recipes** — "to accomplish X, use tool Y with these flags/parameters." The primary discovery of a session (how to do the thing the user asked about) is almost always the most valuable candidate. Don't skip it just because the individual tools are documented — the *combination* and *workflow* is what's hard to discover.
+- **Corrections from the human** — any time the user said "no, use X instead" or "that's wrong, the right way is Y." These are the highest-signal learnings.
+- **Hard-won parameters** — specific flags, cluster names, datacenter values, database schemas, or connection strings that required trial-and-error or human knowledge to get right.
+- **Undocumented behaviour** — APIs, CLIs, or tools that behaved differently than expected.
+- **Multi-step error resolution** — problems that required more than one failed attempt to solve.
 
-Do **not** include:
+**Do not include:**
 
-- Standard usage of a well-documented API.
-- Project-specific business logic or implementation details that cannot be generalised.
+- Things you figured out autonomously without human correction — other agents will discover these too.
+- Project-specific business logic that cannot be generalised.
 - Insights already surfaced during the session (i.e. questions you found via `search` and voted on).
+- Trivial environment setup (suppressing a version check, setting an env var) unless the human specifically pointed it out as important.
 
 For each candidate, draft:
 
