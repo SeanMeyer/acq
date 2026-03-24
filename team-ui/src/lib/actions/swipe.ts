@@ -34,18 +34,19 @@ export function swipe(node: HTMLElement, options: SwipeOptions) {
 			position: absolute;
 			top: 50%;
 			left: 50%;
-			transform: translate(-50%, -50%);
-			font-size: 1.25rem;
-			font-weight: 700;
-			letter-spacing: 0.05em;
+			transform: translate(-50%, -50%) scale(0.8);
+			font-size: 1.5rem;
+			font-weight: 800;
+			letter-spacing: 0.08em;
 			text-transform: uppercase;
 			pointer-events: none;
 			opacity: 0;
-			transition: opacity 100ms ease;
+			transition: opacity 150ms ease, transform 150ms ease;
 			z-index: 10;
-			padding: 0.5rem 1.5rem;
-			border-radius: 0.5rem;
+			padding: 0.75rem 2rem;
+			border-radius: 0.75rem;
 			border: 3px solid transparent;
+			white-space: nowrap;
 		`;
 		node.style.position = 'relative';
 		node.appendChild(label);
@@ -53,24 +54,34 @@ export function swipe(node: HTMLElement, options: SwipeOptions) {
 
 	function updateLabel(progress: number, direction: 'left' | 'right' | 'up' | 'none') {
 		if (!label) return;
-		const opacity = Math.min(progress * 1.5, 1);
+		const opacity = Math.min(progress * 1.2, 1);
+		const scale = 0.8 + Math.min(progress * 0.3, 0.3);
+		const pastThreshold = progress >= 1;
+
 		label.style.opacity = String(opacity);
+		label.style.transform = `translate(-50%, -50%) scale(${scale})`;
 
 		if (direction === 'right') {
-			label.textContent = '✓ Approve';
+			label.textContent = pastThreshold ? '✓ Release to approve' : '→ Approve';
 			label.style.color = '#15803d';
-			label.style.borderColor = '#15803d';
-			label.style.backgroundColor = 'rgba(220, 252, 231, 0.95)';
+			label.style.borderColor = pastThreshold ? '#15803d' : 'rgba(21, 128, 61, 0.4)';
+			label.style.backgroundColor = pastThreshold
+				? 'rgba(220, 252, 231, 0.97)'
+				: 'rgba(220, 252, 231, 0.8)';
 		} else if (direction === 'left') {
-			label.textContent = '✕ Reject';
+			label.textContent = pastThreshold ? '✕ Release to reject' : '← Reject';
 			label.style.color = '#dc2626';
-			label.style.borderColor = '#dc2626';
-			label.style.backgroundColor = 'rgba(254, 226, 226, 0.95)';
+			label.style.borderColor = pastThreshold ? '#dc2626' : 'rgba(220, 38, 38, 0.4)';
+			label.style.backgroundColor = pastThreshold
+				? 'rgba(254, 226, 226, 0.97)'
+				: 'rgba(254, 226, 226, 0.8)';
 		} else if (direction === 'up') {
-			label.textContent = '— Skip';
+			label.textContent = pastThreshold ? '— Release to skip' : '↑ Skip';
 			label.style.color = '#475569';
-			label.style.borderColor = '#475569';
-			label.style.backgroundColor = 'rgba(241, 245, 249, 0.95)';
+			label.style.borderColor = pastThreshold ? '#475569' : 'rgba(71, 85, 105, 0.4)';
+			label.style.backgroundColor = pastThreshold
+				? 'rgba(241, 245, 249, 0.97)'
+				: 'rgba(241, 245, 249, 0.8)';
 		} else {
 			label.style.opacity = '0';
 		}

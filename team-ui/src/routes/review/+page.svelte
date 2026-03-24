@@ -209,7 +209,7 @@
           </span>
         </div>
 
-        <div use:swipe={{ onRight: handleApprove, onLeft: handleReject, onUp: handleSkip, threshold: 100 }}>
+        <div use:swipe={{ onRight: handleApprove, onLeft: handleReject, onUp: handleSkip, threshold: 200 }}>
           <ReviewCard item={currentItem} onEditSaved={() => {}} />
         </div>
 
