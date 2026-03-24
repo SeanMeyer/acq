@@ -1,40 +1,17 @@
-"""Tests for the cq Team API client."""
+"""Tests for the acq Team API client."""
+
+from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
 import httpx
 import pytest
-from cq_mcp.knowledge_unit import (
-    Context,
-    Evidence,
-    FlagReason,
-    Insight,
-    KnowledgeUnit,
-    Tier,
-)
-from cq_mcp.team_client import TeamClient
+from acq_mcp.team_client import TeamClient
 
 _MOCK_REQUEST = httpx.Request("GET", "http://test")
 
 
-def _sample_unit(unit_id: str = "ku_test_001") -> KnowledgeUnit:
-    """Create a sample knowledge unit for testing."""
-    return KnowledgeUnit(
-        id=unit_id,
-        domain=["api", "payments"],
-        insight=Insight(
-            summary="Test insight",
-            detail="Test detail.",
-            action="Test action.",
-        ),
-        context=Context(languages=["python"]),
-        evidence=Evidence(confidence=0.8, confirmations=3),
-        tier=Tier.TEAM,
-    )
-
-
 def _mock_response(status_code: int, json: object) -> httpx.Response:
-    """Create an httpx Response with a mock request attached."""
     return httpx.Response(
         status_code=status_code,
         json=json,
@@ -43,13 +20,10 @@ def _mock_response(status_code: int, json: object) -> httpx.Response:
 
 
 async def _raise_connect_error(*_args: object, **_kwargs: object) -> None:
-    """Raise an httpx.ConnectError to simulate a connection failure."""
     raise httpx.ConnectError("Connection refused")
 
 
 def _async_returning(response: httpx.Response):
-    """Create an async callable that returns a fixed response."""
-
     async def handler(*_args: object, **_kwargs: object) -> httpx.Response:
         return response
 
@@ -58,183 +32,243 @@ def _async_returning(response: httpx.Response):
 
 @pytest.fixture
 async def client() -> AsyncIterator[TeamClient]:
-    """Provide a TeamClient that is closed after the test."""
-    c = TeamClient(base_url="http://localhost:8742")
+    c = TeamClient(base_url="http://localhost:8742", api_key="test-key")
     yield c
     await c.close()
 
 
-class TestTeamClientBaseUrl:
-    async def test_base_url_returns_configured_url(self) -> None:
-        async with TeamClient(base_url="http://localhost:8742") as client:
-            assert client.base_url == "http://localhost:8742"
+class TestTeamClientInit:
+    async def test_base_url_property(self) -> None:
+        async with TeamClient(base_url="http://localhost:8742") as c:
+            assert c.base_url == "http://localhost:8742"
 
-
-class TestTeamClientContextManager:
     async def test_context_manager_closes_client(self) -> None:
-        async with TeamClient(base_url="http://localhost:8742") as client:
-            assert client is not None
-        assert client._client.is_closed
+        async with TeamClient(base_url="http://localhost:8742") as c:
+            pass
+        assert c._client.is_closed
+
+    async def test_api_key_sent_in_header(self) -> None:
+        c = TeamClient(base_url="http://localhost:8742", api_key="secret-key")
+        assert c._client.headers.get("x-api-key") == "secret-key"
+        await c.close()
 
 
-class TestTeamClientHealth:
-    async def test_health_returns_true_on_success(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
+class TestHealth:
+    async def test_returns_true_on_200(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        response = _mock_response(200, {"status": "ok"})
-        monkeypatch.setattr(client._client, "get", _async_returning(response))
+        monkeypatch.setattr(client._client, "get", _async_returning(_mock_response(200, {})))
         assert await client.health() is True
 
-    async def test_health_returns_false_on_connection_error(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_returns_false_on_non_200(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(client._client, "get", _async_returning(_mock_response(503, {})))
+        assert await client.health() is False
+
+    async def test_returns_false_on_connection_error(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(client._client, "get", _raise_connect_error)
         assert await client.health() is False
 
 
-class TestTeamClientQuery:
-    async def test_query_returns_error_on_connection_error(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
+class TestSearch:
+    async def test_returns_results_on_success(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data = [{"id": "q_1", "title": "How to pool?"}]
+        monkeypatch.setattr(client._client, "get", _async_returning(_mock_response(200, data)))
+        results = await client.search("connection pool")
+        assert results is not None
+        assert len(results) == 1
+        assert results[0]["id"] == "q_1"
+
+    async def test_returns_none_on_connection_error(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(client._client, "get", _raise_connect_error)
-        result = await client.query(["api"])
-        assert result.units is None
-        assert result.error is not None
-        assert "Connection refused" in result.error
+        result = await client.search("query")
+        assert result is None
 
-    async def test_query_returns_error_on_invalid_json(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_returns_none_on_http_error(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        response = httpx.Response(
-            status_code=200,
-            content=b"not json",
-            request=_MOCK_REQUEST,
+        monkeypatch.setattr(
+            client._client, "get", _async_returning(_mock_response(500, {"detail": "error"}))
         )
-        monkeypatch.setattr(client._client, "get", _async_returning(response))
-        result = await client.query(["api"])
-        assert result.units is None
-        assert result.error is not None
+        result = await client.search("query")
+        assert result is None
 
-    async def test_query_parses_response(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
+
+class TestCreateQuestion:
+    async def test_returns_dict_on_success(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        unit = _sample_unit()
-        response = _mock_response(200, [unit.model_dump(mode="json")])
-        monkeypatch.setattr(client._client, "get", _async_returning(response))
+        data = {"id": "q_team_1", "title": "Q", "similar_questions": []}
+        monkeypatch.setattr(client._client, "post", _async_returning(_mock_response(201, data)))
+        result = await client.create_question(
+            title="Q", body="B", created_by="a", tags=["t"]
+        )
+        assert result is not None
+        assert result["id"] == "q_team_1"
 
-        result = await client.query(["api"])
-        assert result.units is not None
-        assert result.error is None
-        assert len(result.units) == 1
-        assert result.units[0].id == unit.id
-
-
-class TestTeamClientPropose:
-    async def test_propose_returns_none_on_connection_error(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_returns_none_on_connection_error(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(client._client, "post", _raise_connect_error)
-        assert await client.propose(_sample_unit()) is None
+        result = await client.create_question(
+            title="Q", body="B", created_by="a", tags=["t"]
+        )
+        assert result is None
 
-    async def test_propose_raises_on_http_rejection(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_returns_error_dict_on_http_error(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from cq_mcp.team_client import TeamRejectedError
-
-        response = _mock_response(422, {"detail": "Invalid domain"})
-        monkeypatch.setattr(client._client, "post", _async_returning(response))
-
-        with pytest.raises(TeamRejectedError) as exc_info:
-            await client.propose(_sample_unit())
-        assert exc_info.value.status_code == 422
-
-    async def test_propose_parses_response(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        team_unit = _sample_unit(unit_id="ku_team_new")
-        response = _mock_response(201, team_unit.model_dump(mode="json"))
-        monkeypatch.setattr(client._client, "post", _async_returning(response))
-
-        result = await client.propose(_sample_unit())
+        monkeypatch.setattr(
+            client._client,
+            "post",
+            _async_returning(_mock_response(422, {"detail": "Validation error"})),
+        )
+        result = await client.create_question(
+            title="Q", body="B", created_by="a", tags=["t"]
+        )
         assert result is not None
-        assert result.id == "ku_team_new"
+        assert "error" in result
+        assert result["status_code"] == 422
 
 
-class TestTeamClientConfirm:
-    async def test_confirm_returns_none_on_connection_error(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
+class TestCreateAnswer:
+    async def test_returns_dict_on_success(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data = {"id": "a_team_1", "status": "pending"}
+        monkeypatch.setattr(client._client, "post", _async_returning(_mock_response(201, data)))
+        result = await client.create_answer("q_1", "Answer body", "agent-1")
+        assert result is not None
+        assert result["id"] == "a_team_1"
+
+    async def test_returns_none_on_connection_error(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(client._client, "post", _raise_connect_error)
-        assert await client.confirm("ku_test") is None
+        assert await client.create_answer("q_1", "B", "a") is None
 
-    async def test_confirm_returns_none_on_404(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_returns_error_dict_on_404(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        response = _mock_response(404, {"detail": "Not found"})
-        monkeypatch.setattr(client._client, "post", _async_returning(response))
-        assert await client.confirm("ku_missing") is None
-
-    async def test_confirm_parses_response(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        unit = _sample_unit()
-        response = _mock_response(200, unit.model_dump(mode="json"))
-        monkeypatch.setattr(client._client, "post", _async_returning(response))
-
-        result = await client.confirm("ku_test_001")
+        monkeypatch.setattr(
+            client._client, "post", _async_returning(_mock_response(404, {"detail": "Not found"}))
+        )
+        result = await client.create_answer("q_missing", "B", "a")
         assert result is not None
-        assert result.id == "ku_test_001"
+        assert "error" in result
 
 
-class TestTeamClientFlag:
-    async def test_flag_returns_none_on_connection_error(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
+class TestCastVote:
+    async def test_returns_vote_counts_on_success(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data = {"upvotes": 5, "downvotes": 1}
+        monkeypatch.setattr(client._client, "post", _async_returning(_mock_response(200, data)))
+        result = await client.cast_vote("q_1", 1, "agent-1")
+        assert result is not None
+        assert result["upvotes"] == 5
+
+    async def test_returns_none_on_connection_error(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(client._client, "post", _raise_connect_error)
-        assert await client.flag("ku_test", FlagReason.STALE) is None
+        assert await client.cast_vote("q_1", 1, "a") is None
 
-    async def test_flag_returns_none_on_404(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_returns_structured_error_on_409(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        response = _mock_response(404, {"detail": "Not found"})
-        monkeypatch.setattr(client._client, "post", _async_returning(response))
-        assert await client.flag("ku_missing", FlagReason.INCORRECT) is None
-
-    async def test_flag_parses_response(
-        self,
-        client: TeamClient,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        unit = _sample_unit()
-        response = _mock_response(200, unit.model_dump(mode="json"))
-        monkeypatch.setattr(client._client, "post", _async_returning(response))
-
-        result = await client.flag("ku_test_001", FlagReason.DUPLICATE)
+        monkeypatch.setattr(
+            client._client,
+            "post",
+            _async_returning(_mock_response(409, {"detail": "Already voted"})),
+        )
+        result = await client.cast_vote("q_1", 1, "a")
         assert result is not None
-        assert result.id == "ku_test_001"
+        assert result["status_code"] == 409
+
+    async def test_returns_structured_error_on_429(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            client._client,
+            "post",
+            _async_returning(_mock_response(429, {"detail": "Rate limited"})),
+        )
+        result = await client.cast_vote("q_1", 1, "a")
+        assert result is not None
+        assert result["status_code"] == 429
+
+
+class TestCreateComment:
+    async def test_returns_dict_on_success(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data = {"id": "c_team_1", "status": "pending"}
+        monkeypatch.setattr(client._client, "post", _async_returning(_mock_response(201, data)))
+        result = await client.create_comment("q_1", "Great question!", "agent-1")
+        assert result is not None
+        assert result["id"] == "c_team_1"
+
+    async def test_returns_none_on_connection_error(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(client._client, "post", _raise_connect_error)
+        assert await client.create_comment("q_1", "C", "a") is None
+
+
+class TestReflect:
+    async def test_returns_dict_on_success(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data = {"candidates": [], "message": "Done"}
+        monkeypatch.setattr(client._client, "post", _async_returning(_mock_response(200, data)))
+        result = await client.reflect("session context")
+        assert result is not None
+        assert "message" in result
+
+    async def test_returns_none_on_connection_error(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(client._client, "post", _raise_connect_error)
+        assert await client.reflect("context") is None
+
+
+class TestGetStatus:
+    async def test_returns_dict_on_success(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data = {"questions": 10, "answers": 25}
+        monkeypatch.setattr(client._client, "get", _async_returning(_mock_response(200, data)))
+        result = await client.get_status()
+        assert result is not None
+        assert result["questions"] == 10
+
+    async def test_returns_none_on_connection_error(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(client._client, "get", _raise_connect_error)
+        assert await client.get_status() is None
+
+
+class TestGetTags:
+    async def test_returns_tags_on_success(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data = [{"name": "python", "usage_count": 42}]
+        monkeypatch.setattr(client._client, "get", _async_returning(_mock_response(200, data)))
+        result = await client.get_tags("py")
+        assert result is not None
+        assert result[0]["name"] == "python"
+
+    async def test_returns_none_on_connection_error(
+        self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(client._client, "get", _raise_connect_error)
+        assert await client.get_tags() is None
