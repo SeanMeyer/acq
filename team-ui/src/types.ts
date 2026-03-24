@@ -1,75 +1,106 @@
-export interface Insight {
-  summary: string;
-  detail: string;
-  action: string;
+export interface VoteCounts {
+  agent_upvotes: number;
+  agent_downvotes: number;
+  human_upvotes: number;
+  human_downvotes: number;
 }
 
-export interface Context {
-  languages: string[];
-  frameworks: string[];
-  pattern: string;
-}
-
-export interface Evidence {
-  confidence: number;
-  confirmations: number;
-  first_observed: string;
-  last_confirmed: string;
-}
-
-export interface KnowledgeUnit {
+export interface Tag {
   id: string;
-  version: number;
-  domain: string[];
-  insight: Insight;
-  context: Context;
-  evidence: Evidence;
-  tier: string;
+  name: string;
+  description: string | null;
+  usage_count: number;
+}
+
+export interface Question extends VoteCounts {
+  id: string;
+  title: string;
+  body: string;
+  status: "open" | "resolved";
   created_by: string;
+  created_by_type: "agent" | "human";
+  created_at: string;
+  updated_at: string;
+  pinned_answer_id: string | null;
+  context_language: string | null;
+  context_framework: string | null;
+  context_pattern: string | null;
+  tags: Tag[];
+}
+
+export interface Answer extends VoteCounts {
+  id: string;
+  question_id: string;
+  body: string;
+  created_by: string;
+  created_by_type: "agent" | "human";
+  supervised: boolean;
+  created_at: string;
+  updated_at: string;
+  status: "pending" | "approved" | "rejected";
+}
+
+export interface Comment {
+  id: string;
+  parent_id: string;
+  parent_type: "question" | "answer";
+  body: string;
+  created_by: string;
+  created_by_type: "agent" | "human";
+  supervised: boolean;
+  created_at: string;
+  status: "pending" | "approved" | "rejected";
+}
+
+export interface EditHistoryEntry {
+  id: string;
+  target_id: string;
+  target_type: "question" | "answer";
+  previous_body: string;
+  new_body: string;
+  edited_by: string;
+  edited_by_type: "agent" | "human";
+  edited_at: string;
 }
 
 export interface ReviewItem {
-  knowledge_unit: KnowledgeUnit;
+  id: string;
+  type: "answer" | "comment";
+  content: Answer | Comment;
+  question: Question;
   status: "pending" | "approved" | "rejected";
-  reviewed_by: string | null;
-  reviewed_at: string | null;
 }
 
 export interface ReviewQueueResponse {
   items: ReviewItem[];
   total: number;
-  offset: number;
-  limit: number;
+}
+
+export interface ActivityEvent {
+  type: "proposed" | "approved" | "rejected";
+  item_type: "question" | "answer" | "comment";
+  item_id: string;
+  summary: string;
+  created_by: string;
+  supervised: boolean;
+  timestamp: string;
+}
+
+export interface ReviewStats {
+  total_questions: number;
+  total_answers: number;
+  total_pending: number;
+  total_unanswered: number;
+  tags: Tag[];
+  recent_activity: ActivityEvent[];
+  vote_distribution: { bucket: string; count: number }[];
 }
 
 export type Selection = "approve" | "reject" | "skip" | null;
 
 export interface ReviewDecisionResponse {
-  unit_id: string;
-  status: "approved" | "rejected";
+  item_id: string;
+  status: string;
   reviewed_by: string;
   reviewed_at: string;
-}
-
-export interface ActivityEvent {
-  type: "proposed" | "approved" | "rejected";
-  unit_id: string;
-  summary: string;
-  reviewed_by?: string;
-  timestamp: string;
-}
-
-export interface DailyCount {
-  date: string;
-  proposed: number;
-  approved: number;
-  rejected: number;
-}
-
-export interface ReviewStatsResponse {
-  counts: { pending: number; approved: number; rejected: number };
-  domains: Record<string, number>;
-  confidence_distribution: Record<string, number>;
-  recent_activity: ActivityEvent[];
-  trends: { daily: DailyCount[] };
 }

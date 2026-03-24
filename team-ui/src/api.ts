@@ -2,7 +2,8 @@ import type {
   ReviewItem,
   ReviewQueueResponse,
   ReviewDecisionResponse,
-  ReviewStatsResponse,
+  ReviewStats,
+  EditHistoryEntry,
 } from "./types";
 
 const API_BASE = "/api";
@@ -64,36 +65,51 @@ export const api = {
       `/review/queue?limit=${limit}&offset=${offset}`,
     ),
 
-  approve: (unitId: string) =>
-    request<ReviewDecisionResponse>(`/review/${unitId}/approve`, {
+  approve: (id: string) =>
+    request<ReviewDecisionResponse>(`/review/${id}/approve`, {
       method: "POST",
     }),
 
-  reject: (unitId: string) =>
-    request<ReviewDecisionResponse>(`/review/${unitId}/reject`, {
+  reject: (id: string) =>
+    request<ReviewDecisionResponse>(`/review/${id}/reject`, {
       method: "POST",
     }),
 
-  reviewStats: () => request<ReviewStatsResponse>("/review/stats"),
+  reviewStats: () => request<ReviewStats>("/review/stats"),
 
-  getUnit: (unitId: string) => request<ReviewItem>(`/review/${unitId}`),
+  editQuestion: (id: string, body: string) =>
+    request<ReviewItem>(`/questions/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ body }),
+    }),
 
-  listUnits: (params: {
-    domain?: string;
-    confidence_min?: number;
-    confidence_max?: number;
-    status?: string;
-  }) => {
-    const qs = new URLSearchParams();
-    if (params.domain) qs.set("domain", params.domain);
-    if (params.confidence_min != null)
-      qs.set("confidence_min", String(params.confidence_min));
-    if (params.confidence_max != null)
-      qs.set("confidence_max", String(params.confidence_max));
-    if (params.status) qs.set("status", params.status);
-    const query = qs.toString();
-    return request<ReviewItem[]>(`/review/units${query ? `?${query}` : ""}`);
+  editAnswer: (id: string, body: string) =>
+    request<ReviewItem>(`/answers/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ body }),
+    }),
+
+  pinAnswer: (questionId: string, answerId: string) =>
+    request<void>(`/questions/${questionId}/pin`, {
+      method: "PUT",
+      body: JSON.stringify({ answer_id: answerId }),
+    }),
+
+  unpinAnswer: (questionId: string) =>
+    request<void>(`/questions/${questionId}/pin`, {
+      method: "DELETE",
+    }),
+
+  getHistory: (type: "question" | "answer", id: string) => {
+    const base = type === "question" ? "questions" : "answers";
+    return request<EditHistoryEntry[]>(`/${base}/${id}/history`);
   },
+
+  mergeTags: (sourceId: string, targetId: string) =>
+    request<void>("/tags/merge", {
+      method: "POST",
+      body: JSON.stringify({ source_id: sourceId, target_id: targetId }),
+    }),
 };
 
 export { ApiError };

@@ -26,7 +26,8 @@ export function ReviewPage() {
 
   const cardRef = useRef<HTMLDivElement>(null);
 
-  // Fetch 20 items (not 1) so we can skip previously-seen KUs client-side.
+  // Fetch 20 items so we can skip previously-seen items client-side without
+  // an extra round-trip for each skip.
   const fetchNext = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -34,9 +35,7 @@ export function ReviewPage() {
     setConflictMessage(null);
     try {
       const resp = await api.reviewQueue(20, 0);
-      const next = resp.items.find(
-        (item) => !skippedIds.current.has(item.knowledge_unit.id),
-      );
+      const next = resp.items.find((item) => !skippedIds.current.has(item.id));
       if (next) {
         setCurrent(next);
         setPendingCount(Math.max(0, resp.total - skippedIds.current.size));
@@ -66,7 +65,7 @@ export function ReviewPage() {
       if (!current || submitting) return;
       setSubmitting(true);
       if (action === "skip") {
-        skippedIds.current.add(current.knowledge_unit.id);
+        skippedIds.current.add(current.id);
         await drag.flyOff(action);
         await fetchNext();
         setSubmitting(false);
@@ -75,10 +74,10 @@ export function ReviewPage() {
       setError(null);
       try {
         if (action === "approve") {
-          await api.approve(current.knowledge_unit.id);
+          await api.approve(current.id);
           setSessionApproved((n) => n + 1);
         } else {
-          await api.reject(current.knowledge_unit.id);
+          await api.reject(current.id);
           setSessionRejected((n) => n + 1);
         }
         await drag.flyOff(action);
@@ -107,7 +106,6 @@ export function ReviewPage() {
     setSelection(s);
   }, []);
 
-  // Keyboard handler.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.repeat || !current || loading || submitting) return;
@@ -159,7 +157,7 @@ export function ReviewPage() {
         )}
         {total > 0 && (
           <>
-            <p className="text-gray-500">You've reviewed {total} KUs today</p>
+            <p className="text-gray-500">You reviewed {total} items this session</p>
             <div className="flex gap-4 justify-center mt-3 text-sm">
               <span className="text-red-600 font-medium">{sessionRejected} rejected</span>
               <span className="text-gray-300">{"\u00b7"}</span>
@@ -194,7 +192,7 @@ export function ReviewPage() {
 
       <ReviewCard
         ref={cardRef}
-        unit={current.knowledge_unit}
+        item={current}
         selection={selection}
         drag={drag.drag}
         pointerHandlers={drag.handlers}
