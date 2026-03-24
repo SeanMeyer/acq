@@ -29,12 +29,11 @@ from .tags import router as tags_router
 class CreateQuestionRequest(BaseModel):
     title: str
     body: str
-    created_by: str
-    created_by_type: str = "agent"
     tags: list[str] = []
     context_language: str | None = None
     context_framework: str | None = None
     context_pattern: str | None = None
+    force_create: bool = False
 
 
 class CreateQuestionResponse(BaseModel):
@@ -159,27 +158,29 @@ def create_question(
     agent: str = Depends(get_agent_identity),
     store: TeamStore = Depends(get_store),
 ) -> CreateQuestionResponse:
+    # Check for duplicates first (unless force_create)
+    if not request.force_create:
+        similar = store.find_similar_questions(request.title, request.tags)
+        if similar:
+            return CreateQuestionResponse(
+                question={"title": request.title, "body": request.body},
+                similar_questions=[
+                    {
+                        "question": s["question"].model_dump(mode="json"),
+                        "similarity": s["similarity"],
+                    }
+                    for s in similar
+                ],
+            )
     q = Question(
         title=request.title,
         body=request.body,
-        created_by=request.created_by or agent,
-        created_by_type=request.created_by_type,
+        created_by=agent,
+        created_by_type="agent",
         context_language=request.context_language,
         context_framework=request.context_framework,
         context_pattern=request.context_pattern,
     )
-    similar = store.find_similar_questions(request.title, request.tags)
-    if similar:
-        return CreateQuestionResponse(
-            question=q.model_dump(mode="json"),
-            similar_questions=[
-                {
-                    "question": s["question"].model_dump(mode="json"),
-                    "similarity": s["similarity"],
-                }
-                for s in similar
-            ],
-        )
     store.create_question(q, request.tags)
     return CreateQuestionResponse(question=q.model_dump(mode="json"))
 
