@@ -232,10 +232,12 @@ async def ask(
             similar = result.get("similar_questions", [])
             if similar and not force_create:
                 return {"action": "similar_found", "similar_questions": similar}
+            question = result.get("question", {})
             return {
                 "action": "created",
-                "question_id": result.get("id"),
+                "question_id": question.get("id") if isinstance(question, dict) else None,
                 "similar_questions": similar,
+                "source": "team",
             }
 
     # Fall back to local store.

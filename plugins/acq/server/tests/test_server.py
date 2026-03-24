@@ -160,13 +160,14 @@ class TestAsk:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mock = _make_mock_team_client(
-            create_question_result={"id": "q_team_1", "similar_questions": []}
+            create_question_result={"question": {"id": "q_team_1"}, "similar_questions": []}
         )
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
         result = await ask(title="Q", body="B", tags=["t"])
         assert result["action"] == "created"
         assert result["question_id"] == "q_team_1"
+        assert result["source"] == "team"
 
     async def test_returns_similar_found_when_duplicates_exist(
         self, monkeypatch: pytest.MonkeyPatch
