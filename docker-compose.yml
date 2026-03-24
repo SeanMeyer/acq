@@ -1,21 +1,25 @@
 services:
-  cq-team-api:
-    build: ./team-api
+  acq-team-api:
+    build:
+      context: .
+      dockerfile: team-api/Dockerfile
     ports:
       - "8742:8742"
     volumes:
-      - cq-data:/data
+      - acq-data:/data
       - ./scripts:/app/scripts:ro
     environment:
-      - CQ_DB_PATH=/data/team.db
-      - CQ_JWT_SECRET=${CQ_JWT_SECRET:?Set CQ_JWT_SECRET}
+      - ACQ_DB_PATH=/data/team.db
+      - ACQ_JWT_SECRET=${ACQ_JWT_SECRET:?Set ACQ_JWT_SECRET}
+      - ACQ_API_KEYS=${ACQ_API_KEYS:-{"default-key":"default-agent"}}
+      - HUMAN_VOTE_WEIGHT=${HUMAN_VOTE_WEIGHT:-5}
 
-  cq-team-ui:
+  acq-team-ui:
     build: ./team-ui
     ports:
       - "3000:3000"
     depends_on:
-      - cq-team-api
+      - acq-team-api
 
 volumes:
-  cq-data:
+  acq-data:

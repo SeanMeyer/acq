@@ -4,23 +4,26 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.22 /uv /uvx /bin/
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock ./
-# Install dependencies first (without the project) so this layer is cached
-# independently of application code changes.
-RUN uv sync --no-dev --frozen --no-install-project
+# Install the shared package first
+COPY shared/pyproject.toml shared/pyproject.toml
+COPY shared/acq_shared/ shared/acq_shared/
+RUN cd shared && uv sync --no-dev
 
-COPY team_api/ team_api/
-RUN uv sync --no-dev --frozen
+# Install team-api dependencies (cached independently of app code)
+COPY team-api/pyproject.toml team-api/uv.lock team-api/
+RUN cd team-api && uv sync --no-dev --frozen --no-install-project
+
+# Copy application code and install
+COPY team-api/team_api/ team-api/team_api/
+RUN cd team-api && uv sync --no-dev --frozen
 
 RUN addgroup --system app && adduser --system --ingroup app app \
     && mkdir -p /data && chown app:app /data
 USER app
 
-# Prevent Python from writing .pyc files (avoids permission errors writing
-# into the root-owned venv at runtime) and ensure logs are not buffered.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8742
 
-CMD ["/app/.venv/bin/cq-team-api"]
+CMD ["/app/team-api/.venv/bin/acq-team-api"]

@@ -2,11 +2,11 @@
 
 .PHONY: help
 help:
-	@echo "cq - shared agent knowledge commons"
+	@echo "acq - Q&A knowledge commons for AI agents"
 	@echo ""
 	@echo "Claude Code (recommended):"
-	@echo "  make install-claude                          Install cq plugin"
-	@echo "  make uninstall-claude                        Remove cq plugin"
+	@echo "  make install-claude                          Install acq plugin"
+	@echo "  make uninstall-claude                        Remove acq plugin"
 	@echo ""
 	@echo "OpenCode:"
 	@echo "  make install-opencode                        Install globally (~/.config/opencode/)"
@@ -24,23 +24,21 @@ help:
 	@echo "  make compose-down                            Stop services"
 	@echo "  make compose-reset                           Stop services and wipe database"
 	@echo "  make seed-users USER=demo PASS=demo123       Create a user"
-	@echo "  make seed-kus   USER=demo PASS=demo123       Load sample knowledge units"
-	@echo "  make seed-all   USER=demo PASS=demo123       Create user + load KUs"
 
 .PHONY: setup
 setup:
+	(cd shared && uv sync --group dev)
 	(cd plugins/cq/server && uv sync --group dev)
 	(cd team-api && uv sync --group dev)
 	(cd team-ui && pnpm install $(if $(CI),--frozen-lockfile,))
 
 .PHONY: install-claude
 install-claude:
-	claude plugin marketplace add mozilla-ai/cq
-	claude plugin install cq
+	claude plugin install --path plugins/cq
 
 .PHONY: uninstall-claude
 uninstall-claude:
-	claude plugin marketplace remove mozilla-ai/cq
+	claude plugin uninstall acq
 
 .PHONY: install-opencode
 install-opencode:
@@ -78,32 +76,11 @@ endif
 ifndef PASS
 	$(error PASS is required. Usage: make seed-users USER=peter PASS=changeme)
 endif
-	docker compose exec cq-team-api /app/.venv/bin/python /app/scripts/seed-users.py --username "$(USER)" --password "$(PASS)"
-
-.PHONY: seed-kus
-seed-kus:
-ifndef USER
-	$(error USER is required. Usage: make seed-kus USER=demo PASS=demo123)
-endif
-ifndef PASS
-	$(error PASS is required. Usage: make seed-kus USER=demo PASS=demo123)
-endif
-	docker compose exec cq-team-api /app/.venv/bin/python /app/scripts/seed/load.py --user "$(USER)" --pass "$(PASS)" --url http://localhost:8742
-
-.PHONY: seed-all
-seed-all:
-ifndef USER
-	$(error USER is required. Usage: make seed-all USER=demo PASS=demo123)
-endif
-ifndef PASS
-	$(error PASS is required. Usage: make seed-all USER=demo PASS=demo123)
-endif
-	$(MAKE) seed-users USER="$(USER)" PASS="$(PASS)"
-	$(MAKE) seed-kus USER="$(USER)" PASS="$(PASS)"
+	docker compose exec acq-team-api /app/team-api/.venv/bin/python /app/scripts/seed-users.py --username "$(USER)" --password "$(PASS)"
 
 .PHONY: dev-api
 dev-api:
-	cd team-api && CQ_DB_PATH=./dev.db CQ_JWT_SECRET=dev-secret uv run cq-team-api
+	cd team-api && ACQ_DB_PATH=./dev.db ACQ_JWT_SECRET=dev-secret ACQ_API_KEYS='{"dev-key":"dev-agent"}' uv run acq-team-api
 
 .PHONY: dev-ui
 dev-ui:
@@ -111,28 +88,28 @@ dev-ui:
 
 .PHONY: lint
 lint:
-	cd plugins/cq/server && uv run pre-commit run --all-files --config "$(CURDIR)/.pre-commit-config.yaml"
-	bash scripts/lint-frontend.sh
+	cd shared && uv run ruff check . && uv run ruff format --check .
+	cd plugins/cq/server && uv run ruff check . && uv run ruff format --check .
+	cd team-api && uv run ruff check . && uv run ruff format --check .
 
 .PHONY: format
 format:
+	cd shared && uv run ruff format .
 	cd plugins/cq/server && uv run ruff format .
 	cd team-api && uv run ruff format .
 
 .PHONY: format-check
 format-check:
+	cd shared && uv run ruff format --check .
 	cd plugins/cq/server && uv run ruff format --check .
 	cd team-api && uv run ruff format --check .
 
 .PHONY: typecheck
 typecheck:
-	cd plugins/cq/server && uv sync --group dev && uvx ty check cq_mcp --python .venv
-	cd team-api && uv sync --group dev && uvx ty check team_api --python .venv
 	cd team-ui && pnpm tsc -b
 
 .PHONY: test
 test:
-	cd plugins/cq/server && uv sync --group dev && uvx ty check cq_mcp --python .venv
-	cd team-api && uv sync --group dev && uvx ty check team_api --python .venv
-	cd plugins/cq/server && uv run pytest
-	cd team-api && uv run pytest
+	cd shared && uv run pytest tests/ -v
+	cd team-api && uv run pytest tests/ -v
+	cd plugins/cq/server && uv run pytest tests/ -v
