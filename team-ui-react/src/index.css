@@ -1,3 +1,0 @@
-@import "tailwindcss";
-@plugin "@tailwindcss/typography";
-@custom-variant pointer-fine (@media (pointer: fine));
