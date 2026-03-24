@@ -21,7 +21,7 @@ export function ReviewActions({ selection, onSelect, onConfirm, disabled }: Prop
               ? "bg-red-600 text-white ring-3 ring-red-200"
               : selection
                 ? "bg-red-100 text-red-600 opacity-40"
-                : "bg-red-100 text-red-600"
+                : "bg-red-100 text-red-600 hover:bg-red-200 hover:scale-105 cursor-pointer"
           }`}
         >
           {selection === "reject" ? "Confirm Reject" : "\u2190 Reject"}
@@ -36,7 +36,7 @@ export function ReviewActions({ selection, onSelect, onConfirm, disabled }: Prop
               ? "bg-slate-600 text-white ring-3 ring-slate-200"
               : selection
                 ? "bg-slate-100 text-slate-600 opacity-40"
-                : "bg-slate-100 text-slate-600"
+                : "bg-slate-100 text-slate-600 hover:bg-slate-200 hover:scale-105 cursor-pointer"
           }`}
         >
           {selection === "skip" ? "Confirm Skip" : "\u2191\u2193 Skip"}
@@ -51,7 +51,7 @@ export function ReviewActions({ selection, onSelect, onConfirm, disabled }: Prop
               ? "bg-green-600 text-white ring-3 ring-green-200"
               : selection
                 ? "bg-green-100 text-green-600 opacity-40"
-                : "bg-green-100 text-green-600"
+                : "bg-green-100 text-green-600 hover:bg-green-200 hover:scale-105 cursor-pointer"
           }`}
         >
           {selection === "approve" ? "Confirm Approve" : "Approve \u2192"}

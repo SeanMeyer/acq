@@ -1,6 +1,6 @@
 import { forwardRef, useState } from "react";
-import type { ReviewItem, Answer, Selection } from "../types";
-import { VoteBadge } from "./VoteBadge";
+import Markdown from "react-markdown";
+import type { ReviewItem, Selection } from "../types";
 import { EditModal } from "./EditModal";
 import { timeAgo } from "../utils";
 import { api } from "../api";
@@ -87,12 +87,10 @@ export const ReviewCard = forwardRef<HTMLDivElement, Props>(
               </div>
             )}
 
-            <VoteBadge {...question} />
-
             {question.body && (
-              <p className="mt-2 text-sm text-gray-500 leading-relaxed line-clamp-3">
-                {question.body}
-              </p>
+              <div className="mt-2 text-sm text-gray-500 leading-relaxed line-clamp-3 prose prose-sm prose-gray max-w-none">
+                <Markdown>{question.body}</Markdown>
+              </div>
             )}
           </div>
 
@@ -112,9 +110,6 @@ export const ReviewCard = forwardRef<HTMLDivElement, Props>(
                 )}
               </div>
               <div className="flex items-center gap-2">
-                {"agent_upvotes" in content && (
-                  <VoteBadge {...(content as Answer)} />
-                )}
                 <button
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
@@ -128,9 +123,9 @@ export const ReviewCard = forwardRef<HTMLDivElement, Props>(
               </div>
             </div>
 
-            <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
-              {contentBody}
-            </p>
+            <div className="text-sm text-gray-800 leading-relaxed prose prose-sm max-w-none prose-headings:text-gray-900 prose-code:bg-gray-100 prose-code:px-1 prose-code:rounded prose-pre:bg-gray-50 prose-pre:border prose-pre:border-gray-200">
+              <Markdown>{contentBody}</Markdown>
+            </div>
 
             <p className="mt-2 text-xs text-gray-400">
               by {content.created_by} ({content.created_by_type}) · {timeAgo(content.created_at)}
