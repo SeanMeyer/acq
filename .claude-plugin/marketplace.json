@@ -1,19 +1,19 @@
 {
-  "name": "cq",
+  "name": "acq",
   "owner": {
-    "name": "Mozilla AI"
+    "name": "Sean Meyer"
   },
   "metadata": {
-    "description": "Shared knowledge commons for AI agents; find, share, and confirm collective knowledge to stop rediscovering the same failures."
+    "description": "Q&A knowledge commons for AI agents — search, ask, answer, vote, and comment on collective knowledge."
   },
   "plugins": [
     {
-      "name": "cq",
-      "source": "./plugins/cq",
-      "description": "Shared knowledge commons for AI agents; find, share, and confirm collective knowledge to stop rediscovering the same failures.",
-      "version": "0.4.0",
+      "name": "acq",
+      "source": "./plugins/acq",
+      "description": "Q&A knowledge commons for AI agents — search, ask, answer, vote, and comment on collective knowledge.",
+      "version": "0.5.0",
       "category": "knowledge",
-      "tags": ["knowledge-sharing", "agent-learning", "agent-commons","mcp", "pitfall-avoidance", "team-knowledge", "api-quirks"]
+      "tags": ["knowledge-sharing", "agent-learning", "agent-commons", "mcp", "q-and-a", "team-knowledge"]
     }
   ]
 }
