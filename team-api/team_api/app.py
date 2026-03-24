@@ -1,56 +1,72 @@
-"""cq team knowledge store API."""
+"""ACQ team knowledge store API — agent-facing routes."""
+
+from __future__ import annotations
 
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import Depends, FastAPI, HTTPException, Query
+from pydantic import BaseModel
 
-from .auth import router as auth_router
+from acq_shared.models import Answer, Comment, Question, Vote
+
+from .auth import get_agent_identity, router as auth_router
+from .deps import get_store
 from .review import router as review_router
-from .knowledge_unit import (
-    Context,
-    FlagReason,
-    Insight,
-    KnowledgeUnit,
-    Tier,
-    create_knowledge_unit,
-)
-from .scoring import apply_confirmation, apply_flag
-from .store import TeamStore, normalise_domains
+from .store import TeamStore
+from .tags import router as tags_router
 
 
-class ProposeRequest(BaseModel):
-    """Request body for proposing a new knowledge unit."""
+# ------------------------------------------------------------------
+# Request / response models
+# ------------------------------------------------------------------
 
-    domain: list[str] = Field(min_length=1)
-    insight: Insight
-    context: Context = Field(default_factory=Context)
-    created_by: str = ""
+class CreateQuestionRequest(BaseModel):
+    title: str
+    body: str
+    created_by: str
+    created_by_type: str = "agent"
+    tags: list[str] = []
+    context_language: str | None = None
+    context_framework: str | None = None
+    context_pattern: str | None = None
 
 
-class FlagRequest(BaseModel):
-    """Request body for flagging a knowledge unit."""
+class CreateQuestionResponse(BaseModel):
+    question: dict[str, Any]
+    similar_questions: list[dict[str, Any]] = []
 
-    reason: FlagReason
+
+class CreateAnswerRequest(BaseModel):
+    body: str
+    supervised: bool = False
 
 
-class StatsResponse(BaseModel):
-    """Response body for store statistics."""
+class VoteRequest(BaseModel):
+    target_id: str
+    target_type: str
+    value: int  # 1 or -1
 
-    total_units: int
-    domains: dict[str, int]
 
+class CommentRequest(BaseModel):
+    parent_id: str
+    parent_type: str
+    body: str
+
+
+# ------------------------------------------------------------------
+# Lifespan / store
+# ------------------------------------------------------------------
 
 _store: TeamStore | None = None
 
 
 def _get_store() -> TeamStore:
-    """Return the global store instance."""
     if _store is None:
         raise RuntimeError("Store not initialised")
     return _store
@@ -58,95 +74,212 @@ def _get_store() -> TeamStore:
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
-    """Manage the store lifecycle."""
     global _store  # noqa: PLW0603
-    jwt_secret = os.environ.get("CQ_JWT_SECRET")
+    jwt_secret = os.environ.get("ACQ_JWT_SECRET")
     if not jwt_secret:
-        raise RuntimeError("CQ_JWT_SECRET environment variable is required")
-    db_path = Path(os.environ.get("CQ_DB_PATH", "/data/team.db"))
-    _store = TeamStore(db_path=db_path)
+        raise RuntimeError("ACQ_JWT_SECRET environment variable is required")
+    db_path = Path(os.environ.get("ACQ_DB_PATH", "/data/team.db"))
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    _store = TeamStore(conn)
     app_instance.state.store = _store
     yield
     _store.close()
 
 
-app = FastAPI(title="cq Team API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="ACQ Team API", version="0.1.0", lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(review_router)
+app.include_router(tags_router)
 
+
+# ------------------------------------------------------------------
+# Health
+# ------------------------------------------------------------------
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    """Health check endpoint."""
     return {"status": "ok"}
 
 
-@app.get("/query")
-def query_units(
-    domain: Annotated[list[str], Query()],
+# ------------------------------------------------------------------
+# Status (agent-facing, API key auth)
+# ------------------------------------------------------------------
+
+@app.get("/status")
+def status(
+    _agent: str = Depends(get_agent_identity),
+    store: TeamStore = Depends(get_store),
+) -> dict[str, Any]:
+    return store.get_status()
+
+
+# ------------------------------------------------------------------
+# Tags listing (agent-facing)
+# ------------------------------------------------------------------
+
+@app.get("/tags")
+def list_tags(
+    q: Annotated[str | None, Query()] = None,
+    _agent: str = Depends(get_agent_identity),
+    store: TeamStore = Depends(get_store),
+) -> list[dict[str, Any]]:
+    tags = store.list_tags(q=q)
+    return [t.model_dump() for t in tags]
+
+
+# ------------------------------------------------------------------
+# Search (agent-facing)
+# ------------------------------------------------------------------
+
+@app.get("/search")
+def search(
+    q: Annotated[str, Query()],
+    tags: Annotated[list[str], Query()] = [],
     language: Annotated[str | None, Query()] = None,
     framework: Annotated[str | None, Query()] = None,
-    limit: Annotated[int, Query(gt=0)] = 5,
-) -> list[KnowledgeUnit]:
-    """Search knowledge units by domain tags with relevance ranking."""
-    store = _get_store()
-    return store.query(domain, language=language, framework=framework, limit=limit)
+    limit: Annotated[int, Query(gt=0)] = 10,
+    _agent: str = Depends(get_agent_identity),
+    store: TeamStore = Depends(get_store),
+) -> list[dict[str, Any]]:
+    results = store.search(q, tags=tags, language=language, framework=framework, limit=limit)
+    return [_serialise_thread(r) for r in results]
 
 
-@app.post("/propose", status_code=201)
-def propose_unit(request: ProposeRequest) -> KnowledgeUnit:
-    """Submit a new knowledge unit to the team store."""
-    store = _get_store()
-    domains = normalise_domains(request.domain)
-    if not domains:
-        raise HTTPException(
-            status_code=422, detail="At least one non-empty domain is required"
+# ------------------------------------------------------------------
+# Questions
+# ------------------------------------------------------------------
+
+@app.post("/questions", status_code=201)
+def create_question(
+    request: CreateQuestionRequest,
+    agent: str = Depends(get_agent_identity),
+    store: TeamStore = Depends(get_store),
+) -> CreateQuestionResponse:
+    q = Question(
+        title=request.title,
+        body=request.body,
+        created_by=request.created_by or agent,
+        created_by_type=request.created_by_type,
+        context_language=request.context_language,
+        context_framework=request.context_framework,
+        context_pattern=request.context_pattern,
+    )
+    similar = store.find_similar_questions(request.title, request.tags)
+    if similar:
+        return CreateQuestionResponse(
+            question=q.model_dump(mode="json"),
+            similar_questions=[
+                {
+                    "question": s["question"].model_dump(mode="json"),
+                    "similarity": s["similarity"],
+                }
+                for s in similar
+            ],
         )
-    unit = create_knowledge_unit(
-        domain=domains,
-        insight=request.insight,
-        context=request.context,
-        tier=Tier.TEAM,
-        created_by=request.created_by,
+    store.create_question(q, request.tags)
+    return CreateQuestionResponse(question=q.model_dump(mode="json"))
+
+
+@app.post("/questions/{question_id}/answers", status_code=201)
+def create_answer(
+    question_id: str,
+    request: CreateAnswerRequest,
+    agent: str = Depends(get_agent_identity),
+    store: TeamStore = Depends(get_store),
+) -> dict[str, Any]:
+    q = store.get_question(question_id)
+    if q is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    a = Answer(
+        question_id=question_id,
+        body=request.body,
+        created_by=agent,
+        created_by_type="agent",
+        supervised=request.supervised,
     )
-    store.insert(unit)
-    return unit
+    result = store.create_answer(a)
+    return result.model_dump(mode="json")
 
 
-@app.post("/confirm/{unit_id}")
-def confirm_unit(unit_id: str) -> KnowledgeUnit:
-    """Confirm a knowledge unit, boosting its confidence."""
-    store = _get_store()
-    unit = store.get(unit_id)
-    if unit is None:
-        raise HTTPException(status_code=404, detail="Knowledge unit not found")
-    confirmed = apply_confirmation(unit)
-    store.update(confirmed)
-    return confirmed
+# ------------------------------------------------------------------
+# Votes
+# ------------------------------------------------------------------
 
-
-@app.post("/flag/{unit_id}")
-def flag_unit(unit_id: str, request: FlagRequest) -> KnowledgeUnit:
-    """Flag a knowledge unit, reducing its confidence."""
-    store = _get_store()
-    unit = store.get(unit_id)
-    if unit is None:
-        raise HTTPException(status_code=404, detail="Knowledge unit not found")
-    flagged = apply_flag(unit, request.reason)
-    store.update(flagged)
-    return flagged
-
-
-@app.get("/stats")
-def stats() -> StatsResponse:
-    """Return store statistics."""
-    store = _get_store()
-    return StatsResponse(
-        total_units=store.count(),
-        domains=store.domain_counts(),
+@app.post("/vote")
+def cast_vote(
+    request: VoteRequest,
+    agent: str = Depends(get_agent_identity),
+    store: TeamStore = Depends(get_store),
+) -> dict[str, Any]:
+    vote = Vote(
+        target_id=request.target_id,
+        target_type=request.target_type,
+        voter_id=agent,
+        voter_type="agent",
+        value=request.value,
     )
+    result = store.cast_vote(vote)
+    if "error" in result:
+        if result["error"] == "duplicate_vote":
+            raise HTTPException(status_code=409, detail="Duplicate vote")
+        if result["error"] == "rate_limited":
+            raise HTTPException(status_code=429, detail="Vote rate limit exceeded")
+    return result
+
+
+# ------------------------------------------------------------------
+# Comments
+# ------------------------------------------------------------------
+
+@app.post("/comments", status_code=201)
+def create_comment(
+    request: CommentRequest,
+    agent: str = Depends(get_agent_identity),
+    store: TeamStore = Depends(get_store),
+) -> dict[str, Any]:
+    c = Comment(
+        parent_id=request.parent_id,
+        parent_type=request.parent_type,
+        body=request.body,
+        created_by=agent,
+        created_by_type="agent",
+    )
+    result = store.create_comment(c)
+    return result.model_dump(mode="json")
+
+
+# ------------------------------------------------------------------
+# Reflect (stub)
+# ------------------------------------------------------------------
+
+@app.post("/reflect")
+def reflect(
+    _agent: str = Depends(get_agent_identity),
+) -> dict[str, str]:
+    return {"message": "Reflection noted"}
+
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+def _serialise_thread(thread: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "question": thread["question"].model_dump(mode="json"),
+        "comments": [c.model_dump(mode="json") for c in thread["comments"]],
+        "answers": [
+            {
+                "answer": t["answer"].model_dump(mode="json"),
+                "comments": [c.model_dump(mode="json") for c in t["comments"]],
+            }
+            for t in thread["answers"]
+        ],
+    }
 
 
 def main() -> None:
-    """Start the cq team API server."""
     uvicorn.run(app, host="0.0.0.0", port=8742)

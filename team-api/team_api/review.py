@@ -1,292 +1,174 @@
-"""Review queue endpoints for the team API."""
+"""Human-facing review and editorial routes (JWT auth)."""
+
+from __future__ import annotations
+
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .auth import get_current_user
 from .deps import get_store
-from .knowledge_unit import KnowledgeUnit
 from .store import TeamStore
 
-
-class ReviewItem(BaseModel):
-    """A KU with its review metadata."""
-
-    knowledge_unit: KnowledgeUnit
-    status: str
-    reviewed_by: str | None
-    reviewed_at: str | None
+router = APIRouter(tags=["review"])
 
 
-class ReviewQueueResponse(BaseModel):
-    """Paginated review queue response."""
+# ------------------------------------------------------------------
+# Pending queue
+# ------------------------------------------------------------------
 
-    items: list[ReviewItem]
-    total: int
-    offset: int
-    limit: int
-
-
-class ReviewDecisionResponse(BaseModel):
-    """Response after approving or rejecting a KU."""
-
-    unit_id: str
-    status: str
-    reviewed_by: str
-    reviewed_at: str
-
-
-class DailyCount(BaseModel):
-    """Daily proposal, approval, and rejection counts."""
-
-    date: str
-    proposed: int
-    approved: int
-    rejected: int
-
-
-class TrendsResponse(BaseModel):
-    """Trend data for the dashboard chart."""
-
-    daily: list[DailyCount]
-
-
-class ReviewStatsResponse(BaseModel):
-    """Dashboard metrics response."""
-
-    counts: dict[str, int]
-    domains: dict[str, int]
-    confidence_distribution: dict[str, int]
-    recent_activity: list[dict]
-    trends: TrendsResponse
-
-
-def _build_decision(unit_id: str, row: dict[str, str | None]) -> ReviewDecisionResponse:
-    """Build a ReviewDecisionResponse from a review status row.
-
-    All fields are guaranteed non-None after set_review_status, so we assert
-    rather than silently defaulting.
-    """
-    status = row["status"]
-    reviewed_by = row["reviewed_by"]
-    reviewed_at = row["reviewed_at"]
-    assert status is not None
-    assert reviewed_by is not None
-    assert reviewed_at is not None
-    return ReviewDecisionResponse(
-        unit_id=unit_id,
-        status=status,
-        reviewed_by=reviewed_by,
-        reviewed_at=reviewed_at,
-    )
-
-
-router = APIRouter(prefix="/review", tags=["review"])
-
-
-@router.get("/queue")
+@router.get("/review/queue")
 def review_queue(
-    limit: int = 20,
-    offset: int = 0,
     _user: str = Depends(get_current_user),
     store: TeamStore = Depends(get_store),
-) -> ReviewQueueResponse:
-    """Return pending KUs for review.
-
-    Args:
-        limit: Maximum number of items to return.
-        offset: Number of items to skip.
-        _user: The authenticated user (unused, enforces auth).
-        store: The team store dependency.
-
-    Returns:
-        A paginated list of pending knowledge units with review metadata.
-    """
-    items = store.pending_queue(limit=limit, offset=offset)
-    total = store.pending_count()
-    return ReviewQueueResponse(
-        items=[
-            ReviewItem(
-                knowledge_unit=item["knowledge_unit"],
-                status=item["status"],
-                reviewed_by=item["reviewed_by"],
-                reviewed_at=item["reviewed_at"],
-            )
-            for item in items
-        ],
-        total=total,
-        offset=offset,
-        limit=limit,
-    )
+) -> dict[str, Any]:
+    queue = store.pending_queue()
+    return {
+        "answers": [a.model_dump(mode="json") for a in queue["answers"]],
+        "comments": [c.model_dump(mode="json") for c in queue["comments"]],
+    }
 
 
-@router.post("/{unit_id}/approve")
-def approve_unit(
-    unit_id: str,
-    username: str = Depends(get_current_user),
+# ------------------------------------------------------------------
+# Approve / reject
+# ------------------------------------------------------------------
+
+@router.post("/review/{content_id}/approve")
+def approve_content(
+    content_id: str,
+    _user: str = Depends(get_current_user),
     store: TeamStore = Depends(get_store),
-) -> ReviewDecisionResponse:
-    """Approve a pending KU.
-
-    Args:
-        unit_id: The knowledge unit identifier.
-        username: The authenticated reviewer's username.
-        store: The team store dependency.
-
-    Returns:
-        The updated review decision with status and reviewer details.
-
-    Raises:
-        HTTPException: With status 404 if the unit does not exist.
-        HTTPException: With status 409 if the unit has already been reviewed.
-    """
-    status = store.get_review_status(unit_id)
-    if status is None:
-        raise HTTPException(status_code=404, detail="Knowledge unit not found")
-    if status["status"] != "pending":
-        raise HTTPException(
-            status_code=409, detail=f"Knowledge unit already {status['status']}"
-        )
-    store.set_review_status(unit_id, "approved", username)
-    updated = store.get_review_status(unit_id)
-    assert updated is not None  # Unit exists; we just wrote to it.
-    return _build_decision(unit_id, updated)
+) -> dict[str, str]:
+    result = store.approve_content(content_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+    if result is False:
+        raise HTTPException(status_code=409, detail="Content already reviewed")
+    return {"id": content_id, "status": "approved"}
 
 
-@router.post("/{unit_id}/reject")
-def reject_unit(
-    unit_id: str,
-    username: str = Depends(get_current_user),
+@router.post("/review/{content_id}/reject")
+def reject_content(
+    content_id: str,
+    _user: str = Depends(get_current_user),
     store: TeamStore = Depends(get_store),
-) -> ReviewDecisionResponse:
-    """Reject a pending KU.
-
-    Args:
-        unit_id: The knowledge unit identifier.
-        username: The authenticated reviewer's username.
-        store: The team store dependency.
-
-    Returns:
-        The updated review decision with status and reviewer details.
-
-    Raises:
-        HTTPException: With status 404 if the unit does not exist.
-        HTTPException: With status 409 if the unit has already been reviewed.
-    """
-    status = store.get_review_status(unit_id)
-    if status is None:
-        raise HTTPException(status_code=404, detail="Knowledge unit not found")
-    if status["status"] != "pending":
-        raise HTTPException(
-            status_code=409, detail=f"Knowledge unit already {status['status']}"
-        )
-    store.set_review_status(unit_id, "rejected", username)
-    updated = store.get_review_status(unit_id)
-    assert updated is not None  # Unit exists; we just wrote to it.
-    return _build_decision(unit_id, updated)
+) -> dict[str, str]:
+    result = store.reject_content(content_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+    if result is False:
+        raise HTTPException(status_code=409, detail="Content already reviewed")
+    return {"id": content_id, "status": "rejected"}
 
 
-@router.get("/stats")
+# ------------------------------------------------------------------
+# Stats dashboard
+# ------------------------------------------------------------------
+
+@router.get("/review/stats")
 def review_stats(
     _user: str = Depends(get_current_user),
     store: TeamStore = Depends(get_store),
-) -> ReviewStatsResponse:
-    """Return dashboard metrics.
-
-    Args:
-        _user: The authenticated user (unused, enforces auth).
-        store: The team store dependency.
-
-    Returns:
-        Aggregated counts by status, domain distribution, confidence
-        distribution, recent activity, and daily trend data.
-    """
-    counts = store.counts_by_status()
-    return ReviewStatsResponse(
-        counts={
-            "pending": counts.get("pending", 0),
-            "approved": counts.get("approved", 0),
-            "rejected": counts.get("rejected", 0),
+) -> dict[str, Any]:
+    status = store.get_status()
+    tag_rows = store.list_tags()
+    return {
+        "counts": {
+            "total_questions": status["total_questions"],
+            "total_answers": status["total_answers"],
+            "pending": status["pending"],
+            "unanswered": status["unanswered"],
         },
-        domains=store.domain_counts(),
-        confidence_distribution=store.confidence_distribution(),
-        recent_activity=store.recent_activity(),
-        trends=TrendsResponse(
-            daily=[DailyCount(**d) for d in store.daily_counts()],
-        ),
-    )
+        "tags": [t.model_dump() for t in tag_rows],
+        "total_votes": status["total_votes"],
+    }
 
 
-@router.get("/units")
-def list_units(
-    domain: str | None = None,
-    confidence_min: float | None = None,
-    confidence_max: float | None = None,
-    status: str | None = None,
-    limit: int = 100,
+# ------------------------------------------------------------------
+# Edit question / answer
+# ------------------------------------------------------------------
+
+class EditBodyRequest(BaseModel):
+    body: str
+
+
+@router.put("/questions/{question_id}")
+def edit_question(
+    question_id: str,
+    request: EditBodyRequest,
+    user: str = Depends(get_current_user),
+    store: TeamStore = Depends(get_store),
+) -> dict[str, Any]:
+    result = store.edit_question(question_id, request.body, user, "human")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    return result.model_dump(mode="json")
+
+
+@router.put("/answers/{answer_id}")
+def edit_answer(
+    answer_id: str,
+    request: EditBodyRequest,
+    user: str = Depends(get_current_user),
+    store: TeamStore = Depends(get_store),
+) -> dict[str, Any]:
+    result = store.edit_answer(answer_id, request.body, user, "human")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Answer not found")
+    return result.model_dump(mode="json")
+
+
+# ------------------------------------------------------------------
+# Pin / unpin answer
+# ------------------------------------------------------------------
+
+class PinRequest(BaseModel):
+    answer_id: str
+
+
+@router.put("/questions/{question_id}/pin")
+def pin_answer(
+    question_id: str,
+    request: PinRequest,
     _user: str = Depends(get_current_user),
     store: TeamStore = Depends(get_store),
-) -> list[ReviewItem]:
-    """Return KUs filtered by domain, confidence range, or status.
-
-    Args:
-        domain: Optional domain tag to filter by.
-        confidence_min: Optional minimum confidence (inclusive).
-        confidence_max: Optional maximum confidence (exclusive when < 1.0,
-            inclusive at 1.0).
-        status: Optional review status (e.g. "approved", "rejected").
-        limit: Maximum number of results to return.
-        _user: The authenticated user (unused, enforces auth).
-        store: The team store dependency.
-
-    Returns:
-        List of knowledge units with review metadata.
-    """
-    items = store.list_units(
-        domain=domain,
-        confidence_min=confidence_min,
-        confidence_max=confidence_max,
-        status=status,
-        limit=limit,
-    )
-    return [
-        ReviewItem(
-            knowledge_unit=item["knowledge_unit"],
-            status=item["status"],
-            reviewed_by=item["reviewed_by"],
-            reviewed_at=item["reviewed_at"],
-        )
-        for item in items
-    ]
+) -> dict[str, Any]:
+    result = store.pin_answer(question_id, request.answer_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    return result.model_dump(mode="json")
 
 
-@router.get("/{unit_id}")
-def get_unit(
-    unit_id: str,
+@router.delete("/questions/{question_id}/pin")
+def unpin_answer(
+    question_id: str,
     _user: str = Depends(get_current_user),
     store: TeamStore = Depends(get_store),
-) -> ReviewItem:
-    """Return a single knowledge unit with its review metadata.
+) -> dict[str, Any]:
+    result = store.unpin_answer(question_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    return result.model_dump(mode="json")
 
-    Args:
-        unit_id: The knowledge unit identifier.
-        _user: The authenticated user (unused, enforces auth).
-        store: The team store dependency.
 
-    Returns:
-        The knowledge unit with review status, reviewer, and timestamp.
+# ------------------------------------------------------------------
+# Edit history
+# ------------------------------------------------------------------
 
-    Raises:
-        HTTPException: With status 404 if the unit does not exist.
-    """
-    ku = store.get_any(unit_id)
-    if ku is None:
-        raise HTTPException(status_code=404, detail="Knowledge unit not found")
-    review = store.get_review_status(unit_id)
-    assert review is not None  # Unit exists; get_any just returned it.
-    return ReviewItem(
-        knowledge_unit=ku,
-        status=review["status"] or "pending",
-        reviewed_by=review["reviewed_by"],
-        reviewed_at=review["reviewed_at"],
-    )
+@router.get("/questions/{question_id}/history")
+def question_history(
+    question_id: str,
+    _user: str = Depends(get_current_user),
+    store: TeamStore = Depends(get_store),
+) -> list[dict[str, Any]]:
+    return [h.model_dump(mode="json") for h in store.get_question_history(question_id)]
+
+
+@router.get("/answers/{answer_id}/history")
+def answer_history(
+    answer_id: str,
+    _user: str = Depends(get_current_user),
+    store: TeamStore = Depends(get_store),
+) -> list[dict[str, Any]]:
+    return [h.model_dump(mode="json") for h in store.get_answer_history(answer_id)]
