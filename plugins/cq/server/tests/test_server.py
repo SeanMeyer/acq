@@ -1,757 +1,476 @@
-"""Tests for the cq MCP server tools."""
+"""Tests for the acq MCP server tools."""
+
+from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from cq_mcp import server
-from cq_mcp.knowledge_unit import (
-    Context,
-    Evidence,
-    Insight,
-    KnowledgeUnit,
-    Tier,
-    create_knowledge_unit,
-)
-from cq_mcp.server import (
-    _MAX_QUERY_LIMIT,
-    confirm,
-    flag,
-    propose,
-    query,
+from acq_mcp import server
+from acq_mcp.server import (
+    _do_drain,
+    answer,
+    ask,
+    comment,
     reflect,
+    search,
     status,
+    vote,
 )
-from cq_mcp.team_client import TeamQueryResult, TeamRejectedError
 
 
 @pytest.fixture(autouse=True)
-def _store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _reset_server_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Provide a fresh local store and no team client for each test."""
-    monkeypatch.setenv("CQ_LOCAL_DB_PATH", str(tmp_path / "test.db"))
-    monkeypatch.setenv("CQ_TEAM_ADDR", "")
+    monkeypatch.setenv("ACQ_LOCAL_DB_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("ACQ_TEAM_ADDR", "")
+    monkeypatch.setenv("ACQ_AGENT_NAME", "test-agent")
     server._close_store()
     server._team_client = None
-    server._drain_promoted_count = None
+    server._drain_done = False
     yield
     server._close_store()
     server._team_client = None
-    server._drain_promoted_count = None
+    server._drain_done = False
 
 
-async def _propose_unit(
+def _make_mock_team_client(
     *,
-    domain: list[str] | None = None,
-    summary: str = "Use connection pooling",
-    detail: str = "Database connections are expensive to create.",
-    action: str = "Configure a pool with max size 10.",
-    language: str | None = None,
-    framework: str | None = None,
-) -> dict:
-    """Helper to propose a knowledge unit and return the result."""
-    return await propose(
-        summary=summary,
-        detail=detail,
-        action=action,
-        domain=domain or ["databases", "performance"],
-        language=language,
-        framework=framework,
-    )
+    health: bool = True,
+    search_result=None,
+    create_question_result=None,
+    create_answer_result=None,
+    cast_vote_result=None,
+    create_comment_result=None,
+    get_status_result=None,
+) -> MagicMock:
+    mock = MagicMock()
+    mock.health = AsyncMock(return_value=health)
+    mock.search = AsyncMock(return_value=search_result)
+    mock.create_question = AsyncMock(return_value=create_question_result)
+    mock.create_answer = AsyncMock(return_value=create_answer_result)
+    mock.cast_vote = AsyncMock(return_value=cast_vote_result)
+    mock.create_comment = AsyncMock(return_value=create_comment_result)
+    mock.get_status = AsyncMock(return_value=get_status_result)
+    mock.base_url = "http://localhost:8742"
+    return mock
 
 
-def _make_team_unit(
-    *,
-    unit_id: str = "ku_team_001",
-    domain: list[str] | None = None,
-    summary: str = "Team insight",
-    confidence: float = 0.8,
-) -> KnowledgeUnit:
-    """Create a KnowledgeUnit that looks like it came from the team store."""
-    return KnowledgeUnit(
-        id=unit_id,
-        domain=domain or ["api"],
-        insight=Insight(summary=summary, detail="Detail.", action="Act."),
-        context=Context(),
-        evidence=Evidence(confidence=confidence, confirmations=3),
-        tier=Tier.TEAM,
-    )
-
-
-class TestCqQuery:
-    async def test_query_returns_empty_for_no_data(self) -> None:
-        result = await query(domain=["databases"])
+class TestSearch:
+    async def test_returns_empty_no_data(self) -> None:
+        result = await search(query="anything")
         assert result["results"] == []
         assert result["source"] == "local"
-        assert result["team"] == {"status": "not_configured"}
 
-    async def test_query_returns_matching_units(self) -> None:
-        await _propose_unit(domain=["databases"])
-        result = await query(domain=["databases"])
-        assert len(result["results"]) == 1
-        assert "databases" in result["results"][0]["domain"]
-
-    async def test_query_results_include_confirm_reminder(self) -> None:
-        proposed = await _propose_unit(domain=["databases"])
-        result = await query(domain=["databases"])
-        returned = result["results"][0]
-        assert "action_required" in returned
-        assert proposed["id"] in returned["action_required"]
-        assert "confirm" in returned["action_required"]
-
-    async def test_query_boosts_matching_language(self) -> None:
-        await _propose_unit(domain=["web"], language="python")
-        await _propose_unit(domain=["web"], language="go")
-        result = await query(domain=["web"], language="python")
-        assert len(result["results"]) == 2
-        assert "python" in result["results"][0]["context"]["languages"]
-
-    async def test_query_boosts_matching_framework(self) -> None:
-        await _propose_unit(domain=["web"], framework="fastapi")
-        await _propose_unit(domain=["web"], framework="django")
-        result = await query(domain=["web"], framework="fastapi")
-        assert len(result["results"]) == 2
-        assert "fastapi" in result["results"][0]["context"]["frameworks"]
-
-    async def test_query_respects_limit(self) -> None:
-        for _ in range(3):
-            await _propose_unit(domain=["api"])
-        result = await query(domain=["api"], limit=2)
-        assert len(result["results"]) == 2
-
-    async def test_query_no_match_returns_empty(self) -> None:
-        await _propose_unit(domain=["databases"])
-        result = await query(domain=["networking"])
-        assert result["results"] == []
-
-    async def test_query_empty_domain_returns_error(self) -> None:
-        result = await query(domain=[])
-        assert "error" in result
-
-    async def test_query_zero_limit_returns_error(self) -> None:
-        result = await query(domain=["api"], limit=0)
-        assert "error" in result
-
-    async def test_query_negative_limit_returns_error(self) -> None:
-        result = await query(domain=["api"], limit=-1)
-        assert "error" in result
-
-    async def test_query_exceeding_max_limit_returns_error(self) -> None:
-        result = await query(domain=["api"], limit=_MAX_QUERY_LIMIT + 1)
-        assert "error" in result
-        assert str(_MAX_QUERY_LIMIT) in result["error"]
-
-    async def test_query_whitespace_only_domains_returns_error(self) -> None:
-        result = await query(domain=["", "  "])
-        assert "error" in result
-
-    async def test_query_strips_whitespace_from_domains(self) -> None:
-        await _propose_unit(domain=["databases"])
-        result = await query(domain=["  databases  "])
-        assert len(result["results"]) == 1
-
-
-class TestCqQueryWithTeam:
-    async def test_query_merges_local_and_team_results(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        await _propose_unit(domain=["api"])
-        team_unit = _make_team_unit(domain=["api"])
-        mock_client = MagicMock()
-        mock_client.query = AsyncMock(
-            return_value=TeamQueryResult(units=[team_unit]),
-        )
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        result = await query(domain=["api"])
-        assert len(result["results"]) == 2
-        assert result["source"] == "both"
-        assert result["team"] == {"status": "ok"}
-
-    async def test_query_deduplicates_by_id(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        proposed = await _propose_unit(domain=["api"])
-        # Team returns a unit with the same ID as the local one.
-        duplicate = _make_team_unit(
-            unit_id=proposed["id"],
-            domain=["api"],
-        )
-        mock_client = MagicMock()
-        mock_client.query = AsyncMock(
-            return_value=TeamQueryResult(units=[duplicate]),
-        )
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        result = await query(domain=["api"])
-        assert len(result["results"]) == 1
-        # Local version takes precedence.
-        assert result["results"][0]["tier"] == "local"
-        # Source reflects that both stores were consulted.
-        assert result["source"] == "both"
-
-    async def test_query_team_only_results(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        team_unit = _make_team_unit(domain=["api"])
-        mock_client = MagicMock()
-        mock_client.query = AsyncMock(
-            return_value=TeamQueryResult(units=[team_unit]),
-        )
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        result = await query(domain=["api"])
-        assert len(result["results"]) == 1
-        assert result["source"] == "team"
-        assert result["team"] == {"status": "ok"}
-
-    async def test_query_degrades_when_team_unreachable(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        await _propose_unit(domain=["api"])
-        mock_client = MagicMock()
-        mock_client.query = AsyncMock(
-            return_value=TeamQueryResult(units=None, error="Connection refused"),
-        )
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        result = await query(domain=["api"])
+    async def test_local_fallback_when_no_team(self) -> None:
+        store = server._get_store()
+        q = store.create_question("How to pool connections?", "body", "a", ["db"])
+        result = await search(query="pool connections")
         assert len(result["results"]) == 1
         assert result["source"] == "local"
-        assert result["team"]["status"] == "error"
-        assert "Connection refused" in result["team"]["error"]
 
-    async def test_query_respects_limit_across_merged_results(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_uses_team_when_available(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        await _propose_unit(domain=["api"])
-        await _propose_unit(domain=["api"])
-        team_units = [
-            _make_team_unit(unit_id="ku_team_1", domain=["api"]),
-            _make_team_unit(unit_id="ku_team_2", domain=["api"]),
-        ]
-        mock_client = MagicMock()
-        mock_client.query = AsyncMock(
-            return_value=TeamQueryResult(units=team_units),
+        mock = _make_mock_team_client(
+            search_result=[{"id": "q_team_1", "title": "Team question"}]
         )
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
-        result = await query(domain=["api"], limit=3)
-        assert len(result["results"]) == 3
-
-
-class TestCqPropose:
-    async def test_propose_returns_id_and_tier(self) -> None:
-        result = await _propose_unit()
-        assert result["id"].startswith("ku_")
-        assert result["tier"] == "local"
-        assert "stored locally" in result["message"]
-
-    async def test_propose_with_context(self) -> None:
-        result = await _propose_unit(language="python", framework="fastapi")
-        stored = await query(domain=["databases"], language="python")
-        assert len(stored["results"]) == 1
-        assert "python" in stored["results"][0]["context"]["languages"]
-        assert "fastapi" in stored["results"][0]["context"]["frameworks"]
-        assert result["tier"] == "local"
-
-    async def test_propose_blank_summary_returns_error(self) -> None:
-        result = await propose(
-            summary="   ",
-            detail="some detail",
-            action="do something",
-            domain=["api"],
-        )
-        assert "error" in result
-
-    async def test_propose_blank_detail_returns_error(self) -> None:
-        result = await propose(
-            summary="summary",
-            detail="",
-            action="do something",
-            domain=["api"],
-        )
-        assert "error" in result
-
-    async def test_propose_whitespace_only_domains_returns_error(self) -> None:
-        result = await propose(
-            summary="summary",
-            detail="detail",
-            action="action",
-            domain=["", "  "],
-        )
-        assert "error" in result
-
-    async def test_propose_strips_whitespace_from_language(self) -> None:
-        await _propose_unit(domain=["web"], language="  python  ")
-        result = await query(domain=["web"], language="python")
+        result = await search(query="any")
+        assert result["source"] == "team"
         assert len(result["results"]) == 1
-        assert "python" in result["results"][0]["context"]["languages"]
 
-    async def test_propose_strips_whitespace_from_framework(self) -> None:
-        await _propose_unit(domain=["web"], framework="  fastapi  ")
-        result = await query(domain=["web"], framework="fastapi")
-        assert len(result["results"]) == 1
-        assert "fastapi" in result["results"][0]["context"]["frameworks"]
-
-    async def test_propose_treats_whitespace_only_language_as_none(self) -> None:
-        await _propose_unit(domain=["web"], language="   ")
-        result = await query(domain=["web"])
-        assert result["results"][0]["context"]["languages"] == []
-
-    async def test_propose_stores_retrievable_unit(self) -> None:
-        result = await _propose_unit(domain=["testing"])
-        confirmed = await confirm(unit_id=result["id"])
-        assert confirmed["id"] == result["id"]
-
-
-class TestCqProposeWithTeam:
-    async def test_propose_pushes_to_team(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_merges_team_and_local(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        team_unit = _make_team_unit(unit_id="ku_team_pushed")
-        mock_client = MagicMock()
-        mock_client.propose = AsyncMock(return_value=team_unit)
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
+        store = server._get_store()
+        store.create_question("Local question about python", "body", "a", ["python"])
 
-        result = await _propose_unit(domain=["api"])
-        assert result["id"] == "ku_team_pushed"
-        assert result["tier"] == "team"
-        assert "proposed to team" in result["message"]
-        mock_client.propose.assert_called_once()
-
-    async def test_propose_skips_local_store_when_team_succeeds(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        team_unit = _make_team_unit(unit_id="ku_team_only")
-        mock_client = MagicMock()
-        mock_client.propose = AsyncMock(return_value=team_unit)
-        mock_client.query = AsyncMock(
-            return_value=TeamQueryResult(units=[]),
+        mock = _make_mock_team_client(
+            search_result=[{"id": "q_team_1", "title": "Team result about python"}]
         )
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
-        await _propose_unit(domain=["api"])
-        local_results = await query(domain=["api"])
-        assert len(local_results["results"]) == 0
-
-    async def test_propose_returns_error_when_team_rejects(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        mock_client = MagicMock()
-        mock_client.propose = AsyncMock(side_effect=TeamRejectedError(422, "Invalid domain"))
-        mock_client.query = AsyncMock(
-            return_value=TeamQueryResult(units=[]),
-        )
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        result = await _propose_unit(domain=["api"])
-        assert "error" in result
-        assert "rejected" in result["error"].lower()
-        local_results = await query(domain=["api"])
-        assert len(local_results["results"]) == 0
-
-    async def test_propose_falls_back_to_local_when_team_unreachable(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        mock_client = MagicMock()
-        mock_client.propose = AsyncMock(return_value=None)
-        mock_client.query = AsyncMock(
-            return_value=TeamQueryResult(units=[]),
-        )
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        result = await _propose_unit(domain=["api"])
-        assert result["id"].startswith("ku_")
-        assert result["tier"] == "local"
-        assert "stored locally" in result["message"]
-        local_results = await query(domain=["api"])
-        assert len(local_results["results"]) == 1
-
-
-class TestCqConfirm:
-    async def test_confirm_boosts_confidence(self) -> None:
-        proposed = await _propose_unit()
-        result = await confirm(unit_id=proposed["id"])
-        assert result["new_confidence"] == pytest.approx(0.6)
-        assert result["confirmations"] == 2
-
-    async def test_confirm_missing_unit_returns_error(self) -> None:
-        result = await confirm(unit_id="ku_nonexistent")
-        assert "error" in result
-        assert "not found" in result["error"].lower()
-
-
-class TestCqConfirmWithTeam:
-    async def test_confirm_propagates_to_team(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        proposed = await _propose_unit()
-        team_unit = _make_team_unit(unit_id=proposed["id"])
-        mock_client = MagicMock()
-        mock_client.confirm = AsyncMock(return_value=team_unit)
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        result = await confirm(unit_id=proposed["id"])
+        result = await search(query="python")
         assert result["source"] == "both"
-        mock_client.confirm.assert_called_once_with(proposed["id"])
+        assert len(result["results"]) == 2
 
-    async def test_confirm_local_only_when_team_not_found(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_deduplicates_by_id(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        proposed = await _propose_unit()
-        mock_client = MagicMock()
-        mock_client.confirm = AsyncMock(return_value=None)
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
+        store = server._get_store()
+        q = store.create_question("Local question about sqlite", "body", "a", ["sqlite"])
 
-        result = await confirm(unit_id=proposed["id"])
+        # Team returns same ID as local
+        mock = _make_mock_team_client(
+            search_result=[{"id": q.id, "title": "Same question"}]
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await search(query="sqlite")
+        ids = [r["id"] for r in result["results"]]
+        assert len(ids) == len(set(ids))
+
+    async def test_respects_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(
+            search_result=[{"id": f"q_{i}", "title": f"Q {i}"} for i in range(10)]
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await search(query="q", limit=3)
+        assert len(result["results"]) <= 3
+
+    async def test_falls_back_to_local_when_team_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = server._get_store()
+        store.create_question("Question about caching", "body", "a", ["cache"])
+
+        mock = _make_mock_team_client(search_result=None)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await search(query="caching")
         assert result["source"] == "local"
 
-    async def test_confirm_team_only_unit(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
+
+class TestAsk:
+    async def test_creates_question_locally(self) -> None:
+        result = await ask(title="How do I pool?", body="Need details", tags=["db"])
+        assert result["action"] == "created"
+        assert result["question_id"].startswith("q_")
+        assert result.get("source") == "local"
+
+    async def test_blank_title_returns_error(self) -> None:
+        result = await ask(title="  ", body="Body", tags=["t"])
+        assert "error" in result
+
+    async def test_blank_body_returns_error(self) -> None:
+        result = await ask(title="Title", body="", tags=["t"])
+        assert "error" in result
+
+    async def test_empty_tags_returns_error(self) -> None:
+        result = await ask(title="Title", body="Body", tags=[])
+        assert "error" in result
+
+    async def test_uses_team_when_available(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        team_unit = _make_team_unit(unit_id="ku_team_only")
-        confirmed_unit = team_unit.model_copy(
-            update={
-                "evidence": Evidence(confidence=0.9, confirmations=4),
-            },
+        mock = _make_mock_team_client(
+            create_question_result={"id": "q_team_1", "similar_questions": []}
         )
-        mock_client = MagicMock()
-        mock_client.confirm = AsyncMock(return_value=confirmed_unit)
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
-        result = await confirm(unit_id="ku_team_only")
-        assert result["source"] == "team"
-        assert result["new_confidence"] == pytest.approx(0.9)
+        result = await ask(title="Q", body="B", tags=["t"])
+        assert result["action"] == "created"
+        assert result["question_id"] == "q_team_1"
 
-    async def test_confirm_not_found_anywhere(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_returns_similar_found_when_duplicates_exist(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mock_client = MagicMock()
-        mock_client.confirm = AsyncMock(return_value=None)
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        result = await confirm(unit_id="ku_nowhere")
-        assert "error" in result
-
-
-class TestCqFlag:
-    async def test_flag_reduces_confidence(self) -> None:
-        proposed = await _propose_unit()
-        result = await flag(unit_id=proposed["id"], reason="stale")
-        assert result["new_confidence"] == pytest.approx(0.35)
-        assert "flagged as stale" in result["message"]
-
-    async def test_flag_missing_unit_returns_error(self) -> None:
-        result = await flag(unit_id="ku_nonexistent", reason="stale")
-        assert "error" in result
-
-    async def test_flag_normalises_reason_whitespace(self) -> None:
-        proposed = await _propose_unit()
-        result = await flag(unit_id=proposed["id"], reason="  stale  ")
-        assert result["new_confidence"] == pytest.approx(0.35)
-
-    async def test_flag_normalises_reason_case(self) -> None:
-        proposed = await _propose_unit()
-        result = await flag(unit_id=proposed["id"], reason="STALE")
-        assert result["new_confidence"] == pytest.approx(0.35)
-
-    async def test_flag_invalid_reason_returns_error(self) -> None:
-        proposed = await _propose_unit()
-        result = await flag(unit_id=proposed["id"], reason="invalid")
-        assert "error" in result
-        assert "Invalid reason" in result["error"]
-
-
-class TestCqFlagWithTeam:
-    async def test_flag_propagates_to_team(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        proposed = await _propose_unit()
-        team_unit = _make_team_unit(unit_id=proposed["id"])
-        mock_client = MagicMock()
-        mock_client.flag = AsyncMock(return_value=team_unit)
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        result = await flag(unit_id=proposed["id"], reason="stale")
-        assert result["source"] == "both"
-
-    async def test_flag_team_only_unit(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        team_unit = _make_team_unit(unit_id="ku_team_only")
-        flagged_unit = team_unit.model_copy(
-            update={
-                "evidence": Evidence(confidence=0.65, confirmations=3),
-            },
+        similar = [{"id": "q_existing", "title": "Existing question", "similarity": 0.9}]
+        mock = _make_mock_team_client(
+            create_question_result={"similar_questions": similar}
         )
-        mock_client = MagicMock()
-        mock_client.flag = AsyncMock(return_value=flagged_unit)
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
-        result = await flag(unit_id="ku_team_only", reason="stale")
-        assert result["source"] == "team"
-        assert result["new_confidence"] == pytest.approx(0.65)
+        result = await ask(title="Q", body="B", tags=["t"])
+        assert result["action"] == "similar_found"
+        assert len(result["similar_questions"]) == 1
 
-    async def test_flag_not_found_anywhere(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_force_create_bypasses_similar_check(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mock_client = MagicMock()
-        mock_client.flag = AsyncMock(return_value=None)
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
+        similar = [{"id": "q_existing", "title": "Existing question", "similarity": 0.9}]
+        mock = _make_mock_team_client(
+            create_question_result={"id": "q_new", "similar_questions": similar}
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
-        result = await flag(unit_id="ku_nowhere", reason="stale")
+        result = await ask(title="Q", body="B", tags=["t"], force_create=True)
+        assert result["action"] == "created"
+
+    async def test_falls_back_to_local_when_team_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(create_question_result=None)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await ask(title="Q", body="B", tags=["t"])
+        assert result["action"] == "created"
+        assert result.get("source") == "local"
+
+
+class TestAnswer:
+    async def test_creates_answer_locally(self) -> None:
+        store = server._get_store()
+        q = store.create_question("Q", "B", "a", ["t"])
+        result = await answer(question_id=q.id, body="My answer")
+        assert result["answer_id"].startswith("a_")
+        assert result.get("source") == "local"
+
+    async def test_blank_body_returns_error(self) -> None:
+        result = await answer(question_id="q_1", body="  ")
         assert "error" in result
 
+    async def test_uses_team_when_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(
+            create_answer_result={"id": "a_team_1", "status": "pending"}
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
-class TestCqReflect:
-    def test_reflect_returns_candidates_structure(self) -> None:
-        result = reflect(session_context="I discovered a bug in the API.")
-        assert "candidates" in result
-        assert isinstance(result["candidates"], list)
+        result = await answer(question_id="q_1", body="Answer")
+        assert result["answer_id"] == "a_team_1"
+
+    async def test_falls_back_to_local_when_team_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = server._get_store()
+        q = store.create_question("Q", "B", "a", ["t"])
+
+        mock = _make_mock_team_client(create_answer_result=None)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await answer(question_id=q.id, body="Answer")
+        assert result["answer_id"].startswith("a_")
+        assert result.get("source") == "local"
+
+
+class TestVote:
+    async def test_invalid_value_returns_error(self) -> None:
+        result = await vote(target_id="q_1", value=0)
+        assert "error" in result
+
+    async def test_casts_vote_locally(self) -> None:
+        result = await vote(target_id="q_1", value=1)
+        assert "vote_id" in result
+        assert result.get("source") == "local"
+
+    async def test_uses_team_when_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(
+            cast_vote_result={"upvotes": 5, "downvotes": 0}
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await vote(target_id="q_1", value=1)
+        assert result["upvotes"] == 5
+
+    async def test_handles_409_already_voted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(
+            cast_vote_result={"error": "Already voted", "status_code": 409}
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await vote(target_id="q_1", value=1)
+        assert "error" in result
+        assert "Already voted" in result["error"]
+
+    async def test_handles_429_rate_limited(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(
+            cast_vote_result={"error": "Rate limited", "status_code": 429}
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await vote(target_id="q_1", value=1)
+        assert "error" in result
+        assert "rate limit" in result["error"].lower()
+
+    async def test_falls_back_to_local_when_team_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(cast_vote_result=None)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await vote(target_id="q_1", value=1)
+        assert "vote_id" in result
+        assert result.get("source") == "local"
+
+
+class TestComment:
+    async def test_creates_comment_locally(self) -> None:
+        result = await comment(parent_id="q_1", body="Great question!")
+        assert result["comment_id"].startswith("c_")
+        assert result.get("source") == "local"
+
+    async def test_blank_body_returns_error(self) -> None:
+        result = await comment(parent_id="q_1", body="")
+        assert "error" in result
+
+    async def test_uses_team_when_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(
+            create_comment_result={"id": "c_team_1", "status": "pending"}
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await comment(parent_id="q_1", body="Comment body")
+        assert result["comment_id"] == "c_team_1"
+
+    async def test_falls_back_to_local_when_team_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(create_comment_result=None)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await comment(parent_id="q_1", body="Comment")
+        assert result["comment_id"].startswith("c_")
+        assert result.get("source") == "local"
+
+
+class TestReflect:
+    async def test_returns_message_with_guidance(self) -> None:
+        result = await reflect(session_context="I discovered a bug in the payment API.")
         assert "message" in result
         assert result["status"] == "stub"
+        assert "ask" in result["message"] or "answer" in result["message"]
 
-    def test_reflect_empty_context_returns_message(self) -> None:
-        result = reflect(session_context="   ")
-        assert result["candidates"] == []
-        assert "empty" in result["message"].lower()
+    async def test_empty_context_returns_message(self) -> None:
+        result = await reflect(session_context="   ")
+        assert "message" in result
         assert result["status"] == "stub"
+        assert "empty" in result["message"].lower()
 
 
-class TestCqStatus:
-    async def test_status_empty_store(self) -> None:
+class TestStatus:
+    async def test_returns_local_stats(self) -> None:
         result = await status()
-        assert result["total_count"] == 0
-        assert result["domain_counts"] == {}
-        assert result["recent"] == []
+        assert "local" in result
+        assert result["local"]["questions"] == 0
+        assert result["team"] == {"status": "not_configured"}
 
-    async def test_status_returns_statistics(self) -> None:
-        await _propose_unit(domain=["api", "payments"])
-        await _propose_unit(domain=["api", "databases"])
-        await _propose_unit(domain=["databases"])
-        result = await status()
-        assert result["total_count"] == 3
-        assert result["domain_counts"]["api"] == 2
-        assert result["domain_counts"]["databases"] == 2
-        assert result["domain_counts"]["payments"] == 1
-        assert len(result["recent"]) == 3
-        assert "confidence_distribution" in result
+    async def test_counts_after_operations(self) -> None:
+        store = server._get_store()
+        q = store.create_question("Q", "B", "a", ["t1", "t2"])
+        store.create_answer(q.id, "A", "a")
 
-    async def test_status_returns_confidence_distribution(self) -> None:
-        await _propose_unit(domain=["api"])
         result = await status()
-        # Default confidence is 0.5, falls in "0.5-0.7" bucket.
-        assert result["confidence_distribution"]["0.5-0.7"] == 1
+        assert result["local"]["questions"] == 1
+        assert result["local"]["answers"] == 1
+        assert result["local"]["tags"] == 2
+
+    async def test_team_ok_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(health=True, get_status_result={"questions": 100})
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await status()
+        assert result["team"]["status"] == "ok"
+        assert result["team"]["url"] == "http://localhost:8742"
+        assert result["team_stats"]["questions"] == 100
+
+    async def test_team_unreachable_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(health=False)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await status()
+        assert result["team"]["status"] == "unreachable"
+
+
+class TestDrainOnStartup:
+    async def test_drain_moves_local_to_team(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = server._get_store()
+        store.create_question("Local Q", "B", "a", ["t"])
+
+        mock = _make_mock_team_client(
+            create_question_result={"id": "q_team_1"},
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        await _do_drain()
+
+        assert len(store.all_questions()) == 0
+        assert server._drain_done is True
+
+    async def test_drain_skips_when_no_team(self) -> None:
+        store = server._get_store()
+        store.create_question("Local Q", "B", "a", ["t"])
+
+        await _do_drain()
+
+        assert len(store.all_questions()) == 1
+
+    async def test_drain_skips_when_team_unhealthy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = server._get_store()
+        store.create_question("Local Q", "B", "a", ["t"])
+
+        mock = _make_mock_team_client(health=False)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        await _do_drain()
+
+        assert len(store.all_questions()) == 1
+
+    async def test_drain_runs_only_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(
+            create_question_result={"id": "q_team_1"}
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        await _do_drain()
+        await _do_drain()
+
+        # health() called only once — drain was skipped on second call
+        assert mock.health.call_count == 1
+
+    async def test_drain_keeps_content_on_team_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = server._get_store()
+        store.create_question("Local Q", "B", "a", ["t"])
+
+        mock = _make_mock_team_client(create_question_result=None)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        await _do_drain()
+
+        assert len(store.all_questions()) == 1
 
 
 class TestEndToEnd:
-    async def test_propose_query_confirm_flag_lifecycle(self) -> None:
-        # Propose a unit.
-        proposed = await propose(
-            summary="Stripe returns 200 for rate limits",
-            detail="Response body contains error object despite 200 status.",
-            action="Always parse response body for error field.",
-            domain=["api", "payments", "stripe"],
+    async def test_ask_answer_search_lifecycle(self) -> None:
+        # Ask a question locally.
+        asked = await ask(
+            title="How do I configure SQLite WAL mode?",
+            body="I need better write concurrency.",
+            tags=["sqlite", "performance"],
             language="python",
         )
-        unit_id = proposed["id"]
+        assert asked["action"] == "created"
+        qid = asked["question_id"]
 
-        # Query returns it.
-        results = await query(domain=["api", "payments"], language="python")
+        # Answer the question.
+        answered = await answer(question_id=qid, body="Use PRAGMA journal_mode=WAL")
+        assert "answer_id" in answered
+
+        # Search finds the question.
+        results = await search(query="SQLite WAL mode")
         assert len(results["results"]) == 1
-        assert results["results"][0]["evidence"]["confidence"] == 0.5
+        assert results["results"][0]["id"] == qid
 
-        # Confirm boosts confidence.
-        confirmed = await confirm(unit_id=unit_id)
-        assert confirmed["new_confidence"] == pytest.approx(0.6)
-        assert confirmed["confirmations"] == 2
+    async def test_comment_and_vote_stored_locally(self) -> None:
+        c = await comment(parent_id="q_123", body="Interesting question!")
+        assert c["comment_id"].startswith("c_")
 
-        # Verify boosted confidence in query results.
-        results = await query(domain=["api", "payments"])
-        assert results["results"][0]["evidence"]["confidence"] == pytest.approx(0.6)
-
-        # Flag reduces confidence.
-        flagged = await flag(unit_id=unit_id, reason="stale")
-        assert flagged["new_confidence"] == pytest.approx(0.45)
-
-        # Verify flag in query results.
-        results = await query(domain=["api", "payments"])
-        result = results["results"][0]
-        assert result["evidence"]["confidence"] == pytest.approx(0.45)
-        assert len(result["flags"]) == 1
-        assert result["flags"][0]["reason"] == "stale"
-
-
-def _make_local_unit(*, domain: list[str] | None = None) -> KnowledgeUnit:
-    """Create a KnowledgeUnit with local tier for drain tests."""
-    return create_knowledge_unit(
-        domain=domain or ["api"],
-        insight=Insight(summary="Local insight", detail="Detail.", action="Act."),
-        context=Context(),
-        tier=Tier.LOCAL,
-    )
-
-
-class TestDrainLocalToTeam:
-    async def test_drain_promotes_local_kus_to_team(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Local KUs are proposed to team and deleted from local store."""
-        store = server._get_store()
-        unit = _make_local_unit(domain=["api"])
-        store.insert(unit)
-
-        team_unit = _make_team_unit(unit_id="ku_team_promoted")
-        mock_client = AsyncMock()
-        mock_client.propose.return_value = team_unit
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        await server._drain_local_to_team()
-
-        assert store.all() == []
-        assert server._drain_promoted_count == 1
-
-    async def test_drain_skips_when_no_team_client(self) -> None:
-        """Drain does nothing when team is not configured."""
-        store = server._get_store()
-        unit = _make_local_unit(domain=["api"])
-        store.insert(unit)
-
-        await server._drain_local_to_team()
-
-        assert len(store.all()) == 1
-
-    async def test_drain_keeps_unit_on_transport_error(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """KU stays local when team API is unreachable."""
-        store = server._get_store()
-        unit = _make_local_unit(domain=["api"])
-        store.insert(unit)
-
-        mock_client = AsyncMock()
-        mock_client.propose.return_value = None
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        await server._drain_local_to_team()
-
-        assert len(store.all()) == 1
-        assert server._drain_promoted_count == 0
-
-    async def test_drain_keeps_unit_on_rejection(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """KU stays local when team API rejects it."""
-        store = server._get_store()
-        unit = _make_local_unit(domain=["api"])
-        store.insert(unit)
-
-        mock_client = AsyncMock()
-        mock_client.propose.side_effect = TeamRejectedError(422, "bad")
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        await server._drain_local_to_team()
-
-        assert len(store.all()) == 1
-        assert server._drain_promoted_count == 0
-
-    async def test_drain_handles_mixed_results(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Some KUs promote, some fail — only promoted ones are deleted."""
-        store = server._get_store()
-        u1 = _make_local_unit(domain=["api"])
-        u2 = _make_local_unit(domain=["databases"])
-        store.insert(u1)
-        store.insert(u2)
-
-        team_unit = _make_team_unit(unit_id="ku_team_ok")
-        mock_client = AsyncMock()
-        # First call succeeds, second returns None (unreachable).
-        mock_client.propose.side_effect = [team_unit, None]
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        await server._drain_local_to_team()
-
-        remaining = store.all()
-        assert len(remaining) == 1
-        assert server._drain_promoted_count == 1
-
-
-class TestCqStatusWithDrain:
-    async def test_status_includes_promotion_count(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setattr(server, "_drain_promoted_count", 3)
-        result = await status()
-        assert result["promoted_to_team"] == 3
-
-    async def test_status_omits_promotion_count_when_zero(self) -> None:
-        result = await status()
-        assert "promoted_to_team" not in result
-
-    async def test_status_omits_promotion_count_when_none(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setattr(server, "_drain_promoted_count", None)
-        result = await status()
-        assert "promoted_to_team" not in result
-
-
-class TestCqStatusTeamField:
-    async def test_status_team_not_configured(self) -> None:
-        result = await status()
-        assert result["team"] == {"status": "not_configured"}
-
-    async def test_status_team_ok(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        mock_client = MagicMock()
-        mock_client.health = AsyncMock(return_value=True)
-        mock_client.base_url = "http://localhost:8742"
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        result = await status()
-        assert result["team"] == {
-            "status": "ok",
-            "url": "http://localhost:8742",
-        }
-
-    async def test_status_team_unreachable(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        mock_client = MagicMock()
-        mock_client.health = AsyncMock(return_value=False)
-        mock_client.base_url = "http://localhost:8742"
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock_client)
-
-        result = await status()
-        assert result["team"] == {
-            "status": "unreachable",
-            "url": "http://localhost:8742",
-        }
+        v = await vote(target_id="q_123", value=1)
+        assert v["vote_id"].startswith("v_")
