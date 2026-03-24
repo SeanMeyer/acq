@@ -136,8 +136,11 @@ class TestReviewStats:
         resp = client.get("/review/stats", headers=_auth_header(token))
         assert resp.status_code == 200
         body = resp.json()
-        assert "counts" in body
+        assert "total_questions" in body
+        assert "total_pending" in body
         assert "tags" in body
+        assert "recent_activity" in body
+        assert "vote_distribution" in body
 
     def test_stats_requires_auth(self, client: TestClient) -> None:
         resp = client.get("/review/stats")

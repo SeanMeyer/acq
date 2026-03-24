@@ -74,14 +74,14 @@ def review_stats(
     status = store.get_status()
     tag_rows = store.list_tags()
     return {
-        "counts": {
-            "total_questions": status["total_questions"],
-            "total_answers": status["total_answers"],
-            "pending": status["pending"],
-            "unanswered": status["unanswered"],
-        },
+        "total_questions": status["total_questions"],
+        "total_answers": status["total_answers"],
+        "total_pending": status["pending"],
+        "total_unanswered": status["unanswered"],
         "tags": [t.model_dump() for t in tag_rows],
         "total_votes": status["total_votes"],
+        "recent_activity": [],
+        "vote_distribution": [],
     }
 
 
