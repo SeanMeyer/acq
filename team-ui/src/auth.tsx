@@ -6,7 +6,7 @@ import {
   useEffect,
   type ReactNode,
 } from "react";
-import { api, setToken, setOnUnauthorized } from "./api";
+import { api, setToken, getToken, setOnUnauthorized } from "./api";
 
 interface AuthState {
   username: string | null;
@@ -18,7 +18,20 @@ interface AuthState {
 const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [username, setUsername] = useState<string | null>(null);
+  // Restore session from localStorage if a token exists
+  const [username, setUsername] = useState<string | null>(() => {
+    const saved = getToken();
+    if (saved) {
+      // We have a token but not a username — extract from JWT payload
+      try {
+        const payload = JSON.parse(atob(saved.split(".")[1]));
+        return payload.sub ?? "user";
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  });
 
   const login = useCallback(async (user: string, pass: string) => {
     const resp = await api.login(user, pass);

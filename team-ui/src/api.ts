@@ -8,10 +8,15 @@ import type {
 
 const API_BASE = "/api";
 
-let token: string | null = null;
+let token: string | null = localStorage.getItem("acq_token");
 
 export function setToken(t: string | null) {
   token = t;
+  if (t) {
+    localStorage.setItem("acq_token", t);
+  } else {
+    localStorage.removeItem("acq_token");
+  }
 }
 
 export function getToken(): string | null {
