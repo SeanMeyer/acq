@@ -1,405 +1,490 @@
-"""Tests for the SQLite-backed team knowledge store."""
+"""Tests for the ACQ team store (Q&A model)."""
+
+from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from typing import Any
 
 import pytest
-from team_api.knowledge_unit import (
-    Context,
-    FlagReason,
-    Insight,
-    KnowledgeUnit,
-    Tier,
-    create_knowledge_unit,
-)
-from team_api.scoring import apply_confirmation, apply_flag
+from acq_shared.models import Answer, Comment, Question, Tag, Vote
+from acq_shared.schema import create_tables
 from team_api.store import TeamStore
 
 
-def _make_insight(**overrides: Any) -> Insight:
-    defaults = {
-        "summary": "Use connection pooling",
-        "detail": "Database connections are expensive to create.",
-        "action": "Configure a connection pool with a max size of 10.",
-    }
-    return Insight(**{**defaults, **overrides})
-
-
-def _make_unit(**overrides: Any) -> KnowledgeUnit:
-    defaults = {
-        "domain": ["databases", "performance"],
-        "insight": _make_insight(),
-    }
-    return create_knowledge_unit(**{**defaults, **overrides})
+@pytest.fixture()
+def conn() -> sqlite3.Connection:
+    c = sqlite3.connect(":memory:")
+    return c
 
 
 @pytest.fixture()
-def store(tmp_path: Path) -> Iterator[TeamStore]:
-    s = TeamStore(db_path=tmp_path / "test.db")
-    yield s
-    s.close()
+def store(conn: sqlite3.Connection) -> TeamStore:
+    return TeamStore(conn)
 
 
-def _insert_and_approve(store: TeamStore, **overrides: Any) -> KnowledgeUnit:
-    """Insert a knowledge unit and approve it for query visibility."""
-    unit = _make_unit(**overrides)
-    store.insert(unit)
-    store.set_review_status(unit.id, "approved", "test-reviewer")
-    return unit
+def _make_question(**overrides) -> Question:
+    defaults = {
+        "title": "How do I use connection pooling?",
+        "body": "I want to configure a connection pool.",
+        "created_by": "agent-1",
+        "created_by_type": "agent",
+    }
+    return Question(**{**defaults, **overrides})
 
 
-class TestInsertAndGet:
-    def test_insert_and_retrieve(self, store: TeamStore) -> None:
-        unit = _make_unit()
-        store.insert(unit)
-        retrieved = store.get_any(unit.id)
-        assert retrieved == unit
-
-    def test_insert_duplicate_raises(self, store: TeamStore) -> None:
-        unit = _make_unit()
-        store.insert(unit)
-        with pytest.raises(sqlite3.IntegrityError):
-            store.insert(unit)
-
-    def test_returns_none_for_missing_id(self, store: TeamStore) -> None:
-        assert store.get("ku_nonexistent") is None
-
-    def test_insert_with_empty_domains_raises(self, store: TeamStore) -> None:
-        unit = _make_unit(domain=["  ", ""])
-        with pytest.raises(ValueError, match="At least one non-empty domain"):
-            store.insert(unit)
+def _make_answer(question_id: str, **overrides) -> Answer:
+    defaults = {
+        "question_id": question_id,
+        "body": "Use a pool with max_size=10.",
+        "created_by": "agent-1",
+        "created_by_type": "agent",
+    }
+    return Answer(**{**defaults, **overrides})
 
 
-class TestUpdate:
-    def test_update_persists_changes(self, store: TeamStore) -> None:
-        unit = _insert_and_approve(store)
-        confirmed = apply_confirmation(unit)
-        store.update(confirmed)
-        retrieved = store.get(unit.id)
+def _make_comment(parent_id: str, parent_type: str = "answer", **overrides) -> Comment:
+    defaults = {
+        "parent_id": parent_id,
+        "parent_type": parent_type,
+        "body": "Great answer!",
+        "created_by": "agent-1",
+        "created_by_type": "agent",
+    }
+    return Comment(**{**defaults, **overrides})
+
+
+def _make_vote(target_id: str, target_type: str = "answer", **overrides) -> Vote:
+    defaults = {
+        "target_id": target_id,
+        "target_type": target_type,
+        "voter_id": "agent-1",
+        "voter_type": "agent",
+        "value": 1,
+    }
+    return Vote(**{**defaults, **overrides})
+
+
+class TestCreateQuestion:
+    def test_create_stores_question(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, ["databases", "performance"])
+        retrieved = store.get_question(q.id)
         assert retrieved is not None
-        assert retrieved.evidence.confirmations == 2
+        assert retrieved.id == q.id
+        assert retrieved.title == q.title
 
-    def test_update_missing_unit_raises(self, store: TeamStore) -> None:
-        unit = _make_unit()
-        with pytest.raises(KeyError, match="Knowledge unit not found"):
-            store.update(unit)
+    def test_create_inserts_tags(self, store: TeamStore, conn: sqlite3.Connection) -> None:
+        q = _make_question()
+        store.create_question(q, ["python", "fastapi"])
+        rows = conn.execute(
+            "SELECT t.name FROM tags t JOIN question_tags qt ON t.id = qt.tag_id WHERE qt.question_id = ?",
+            (q.id,),
+        ).fetchall()
+        names = {r[0] for r in rows}
+        assert names == {"python", "fastapi"}
 
-    def test_update_with_empty_domains_raises(self, store: TeamStore) -> None:
-        unit = _make_unit(domain=["databases"])
-        store.insert(unit)
-        updated = unit.model_copy(update={"domain": ["  "]})
-        with pytest.raises(ValueError, match="At least one non-empty domain"):
-            store.update(updated)
+    def test_create_indexes_in_fts(self, store: TeamStore, conn: sqlite3.Connection) -> None:
+        q = _make_question(title="unique fts title abc")
+        store.create_question(q, [])
+        rows = conn.execute(
+            "SELECT entity_id FROM search_index WHERE search_index MATCH 'unique'",
+        ).fetchall()
+        assert any(r[0] == q.id for r in rows)
 
 
-class TestQuery:
-    def test_returns_matching_units(self, store: TeamStore) -> None:
-        unit = _insert_and_approve(store, domain=["databases"])
-        results = store.query(["databases"])
+class TestCreateAnswer:
+    def test_answer_pending_by_default(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        result = store.create_answer(a)
+        assert result.status == "pending"
+
+    def test_supervised_answer_auto_approved(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id, supervised=True)
+        result = store.create_answer(a)
+        assert result.status == "approved"
+
+    def test_answer_indexed_in_fts(self, store: TeamStore, conn: sqlite3.Connection) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id, body="unique pool term zxqw")
+        store.create_answer(a)
+        rows = conn.execute(
+            "SELECT entity_id FROM search_index WHERE search_index MATCH 'unique'",
+        ).fetchall()
+        assert any(r[0] == a.id for r in rows)
+
+
+class TestCreateComment:
+    def test_human_comment_auto_approved(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        store.create_answer(a)
+        c = _make_comment(a.id, created_by_type="human", created_by="alice")
+        result = store.create_comment(c)
+        assert result.status == "approved"
+
+    def test_agent_comment_pending(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        store.create_answer(a)
+        c = _make_comment(a.id)
+        result = store.create_comment(c)
+        assert result.status == "pending"
+
+
+class TestCastVote:
+    def test_cast_vote_returns_counts(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        store.create_answer(a)
+        result = store.cast_vote(_make_vote(a.id))
+        assert result["agent_upvotes"] == 1
+        assert result["agent_downvotes"] == 0
+
+    def test_duplicate_vote_rejected(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        store.create_answer(a)
+        store.cast_vote(_make_vote(a.id))
+        result = store.cast_vote(_make_vote(a.id))
+        assert result["error"] == "duplicate_vote"
+
+    def test_vote_on_question(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        result = store.cast_vote(_make_vote(q.id, target_type="question"))
+        assert "agent_upvotes" in result
+        assert result["agent_upvotes"] == 1
+
+    def test_denormalized_counts_updated(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        store.create_answer(a)
+        store.cast_vote(_make_vote(a.id, voter_id="v1"))
+        store.cast_vote(_make_vote(a.id, voter_id="v2", value=-1, voter_type="human"))
+        retrieved = store.get_answer(a.id)
+        assert retrieved.agent_upvotes == 1
+        assert retrieved.human_downvotes == 1
+
+    def test_vote_is_immutable(self, store: TeamStore) -> None:
+        """Once a vote is cast, it cannot be changed (duplicate returns error)."""
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        store.create_answer(a)
+        store.cast_vote(_make_vote(a.id, value=1))
+        result = store.cast_vote(_make_vote(a.id, value=-1))
+        assert "error" in result
+
+
+class TestSearch:
+    def test_returns_approved_answers_only(self, store: TeamStore) -> None:
+        q = _make_question(title="connection pool configuration guide")
+        store.create_question(q, [])
+        pending_a = _make_answer(q.id, body="pending answer here")
+        approved_a = _make_answer(q.id, body="approved answer here", supervised=True)
+        store.create_answer(pending_a)
+        store.create_answer(approved_a)
+        results = store.search("connection pool")
         assert len(results) == 1
-        assert results[0].id == unit.id
+        answer_ids = [t["answer"].id for t in results[0]["answers"]]
+        assert approved_a.id in answer_ids
+        assert pending_a.id not in answer_ids
 
-    def test_returns_empty_for_no_match(self, store: TeamStore) -> None:
-        _insert_and_approve(store, domain=["databases"])
-        assert store.query(["networking"]) == []
+    def test_max_3_answers_per_question(self, store: TeamStore) -> None:
+        q = _make_question(title="max answers question test")
+        store.create_question(q, [])
+        for i in range(5):
+            a = _make_answer(q.id, body=f"answer body {i}", supervised=True)
+            store.create_answer(a)
+        results = store.search("max answers question")
+        assert len(results[0]["answers"]) <= 3
 
-    def test_language_filter_boosts_matching_units(self, store: TeamStore) -> None:
-        py = _insert_and_approve(
-            store,
-            domain=["web"],
-            context=Context(languages=["python"]),
-        )
-        go = _insert_and_approve(
-            store,
-            domain=["web"],
-            context=Context(languages=["go"]),
-        )
-        results = store.query(["web"], language="python")
-        assert len(results) == 2
-        assert results[0].id == py.id
-        assert results[1].id == go.id
+    def test_pinned_answer_first(self, store: TeamStore) -> None:
+        q = _make_question(title="pinned answer ordering check")
+        store.create_question(q, [])
+        a1 = _make_answer(q.id, body="first answer content", supervised=True)
+        a2 = _make_answer(q.id, body="second answer content", supervised=True)
+        store.create_answer(a1)
+        store.create_answer(a2)
+        store.pin_answer(q.id, a2.id)
+        results = store.search("pinned answer ordering")
+        assert results[0]["answers"][0]["answer"].id == a2.id
 
-    def test_language_filter_includes_units_without_language(
-        self, store: TeamStore
-    ) -> None:
-        """KUs with no language set should still appear when language filter is used."""
-        no_lang = _insert_and_approve(store, domain=["ci"])
-        results = store.query(["ci"], language="python")
-        assert len(results) == 1
-        assert results[0].id == no_lang.id
-
-    def test_framework_filter_includes_units_without_framework(
-        self, store: TeamStore
-    ) -> None:
-        """KUs with no framework set should still appear when framework filter is used."""
-        no_fw = _insert_and_approve(store, domain=["web"])
-        results = store.query(["web"], framework="fastapi")
-        assert len(results) == 1
-        assert results[0].id == no_fw.id
-
-    def test_language_filter_ranks_matching_higher(self, store: TeamStore) -> None:
-        """KUs with matching language should rank above those without."""
-        no_lang = _insert_and_approve(store, domain=["web"])
-        with_lang = _insert_and_approve(
-            store,
-            domain=["web"],
-            context=Context(languages=["python"]),
-        )
-        results = store.query(["web"], language="python")
-        assert len(results) == 2
-        assert results[0].id == with_lang.id
-        assert results[1].id == no_lang.id
-
-    def test_rejects_non_positive_limit(self, store: TeamStore) -> None:
-        with pytest.raises(ValueError, match="limit must be positive"):
-            store.query(["databases"], limit=0)
+    def test_comment_counts_exclude_pending(self, store: TeamStore) -> None:
+        q = _make_question(title="comment count search query test")
+        store.create_question(q, [])
+        a = _make_answer(q.id, body="comment target answer", supervised=True)
+        store.create_answer(a)
+        pending_c = _make_comment(a.id)  # agent = pending
+        approved_c = _make_comment(a.id, created_by_type="human", created_by="alice")
+        store.create_comment(pending_c)
+        store.create_comment(approved_c)
+        results = store.search("comment count search query")
+        answer_thread = results[0]["answers"][0]
+        comment_ids = [c.id for c in answer_thread["comments"]]
+        assert approved_c.id in comment_ids
+        assert pending_c.id not in comment_ids
 
 
-class TestStats:
-    def test_count_empty_store(self, store: TeamStore) -> None:
-        assert store.count() == 0
+class TestGetQuestionThread:
+    def test_returns_question_with_ranked_answers(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a1 = _make_answer(q.id, supervised=True)
+        a2 = _make_answer(q.id, supervised=True)
+        store.create_answer(a1)
+        store.create_answer(a2)
+        thread = store.get_question_thread(q.id)
+        assert thread is not None
+        assert thread["question"].id == q.id
+        assert len(thread["answers"]) == 2
 
-    def test_count_after_inserts(self, store: TeamStore) -> None:
-        store.insert(_make_unit(domain=["a"]))
-        store.insert(_make_unit(domain=["b"]))
-        assert store.count() == 2
+    def test_returns_none_for_missing_question(self, store: TeamStore) -> None:
+        assert store.get_question_thread("q_nonexistent") is None
 
-    def test_domain_counts(self, store: TeamStore) -> None:
-        u1 = _make_unit(domain=["api", "payments"])
-        u2 = _make_unit(domain=["api", "auth"])
-        store.insert(u1)
-        store.insert(u2)
-        store.set_review_status(u1.id, "approved", "tester")
-        store.set_review_status(u2.id, "approved", "tester")
-        counts = store.domain_counts()
-        assert counts["api"] == 2
-        assert counts["payments"] == 1
-        assert counts["auth"] == 1
-
-
-class TestReviewStatus:
-    def test_inserted_unit_has_pending_status(self, store: TeamStore) -> None:
-        unit = _make_unit()
-        store.insert(unit)
-        status = store.get_review_status(unit.id)
-        assert status is not None
-        assert status["status"] == "pending"
-        assert status["reviewed_by"] is None
-        assert status["reviewed_at"] is None
+    def test_includes_approved_comments(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id, supervised=True)
+        store.create_answer(a)
+        c = _make_comment(a.id, created_by_type="human", created_by="alice")
+        store.create_comment(c)
+        thread = store.get_question_thread(q.id)
+        answer_thread = thread["answers"][0]
+        assert any(comment.id == c.id for comment in answer_thread["comments"])
 
 
-class TestStatusFiltering:
-    def test_query_excludes_pending_units(self, store: TeamStore) -> None:
-        unit = _make_unit(domain=["api"])
-        store.insert(unit)
-        results = store.query(["api"])
-        assert len(results) == 0
+class TestApproveRejectContent:
+    def test_approve_answer(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        store.create_answer(a)
+        assert store.approve_content(a.id) is True
+        assert store.get_answer(a.id).status == "approved"
 
-    def test_query_returns_approved_units(self, store: TeamStore) -> None:
-        unit = _make_unit(domain=["api"])
-        store.insert(unit)
-        store.set_review_status(unit.id, "approved", "reviewer")
-        results = store.query(["api"])
-        assert len(results) == 1
+    def test_reject_answer(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        store.create_answer(a)
+        assert store.reject_content(a.id) is True
+        assert store.get_answer(a.id).status == "rejected"
 
-    def test_query_excludes_rejected_units(self, store: TeamStore) -> None:
-        unit = _make_unit(domain=["api"])
-        store.insert(unit)
-        store.set_review_status(unit.id, "rejected", "reviewer")
-        results = store.query(["api"])
-        assert len(results) == 0
+    def test_approve_already_approved_returns_false(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        store.create_answer(a)
+        store.approve_content(a.id)
+        assert store.approve_content(a.id) is False
 
-    def test_get_only_returns_approved_for_agents(self, store: TeamStore) -> None:
-        unit = _make_unit()
-        store.insert(unit)
-        assert store.get(unit.id) is None
-
-    def test_get_returns_approved_unit(self, store: TeamStore) -> None:
-        unit = _make_unit()
-        store.insert(unit)
-        store.set_review_status(unit.id, "approved", "reviewer")
-        assert store.get(unit.id) is not None
-
-
-class TestReviewQueue:
-    def test_pending_queue_returns_pending_units(self, store: TeamStore) -> None:
-        u1 = _make_unit(domain=["api"])
-        u2 = _make_unit(domain=["db"])
-        store.insert(u1)
-        store.insert(u2)
-        queue = store.pending_queue(limit=20, offset=0)
-        assert len(queue) == 2
-
-    def test_pending_queue_excludes_reviewed(self, store: TeamStore) -> None:
-        unit = _make_unit(domain=["api"])
-        store.insert(unit)
-        store.set_review_status(unit.id, "approved", "reviewer")
-        queue = store.pending_queue(limit=20, offset=0)
-        assert len(queue) == 0
-
-    def test_pending_count(self, store: TeamStore) -> None:
-        u1 = _make_unit(domain=["a"])
-        u2 = _make_unit(domain=["b"])
-        store.insert(u1)
-        store.insert(u2)
-        store.set_review_status(u1.id, "approved", "reviewer")
-        assert store.pending_count() == 1
-
-    def test_counts_by_status(self, store: TeamStore) -> None:
-        u1 = _make_unit(domain=["a"])
-        u2 = _make_unit(domain=["b"])
-        u3 = _make_unit(domain=["c"])
-        store.insert(u1)
-        store.insert(u2)
-        store.insert(u3)
-        store.set_review_status(u1.id, "approved", "reviewer")
-        store.set_review_status(u2.id, "rejected", "reviewer")
-        counts = store.counts_by_status()
-        assert counts["approved"] == 1
-        assert counts["rejected"] == 1
-        assert counts["pending"] == 1
-
-    def test_daily_counts(self, store: TeamStore) -> None:
-        store.insert(_make_unit(domain=["a"]))
-        store.insert(_make_unit(domain=["b"]))
-        counts = store.daily_counts(days=30)
-        assert len(counts) >= 1
-        total = sum(row["proposed"] for row in counts)
-        assert total == 2
-
-    def test_daily_counts_gap_fills_to_today(self, store: TeamStore) -> None:
-        """daily_counts should return contiguous dates from the earliest entry to today."""
-        three_days_ago = datetime.now(UTC) - timedelta(days=3)
-        unit = _make_unit(domain=["a"])
-        unit.evidence.first_observed = three_days_ago
-        unit.evidence.last_confirmed = three_days_ago
-        store.insert(unit)
-
-        counts = store.daily_counts(days=30)
-
-        dates = [row["date"] for row in counts]
-        today_str = datetime.now(UTC).strftime("%Y-%m-%d")
-        three_days_ago_str = three_days_ago.strftime("%Y-%m-%d")
-
-        # Should include every date from the earliest entry through today.
-        assert dates[0] == three_days_ago_str
-        assert dates[-1] == today_str
-        assert len(dates) == 4  # 3 days ago, 2 days ago, yesterday, today
-
-        # Only the first date has a proposal; rest should be zero.
-        assert counts[0]["proposed"] == 1
-        for row in counts[1:]:
-            assert row["proposed"] == 0
-
-    def test_daily_counts_includes_approved(self, store: TeamStore) -> None:
-        """daily_counts should include approved counts grouped by reviewed_at date."""
-        three_days_ago = datetime.now(UTC) - timedelta(days=3)
-        one_day_ago = datetime.now(UTC) - timedelta(days=1)
-
-        u1 = _make_unit(domain=["a"])
-        u1.evidence.first_observed = three_days_ago
-        u1.evidence.last_confirmed = three_days_ago
-        store.insert(u1)
-
-        u2 = _make_unit(domain=["b"])
-        u2.evidence.first_observed = three_days_ago
-        u2.evidence.last_confirmed = three_days_ago
-        store.insert(u2)
-
-        store.set_review_status(u1.id, "approved", "reviewer")
-        # Backdate reviewed_at to 1 day ago.
-        with store._lock, store._conn:
-            store._conn.execute(
-                "UPDATE knowledge_units SET reviewed_at = ? WHERE id = ?",
-                (one_day_ago.isoformat(), u1.id),
-            )
-
-        counts = store.daily_counts(days=30)
-        by_date = {row["date"]: row for row in counts}
-
-        three_days_ago_str = three_days_ago.strftime("%Y-%m-%d")
-        one_day_ago_str = one_day_ago.strftime("%Y-%m-%d")
-
-        # Both units were proposed 3 days ago.
-        assert by_date[three_days_ago_str]["proposed"] == 2
-        # One was approved 1 day ago.
-        assert by_date[one_day_ago_str]["approved"] == 1
-        # No approvals on the proposal date.
-        assert by_date[three_days_ago_str]["approved"] == 0
-
-    def test_daily_counts_includes_rejected(self, store: TeamStore) -> None:
-        """daily_counts should include rejected counts grouped by reviewed_at date."""
-        two_days_ago = datetime.now(UTC) - timedelta(days=2)
-
-        unit = _make_unit(domain=["a"])
-        unit.evidence.first_observed = two_days_ago
-        unit.evidence.last_confirmed = two_days_ago
-        store.insert(unit)
-
-        store.set_review_status(unit.id, "rejected", "reviewer")
-        # Backdate reviewed_at to today.
-        today = datetime.now(UTC)
-        with store._lock, store._conn:
-            store._conn.execute(
-                "UPDATE knowledge_units SET reviewed_at = ? WHERE id = ?",
-                (today.isoformat(), unit.id),
-            )
-
-        counts = store.daily_counts(days=30)
-        by_date = {row["date"]: row for row in counts}
-
-        today_str = today.strftime("%Y-%m-%d")
-        two_days_ago_str = two_days_ago.strftime("%Y-%m-%d")
-
-        assert by_date[two_days_ago_str]["proposed"] == 1
-        assert by_date[two_days_ago_str]["rejected"] == 0
-        assert by_date[today_str]["rejected"] == 1
-        assert by_date[today_str]["proposed"] == 0
-
-    def test_daily_counts_rejects_non_positive_days(self, store: TeamStore) -> None:
-        with pytest.raises(ValueError, match="days must be positive"):
-            store.daily_counts(days=0)
-
-    def test_pending_queue_pagination(self, store: TeamStore) -> None:
-        for _ in range(3):
-            store.insert(_make_unit(domain=["a"]))
-        page1 = store.pending_queue(limit=2, offset=0)
-        page2 = store.pending_queue(limit=2, offset=2)
-        assert len(page1) == 2
-        assert len(page2) == 1
-        ids = {r["knowledge_unit"].id for r in page1} | {
-            r["knowledge_unit"].id for r in page2
-        }
-        assert len(ids) == 3
-
-    def test_counts_by_status_empty(self, store: TeamStore) -> None:
-        counts = store.counts_by_status()
-        assert counts == {}
+    def test_approve_comment(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        store.create_answer(a)
+        c = _make_comment(a.id)
+        store.create_comment(c)
+        assert store.approve_content(c.id) is True
 
 
-class TestEndToEnd:
-    def test_propose_confirm_flag_lifecycle(self, store: TeamStore) -> None:
-        _insert_and_approve(
-            store,
-            domain=["api", "payments"],
-            context=Context(languages=["python"], frameworks=["fastapi"]),
-            tier=Tier.TEAM,
-        )
+class TestEditQuestionAnswer:
+    def test_edit_question_updates_body(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        updated = store.edit_question(q.id, "new body content", "alice", "human")
+        assert updated.body == "new body content"
+        assert store.get_question(q.id).body == "new body content"
 
-        results = store.query(["api", "payments"], language="python")
-        assert len(results) == 1
-        assert results[0].evidence.confidence == 0.5
+    def test_edit_question_records_history(self, store: TeamStore) -> None:
+        q = _make_question(body="original body")
+        store.create_question(q, [])
+        store.edit_question(q.id, "new body", "alice", "human")
+        history = store.get_question_history(q.id)
+        assert len(history) == 1
+        assert history[0].previous_body == "original body"
+        assert history[0].new_body == "new body"
 
-        confirmed = apply_confirmation(results[0])
-        store.update(confirmed)
-        results = store.query(["api", "payments"])
-        assert results[0].evidence.confidence == pytest.approx(0.6)
+    def test_edit_answer_updates_body(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        store.create_answer(a)
+        updated = store.edit_answer(a.id, "edited answer", "alice", "human")
+        assert updated.body == "edited answer"
 
-        flagged = apply_flag(results[0], FlagReason.STALE)
-        store.update(flagged)
-        results = store.query(["api", "payments"])
-        assert results[0].evidence.confidence == pytest.approx(0.45)
-        assert len(results[0].flags) == 1
+    def test_edit_answer_records_history(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id, body="original answer body")
+        store.create_answer(a)
+        store.edit_answer(a.id, "new answer", "alice", "human")
+        history = store.get_answer_history(a.id)
+        assert len(history) == 1
+        assert history[0].previous_body == "original answer body"
+
+
+class TestPendingQueue:
+    def test_returns_pending_answers_and_comments(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)
+        store.create_answer(a)
+        c = _make_comment(a.id)
+        store.create_comment(c)
+        queue = store.pending_queue()
+        assert any(x.id == a.id for x in queue["answers"])
+        assert any(x.id == c.id for x in queue["comments"])
+
+    def test_approved_items_excluded(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id, supervised=True)
+        store.create_answer(a)
+        queue = store.pending_queue()
+        assert not any(x.id == a.id for x in queue["answers"])
+
+
+class TestFindSimilarQuestions:
+    def test_returns_similar_by_title(self, store: TeamStore) -> None:
+        q = _make_question(title="connection pool configuration best practices")
+        store.create_question(q, ["databases"])
+        similar = store.find_similar_questions("connection pool configuration", ["databases"])
+        assert len(similar) >= 1
+        assert similar[0]["question"].id == q.id
+
+    def test_threshold_filters_low_similarity(self, store: TeamStore) -> None:
+        q = _make_question(title="completely unrelated topic xyz")
+        store.create_question(q, [])
+        # Search for something very different — should not match above threshold.
+        similar = store.find_similar_questions("python decorators explained", [])
+        assert not any(r["question"].id == q.id for r in similar)
+
+    def test_returns_top_3(self, store: TeamStore) -> None:
+        for i in range(5):
+            q = _make_question(title=f"connection pool question number {i}")
+            store.create_question(q, ["databases"])
+        similar = store.find_similar_questions("connection pool question", ["databases"])
+        assert len(similar) <= 3
+
+
+class TestGetOrCreateTag:
+    def test_creates_new_tag(self, store: TeamStore) -> None:
+        tag = store.get_or_create_tag("python")
+        assert tag.name == "python"
+        assert tag.id.startswith("t_")
+
+    def test_returns_existing_tag(self, store: TeamStore) -> None:
+        t1 = store.get_or_create_tag("python")
+        t2 = store.get_or_create_tag("python")
+        assert t1.id == t2.id
+
+
+class TestMergeTags:
+    def test_merge_repoints_question_tags(self, store: TeamStore) -> None:
+        q = _make_question()
+        source = store.get_or_create_tag("py")
+        target = store.get_or_create_tag("python")
+        store.create_question(q, ["py"])
+        store.merge_tags(source.id, target.id)
+        tags = store._get_question_tag_names(q.id)
+        assert "python" in tags
+        assert "py" not in tags
+
+    def test_merge_deletes_source_tag(self, store: TeamStore, conn: sqlite3.Connection) -> None:
+        source = store.get_or_create_tag("py")
+        target = store.get_or_create_tag("python")
+        store.merge_tags(source.id, target.id)
+        row = conn.execute("SELECT id FROM tags WHERE id = ?", (source.id,)).fetchone()
+        assert row is None
+
+
+class TestPinAnswer:
+    def test_pin_sets_pinned_answer_id(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id, supervised=True)
+        store.create_answer(a)
+        updated = store.pin_answer(q.id, a.id)
+        assert updated.pinned_answer_id == a.id
+
+    def test_unpin_clears_pinned_answer_id(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id, supervised=True)
+        store.create_answer(a)
+        store.pin_answer(q.id, a.id)
+        updated = store.unpin_answer(q.id)
+        assert updated.pinned_answer_id is None
+
+
+class TestGetStatus:
+    def test_status_empty_store(self, store: TeamStore) -> None:
+        status = store.get_status()
+        assert status["total_questions"] == 0
+        assert status["total_answers"] == 0
+        assert status["total_tags"] == 0
+        assert status["total_votes"] == 0
+        assert status["unanswered"] == 0
+        assert status["pending"] == 0
+
+    def test_status_counts(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, ["python"])
+        a = _make_answer(q.id, supervised=True)
+        store.create_answer(a)
+        store.cast_vote(_make_vote(a.id))
+        status = store.get_status()
+        assert status["total_questions"] == 1
+        assert status["total_answers"] == 1
+        assert status["total_tags"] == 1
+        assert status["total_votes"] == 1
+        assert status["unanswered"] == 0
+
+    def test_unanswered_counts_correctly(self, store: TeamStore) -> None:
+        q1 = _make_question()
+        q2 = _make_question(title="Unanswered question here")
+        store.create_question(q1, [])
+        store.create_question(q2, [])
+        a = _make_answer(q1.id, supervised=True)
+        store.create_answer(a)
+        status = store.get_status()
+        assert status["unanswered"] == 1
+
+    def test_pending_count_includes_answers_and_comments(self, store: TeamStore) -> None:
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id)  # pending
+        store.create_answer(a)
+        c = _make_comment(a.id)  # pending
+        store.create_comment(c)
+        status = store.get_status()
+        assert status["pending"] == 2
+
+
+class TestUserManagement:
+    def test_create_and_get_user(self, store: TeamStore) -> None:
+        store.create_user("alice", "hashed_pw")
+        user = store.get_user("alice")
+        assert user is not None
+        assert user["username"] == "alice"
+        assert user["password_hash"] == "hashed_pw"
+
+    def test_get_nonexistent_user(self, store: TeamStore) -> None:
+        assert store.get_user("nobody") is None
+
+    def test_duplicate_user_raises(self, store: TeamStore) -> None:
+        store.create_user("alice", "hash1")
+        with pytest.raises(sqlite3.IntegrityError):
+            store.create_user("alice", "hash2")

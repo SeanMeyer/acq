@@ -1,646 +1,717 @@
-"""SQLite-backed team knowledge store.
+"""SQLite-backed team knowledge store for the ACQ Q&A system."""
 
-Stores knowledge units in a SQLite database for team-level sharing.
-Auto-creates the database directory and schema on first use.
-Implements the context manager protocol for deterministic resource cleanup.
-"""
+from __future__ import annotations
 
+import json
 import sqlite3
-import threading
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from types import TracebackType
 from typing import Any
 
-from .knowledge_unit import KnowledgeUnit
-from .scoring import calculate_relevance
-from .tables import ensure_review_columns, ensure_users_table
-
-DEFAULT_DB_PATH = Path("/data/team.db")
-
-_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS knowledge_units (
-    id TEXT PRIMARY KEY,
-    data TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS knowledge_unit_domains (
-    unit_id TEXT NOT NULL,
-    domain TEXT NOT NULL,
-    FOREIGN KEY (unit_id) REFERENCES knowledge_units(id) ON DELETE CASCADE,
-    PRIMARY KEY (unit_id, domain)
-);
-
-CREATE INDEX IF NOT EXISTS idx_domains_domain
-    ON knowledge_unit_domains(domain);
-"""
-
-
-def normalise_domains(domains: list[str]) -> list[str]:
-    """Lowercase, strip whitespace, drop empties, and deduplicate domain tags."""
-    return list(dict.fromkeys(d.strip().lower() for d in domains if d.strip()))
+from acq_shared.models import Answer, Comment, EditHistory, Question, Tag, Vote
+from acq_shared.schema import create_tables
+from acq_shared.scoring import rank_answers, search_content_score, text_relevance_score
 
 
 class TeamStore:
-    """SQLite-backed team knowledge store.
+    """SQLite-backed store for Q&A content.
 
-    Holds a single persistent connection for the lifetime of the instance.
-    Use as a context manager or call ``close()`` explicitly.
-
-    Thread-safe: all connection access is serialized via an internal lock.
+    Constructor takes an existing sqlite3.Connection so callers control lifecycle.
+    Calls create_tables() to ensure schema exists.
     """
 
-    def __init__(self, db_path: Path | None = None) -> None:
-        """Initialise the store, creating the database and schema if needed.
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        create_tables(conn)
+        self._ensure_users_table()
 
-        Args:
-            db_path: Path to the SQLite database file. Defaults to /data/team.db.
-        """
-        self._db_path = db_path or DEFAULT_DB_PATH
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._closed = False
-        self._lock = threading.Lock()
-        self._conn = self._open_connection()
-        self._ensure_schema()
-
-    def _open_connection(self) -> sqlite3.Connection:
-        """Open and configure a SQLite connection."""
-        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA busy_timeout = 5000")
-        return conn
-
-    def _ensure_schema(self) -> None:
-        """Create tables and indexes if they do not exist."""
-        self._conn.executescript(_SCHEMA_SQL)
-        ensure_review_columns(self._conn)
-        ensure_users_table(self._conn)
-
-    def _check_open(self) -> None:
-        """Raise if the store has been closed."""
-        if self._closed:
-            raise RuntimeError("TeamStore is closed")
-
-    def close(self) -> None:
-        """Close the underlying database connection."""
-        if self._closed:
-            return
-        self._closed = True
-        self._conn.close()
-
-    def __enter__(self) -> "TeamStore":
-        """Enter the context manager."""
-        return self
-
-    def __exit__(
-        self,
-        _exc_type: type[BaseException] | None,
-        _exc_val: BaseException | None,
-        _exc_tb: TracebackType | None,
-    ) -> None:
-        """Exit the context manager, closing the connection."""
-        self.close()
-
-    @property
-    def db_path(self) -> Path:
-        """Path to the SQLite database file."""
-        return self._db_path
-
-    def insert(self, unit: KnowledgeUnit) -> None:
-        """Insert a knowledge unit into the store.
-
-        Args:
-            unit: The knowledge unit to insert.
-
-        Raises:
-            sqlite3.IntegrityError: If a unit with the same ID already exists.
-            ValueError: If domain normalisation results in no valid domains.
-        """
-        self._check_open()
-        domains = normalise_domains(unit.domain)
-        if not domains:
-            raise ValueError("At least one non-empty domain is required")
-        unit = unit.model_copy(update={"domain": domains})
-        data = unit.model_dump_json()
-        created_at = (
-            unit.evidence.first_observed.isoformat()
-            if unit.evidence.first_observed
-            else datetime.now(UTC).isoformat()
-        )
-        with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT INTO knowledge_units (id, data, created_at) VALUES (?, ?, ?)",
-                (unit.id, data, created_at),
+    def _ensure_users_table(self) -> None:
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )
-            self._conn.executemany(
-                "INSERT INTO knowledge_unit_domains (unit_id, domain) VALUES (?, ?)",
-                [(unit.id, d) for d in domains],
-            )
+        """)
+        self._conn.commit()
 
-    def get(self, unit_id: str) -> KnowledgeUnit | None:
-        """Retrieve an approved knowledge unit by ID.
-
-        Agent-facing: only returns KUs that have passed human review.
-        For internal access regardless of status, use get_any().
-
-        Args:
-            unit_id: The knowledge unit identifier.
-
-        Returns:
-            The knowledge unit, or None if not found or not approved.
-        """
-        self._check_open()
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT data FROM knowledge_units WHERE id = ? AND status = 'approved'",
-                (unit_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        return KnowledgeUnit.model_validate_json(row[0])
-
-    def get_any(self, unit_id: str) -> KnowledgeUnit | None:
-        """Retrieve a knowledge unit by ID regardless of review status.
-
-        Internal use only — review endpoints and activity feed.
-
-        Args:
-            unit_id: The knowledge unit identifier.
-
-        Returns:
-            The knowledge unit, or None if not found.
-        """
-        self._check_open()
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT data FROM knowledge_units WHERE id = ?",
-                (unit_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        return KnowledgeUnit.model_validate_json(row[0])
-
-    def get_review_status(self, unit_id: str) -> dict[str, str | None] | None:
-        """Return review metadata for a knowledge unit.
-
-        Args:
-            unit_id: The knowledge unit identifier.
-
-        Returns:
-            A dict with status, reviewed_by, and reviewed_at keys, or None
-            if the unit does not exist.
-        """
-        self._check_open()
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT status, reviewed_by, reviewed_at FROM knowledge_units WHERE id = ?",
-                (unit_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        return {"status": row[0], "reviewed_by": row[1], "reviewed_at": row[2]}
-
-    def set_review_status(self, unit_id: str, status: str, reviewed_by: str) -> None:
-        """Update the review status of a knowledge unit.
-
-        Args:
-            unit_id: The knowledge unit identifier.
-            status: The new review status (e.g. "approved", "rejected").
-            reviewed_by: Username of the reviewer.
-
-        Raises:
-            KeyError: If no unit with the given ID exists.
-        """
-        self._check_open()
-        now = datetime.now(UTC).isoformat()
-        with self._lock, self._conn:
-            cursor = self._conn.execute(
-                "UPDATE knowledge_units SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?",
-                (status, reviewed_by, now, unit_id),
-            )
-            if cursor.rowcount == 0:
-                raise KeyError(f"Knowledge unit not found: {unit_id}")
-
-    def update(self, unit: KnowledgeUnit) -> None:
-        """Replace an existing knowledge unit in the store.
-
-        Args:
-            unit: The updated knowledge unit.
-
-        Raises:
-            KeyError: If no unit with the given ID exists.
-            ValueError: If domain normalisation results in no valid domains.
-        """
-        self._check_open()
-        domains = normalise_domains(unit.domain)
-        if not domains:
-            raise ValueError("At least one non-empty domain is required")
-        unit = unit.model_copy(update={"domain": domains})
-        data = unit.model_dump_json()
-        with self._lock, self._conn:
-            cursor = self._conn.execute(
-                "UPDATE knowledge_units SET data = ? WHERE id = ?",
-                (data, unit.id),
-            )
-            if cursor.rowcount == 0:
-                raise KeyError(f"Knowledge unit not found: {unit.id}")
-            self._conn.execute(
-                "DELETE FROM knowledge_unit_domains WHERE unit_id = ?",
-                (unit.id,),
-            )
-            self._conn.executemany(
-                "INSERT INTO knowledge_unit_domains (unit_id, domain) VALUES (?, ?)",
-                [(unit.id, d) for d in domains],
-            )
-
-    def query(
-        self,
-        domains: list[str],
-        *,
-        language: str | None = None,
-        framework: str | None = None,
-        limit: int = 5,
-    ) -> list[KnowledgeUnit]:
-        """Search for knowledge units by domain tags with relevance ranking.
-
-        Args:
-            domains: Domain tags to search for.
-            language: Optional language ranking signal. Matching KUs
-                rank higher but non-matching KUs are still returned.
-            framework: Optional framework ranking signal. Matching KUs
-                rank higher but non-matching KUs are still returned.
-            limit: Maximum number of results to return. Must be positive.
-
-        Returns:
-            Knowledge units ranked by relevance * confidence, descending.
-
-        Raises:
-            ValueError: If limit is not positive.
-        """
-        self._check_open()
-        if limit <= 0:
-            raise ValueError("limit must be positive")
-        if not domains:
-            return []
-
-        normalised = normalise_domains(domains)
-        if not normalised:
-            return []
-        # Safe: placeholders is only '?' characters, never user input.
-        placeholders = ",".join("?" for _ in normalised)
-        sql = f"""
-            SELECT ku.data
-            FROM knowledge_units ku
-            WHERE ku.status = 'approved'
-            AND ku.id IN (
-                SELECT DISTINCT unit_id
-                FROM knowledge_unit_domains
-                WHERE domain IN ({placeholders})
-            )
-        """
-        with self._lock:
-            rows = self._conn.execute(sql, normalised).fetchall()
-
-        # PoC: all filtering and scoring is in-memory after deserialization.
-        # For larger stores, push coarse filters into SQL.
-        units = [KnowledgeUnit.model_validate_json(row[0]) for row in rows]
-
-        scored = []
-        for unit in units:
-            relevance = calculate_relevance(
-                unit,
-                normalised,
-                query_language=language,
-                query_framework=framework,
-            )
-            scored.append((relevance * unit.evidence.confidence, unit))
-
-        scored.sort(key=lambda pair: (pair[0], pair[1].id), reverse=True)
-        return [unit for _, unit in scored[:limit]]
-
-    def count(self) -> int:
-        """Return the total number of knowledge units in the store."""
-        self._check_open()
-        with self._lock:
-            row = self._conn.execute("SELECT COUNT(*) FROM knowledge_units").fetchone()
-        return row[0]
-
-    def domain_counts(self) -> dict[str, int]:
-        """Return the count of approved knowledge units per domain tag."""
-        self._check_open()
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT d.domain, COUNT(*) "
-                "FROM knowledge_unit_domains d "
-                "JOIN knowledge_units ku ON ku.id = d.unit_id "
-                "WHERE ku.status = 'approved' "
-                "GROUP BY d.domain ORDER BY COUNT(*) DESC"
-            ).fetchall()
-        return {row[0]: row[1] for row in rows}
-
-    def pending_queue(
-        self, *, limit: int = 20, offset: int = 0
-    ) -> list[dict[str, Any]]:
-        """Return pending KUs with review metadata, oldest first.
-
-        Args:
-            limit: Maximum number of results to return.
-            offset: Number of results to skip.
-
-        Returns:
-            List of dicts with knowledge_unit, status, reviewed_by,
-            and reviewed_at keys.
-        """
-        self._check_open()
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT data, status, reviewed_by, reviewed_at "
-                "FROM knowledge_units WHERE status = 'pending' "
-                "ORDER BY created_at ASC LIMIT ? OFFSET ?",
-                (limit, offset),
-            ).fetchall()
-        return [
-            {
-                "knowledge_unit": KnowledgeUnit.model_validate_json(row[0]),
-                "status": row[1],
-                "reviewed_by": row[2],
-                "reviewed_at": row[3],
-            }
-            for row in rows
-        ]
-
-    def pending_count(self) -> int:
-        """Return the number of pending KUs."""
-        self._check_open()
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT COUNT(*) FROM knowledge_units WHERE status = 'pending'"
-            ).fetchone()
-        return row[0]
-
-    def counts_by_status(self) -> dict[str, int]:
-        """Return KU counts grouped by review status."""
-        self._check_open()
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT status, COUNT(*) FROM knowledge_units GROUP BY status"
-            ).fetchall()
-        return {row[0]: row[1] for row in rows}
-
-    def list_units(
-        self,
-        *,
-        domain: str | None = None,
-        confidence_min: float | None = None,
-        confidence_max: float | None = None,
-        status: str | None = None,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        """Return KUs with review metadata, filtered by domain, confidence, or status.
-
-        Confidence filtering is applied in-memory after deserialization
-        since confidence lives in the JSON blob.
-
-        Args:
-            domain: Optional domain tag to filter by.
-            confidence_min: Optional minimum confidence (inclusive).
-            confidence_max: Optional maximum confidence (exclusive when < 1.0, inclusive at 1.0).
-            status: Optional review status to filter by (e.g. "approved", "rejected").
-
-        Returns:
-            List of dicts with knowledge_unit, status, reviewed_by,
-            and reviewed_at keys.
-        """
-        self._check_open()
-        params: list[str] = []
-        conditions: list[str] = []
-
-        if status:
-            conditions.append("ku.status = ?")
-            params.append(status)
-
-        if domain:
-            normalised = normalise_domains([domain])
-            if not normalised:
-                return []
-            conditions.append(
-                "ku.id IN ("
-                "  SELECT DISTINCT unit_id FROM knowledge_unit_domains WHERE domain = ?"
-                ")"
-            )
-            params.append(normalised[0])
-
-        has_confidence_filter = confidence_min is not None or confidence_max is not None
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        sql_limit = "" if has_confidence_filter else f"LIMIT {limit}"
-        sql = (
-            "SELECT ku.data, ku.status, ku.reviewed_by, ku.reviewed_at "
-            f"FROM knowledge_units ku {where} "
-            f"ORDER BY ku.created_at DESC {sql_limit}"
-        )
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
-
-        results = []
-        for row in rows:
-            unit = KnowledgeUnit.model_validate_json(row[0])
-            c = unit.evidence.confidence
-            if confidence_min is not None and c < confidence_min:
-                continue
-            if confidence_max is not None and (
-                c > confidence_max or (c >= confidence_max and confidence_max < 1.0)
-            ):
-                continue
-            results.append(
-                {
-                    "knowledge_unit": unit,
-                    "status": row[1] or "pending",
-                    "reviewed_by": row[2],
-                    "reviewed_at": row[3],
-                }
-            )
-            if len(results) >= limit:
-                break
-        return results
+    # ------------------------------------------------------------------
+    # User management
+    # ------------------------------------------------------------------
 
     def create_user(self, username: str, password_hash: str) -> None:
-        """Insert a new user.
-
-        Args:
-            username: The user's login name.
-            password_hash: Bcrypt hash of the user's password.
-
-        Raises:
-            sqlite3.IntegrityError: If a user with the same username already exists.
-        """
-        self._check_open()
         now = datetime.now(UTC).isoformat()
-        with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-                (username, password_hash, now),
-            )
+        self._conn.execute(
+            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+            (username, password_hash, now),
+        )
+        self._conn.commit()
 
     def get_user(self, username: str) -> dict[str, str] | None:
-        """Retrieve a user by username.
-
-        Args:
-            username: The user's login name.
-
-        Returns:
-            A dict with username, password_hash, and created_at keys, or None
-            if no user with that username exists.
-        """
-        self._check_open()
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT username, password_hash, created_at FROM users WHERE username = ?",
-                (username,),
-            ).fetchone()
+        row = self._conn.execute(
+            "SELECT username, password_hash, created_at FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
         if row is None:
             return None
         return {"username": row[0], "password_hash": row[1], "created_at": row[2]}
 
-    def confidence_distribution(self) -> dict[str, int]:
-        """Return confidence distribution buckets for approved KUs."""
-        self._check_open()
-        with self._lock:
+    # ------------------------------------------------------------------
+    # Tags
+    # ------------------------------------------------------------------
+
+    def get_or_create_tag(self, name: str) -> Tag:
+        tag = Tag(name=name)  # Tag.normalize_name slugifies on construction
+        row = self._conn.execute(
+            "SELECT id, name, description, usage_count FROM tags WHERE name = ?",
+            (tag.name,),
+        ).fetchone()
+        if row is not None:
+            return Tag(id=row[0], name=row[1], description=row[2], usage_count=row[3])
+        self._conn.execute(
+            "INSERT INTO tags (id, name, description, usage_count) VALUES (?, ?, ?, ?)",
+            (tag.id, tag.name, tag.description, tag.usage_count),
+        )
+        self._conn.commit()
+        return tag
+
+    def merge_tags(self, source_id: str, target_id: str) -> None:
+        """Repoint all question_tags rows from source to target, delete source."""
+        # Move associations that don't already exist on target.
+        self._conn.execute(
+            """
+            UPDATE question_tags SET tag_id = ?
+            WHERE tag_id = ?
+              AND question_id NOT IN (
+                  SELECT question_id FROM question_tags WHERE tag_id = ?
+              )
+            """,
+            (target_id, source_id, target_id),
+        )
+        # Drop remaining source associations (duplicates just created above).
+        self._conn.execute(
+            "DELETE FROM question_tags WHERE tag_id = ?", (source_id,)
+        )
+        self._conn.execute("DELETE FROM tags WHERE id = ?", (source_id,))
+        # Recalculate usage_count for target.
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM question_tags WHERE tag_id = ?", (target_id,)
+        ).fetchone()
+        self._conn.execute(
+            "UPDATE tags SET usage_count = ? WHERE id = ?", (row[0], target_id)
+        )
+        self._conn.commit()
+
+    def list_tags(self, q: str | None = None) -> list[Tag]:
+        if q:
             rows = self._conn.execute(
-                "SELECT data FROM knowledge_units WHERE status = 'approved'"
+                "SELECT id, name, description, usage_count FROM tags WHERE name LIKE ?",
+                (f"%{q}%",),
             ).fetchall()
-        buckets = {"0.0-0.3": 0, "0.3-0.6": 0, "0.6-0.8": 0, "0.8-1.0": 0}
-        for (data,) in rows:
-            unit = KnowledgeUnit.model_validate_json(data)
-            c = unit.evidence.confidence
-            if c < 0.3:
-                buckets["0.0-0.3"] += 1
-            elif c < 0.6:
-                buckets["0.3-0.6"] += 1
-            elif c < 0.8:
-                buckets["0.6-0.8"] += 1
-            else:
-                buckets["0.8-1.0"] += 1
-        return buckets
-
-    def recent_activity(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Return recent activity as one event per knowledge unit.
-
-        Each KU appears once: reviewed KUs show as approved/rejected,
-        pending KUs show as proposed.  Ordered by the most recent
-        timestamp (reviewed_at for reviewed KUs, created_at otherwise).
-
-        Args:
-            limit: Maximum number of activity entries to return.
-
-        Returns:
-            List of activity event dicts, newest first.
-        """
-        self._check_open()
-        with self._lock:
+        else:
             rows = self._conn.execute(
-                "SELECT id, data, status, reviewed_by, reviewed_at "
-                "FROM knowledge_units "
-                "ORDER BY COALESCE(reviewed_at, created_at) DESC LIMIT ?",
-                (limit * 2,),
+                "SELECT id, name, description, usage_count FROM tags ORDER BY usage_count DESC"
             ).fetchall()
-        activity = []
-        for row in rows:
-            unit = KnowledgeUnit.model_validate_json(row[1])
-            proposed_ts = (
-                unit.evidence.first_observed.isoformat()
-                if unit.evidence.first_observed
-                else ""
+        return [Tag(id=r[0], name=r[1], description=r[2], usage_count=r[3]) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Questions
+    # ------------------------------------------------------------------
+
+    def create_question(self, question: Question, tag_names: list[str]) -> Question:
+        self._conn.execute(
+            "INSERT INTO questions (id, data, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                question.id,
+                question.model_dump_json(),
+                question.status,
+                question.created_at.isoformat(),
+                question.updated_at.isoformat(),
+            ),
+        )
+        tags = [self.get_or_create_tag(name) for name in tag_names]
+        for tag in tags:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO question_tags (question_id, tag_id) VALUES (?, ?)",
+                (question.id, tag.id),
             )
-            # Show only the terminal state per KU: the review event if
-            # reviewed, otherwise the proposed event.
-            if row[2] in ("approved", "rejected"):
-                activity.append(
-                    {
-                        "type": row[2],
-                        "unit_id": row[0],
-                        "summary": unit.insight.summary,
-                        "reviewed_by": row[3],
-                        "timestamp": row[4] or proposed_ts,
-                    }
+            self._conn.execute(
+                "UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?", (tag.id,)
+            )
+        self._conn.execute(
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body) VALUES (?, ?, ?, ?, ?)",
+            (question.id, "question", question.id, question.title, question.body),
+        )
+        self._conn.commit()
+        return question
+
+    def get_question(self, question_id: str) -> Question | None:
+        row = self._conn.execute(
+            "SELECT data FROM questions WHERE id = ?", (question_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return Question.model_validate_json(row[0])
+
+    def edit_question(
+        self, question_id: str, new_body: str, edited_by: str, edited_by_type: str
+    ) -> Question | None:
+        q = self.get_question(question_id)
+        if q is None:
+            return None
+        history = EditHistory(
+            target_id=question_id,
+            target_type="question",
+            previous_body=q.body,
+            new_body=new_body,
+            edited_by=edited_by,
+            edited_by_type=edited_by_type,
+        )
+        self._conn.execute(
+            "INSERT INTO edit_history (id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                history.id,
+                history.target_id,
+                history.target_type,
+                history.previous_body,
+                history.new_body,
+                history.edited_by,
+                history.edited_by_type,
+                history.edited_at.isoformat(),
+            ),
+        )
+        now = datetime.now(UTC)
+        updated = q.model_copy(update={"body": new_body, "updated_at": now})
+        self._conn.execute(
+            "UPDATE questions SET data = ?, updated_at = ? WHERE id = ?",
+            (updated.model_dump_json(), now.isoformat(), question_id),
+        )
+        # Refresh FTS index entry.
+        self._conn.execute(
+            "DELETE FROM search_index WHERE entity_id = ? AND entity_type = 'question'",
+            (question_id,),
+        )
+        self._conn.execute(
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body) VALUES (?, ?, ?, ?, ?)",
+            (question_id, "question", question_id, updated.title, updated.body),
+        )
+        self._conn.commit()
+        return updated
+
+    def pin_answer(self, question_id: str, answer_id: str) -> Question | None:
+        q = self.get_question(question_id)
+        if q is None:
+            return None
+        updated = q.model_copy(update={"pinned_answer_id": answer_id})
+        self._conn.execute(
+            "UPDATE questions SET data = ? WHERE id = ?",
+            (updated.model_dump_json(), question_id),
+        )
+        self._conn.commit()
+        return updated
+
+    def unpin_answer(self, question_id: str) -> Question | None:
+        q = self.get_question(question_id)
+        if q is None:
+            return None
+        updated = q.model_copy(update={"pinned_answer_id": None})
+        self._conn.execute(
+            "UPDATE questions SET data = ? WHERE id = ?",
+            (updated.model_dump_json(), question_id),
+        )
+        self._conn.commit()
+        return updated
+
+    def get_question_history(self, question_id: str) -> list[EditHistory]:
+        rows = self._conn.execute(
+            "SELECT id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at FROM edit_history WHERE target_id = ? AND target_type = 'question' ORDER BY edited_at ASC",
+            (question_id,),
+        ).fetchall()
+        return [_row_to_edit_history(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Answers
+    # ------------------------------------------------------------------
+
+    def create_answer(self, answer: Answer) -> Answer:
+        # Supervised answers skip moderation queue.
+        if answer.supervised:
+            answer = answer.model_copy(update={"status": "approved"})
+        self._conn.execute(
+            "INSERT INTO answers (id, question_id, data, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                answer.id,
+                answer.question_id,
+                answer.model_dump_json(),
+                answer.status,
+                answer.created_at.isoformat(),
+                answer.updated_at.isoformat(),
+            ),
+        )
+        self._conn.execute(
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body) VALUES (?, ?, ?, ?, ?)",
+            (answer.id, "answer", answer.question_id, "", answer.body),
+        )
+        self._conn.commit()
+        return answer
+
+    def get_answer(self, answer_id: str) -> Answer | None:
+        row = self._conn.execute(
+            "SELECT data FROM answers WHERE id = ?", (answer_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return Answer.model_validate_json(row[0])
+
+    def edit_answer(
+        self, answer_id: str, new_body: str, edited_by: str, edited_by_type: str
+    ) -> Answer | None:
+        a = self.get_answer(answer_id)
+        if a is None:
+            return None
+        history = EditHistory(
+            target_id=answer_id,
+            target_type="answer",
+            previous_body=a.body,
+            new_body=new_body,
+            edited_by=edited_by,
+            edited_by_type=edited_by_type,
+        )
+        self._conn.execute(
+            "INSERT INTO edit_history (id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                history.id,
+                history.target_id,
+                history.target_type,
+                history.previous_body,
+                history.new_body,
+                history.edited_by,
+                history.edited_by_type,
+                history.edited_at.isoformat(),
+            ),
+        )
+        now = datetime.now(UTC)
+        updated = a.model_copy(update={"body": new_body, "updated_at": now})
+        self._conn.execute(
+            "UPDATE answers SET data = ?, updated_at = ? WHERE id = ?",
+            (updated.model_dump_json(), now.isoformat(), answer_id),
+        )
+        self._conn.execute(
+            "DELETE FROM search_index WHERE entity_id = ? AND entity_type = 'answer'",
+            (answer_id,),
+        )
+        self._conn.execute(
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body) VALUES (?, ?, ?, ?, ?)",
+            (answer_id, "answer", updated.question_id, "", updated.body),
+        )
+        self._conn.commit()
+        return updated
+
+    def get_answer_history(self, answer_id: str) -> list[EditHistory]:
+        rows = self._conn.execute(
+            "SELECT id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at FROM edit_history WHERE target_id = ? AND target_type = 'answer' ORDER BY edited_at ASC",
+            (answer_id,),
+        ).fetchall()
+        return [_row_to_edit_history(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Comments
+    # ------------------------------------------------------------------
+
+    def create_comment(self, comment: Comment) -> Comment:
+        self._conn.execute(
+            "INSERT INTO comments (id, parent_id, parent_type, data, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                comment.id,
+                comment.parent_id,
+                comment.parent_type,
+                comment.model_dump_json(),
+                comment.status,
+                comment.created_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+        return comment
+
+    # ------------------------------------------------------------------
+    # Votes
+    # ------------------------------------------------------------------
+
+    def cast_vote(self, vote: Vote) -> dict[str, Any]:
+        """Cast a vote; returns updated counts dict or error dict."""
+        # Check 24h rate limit: same voter on same target within 24h.
+        cutoff = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+        existing = self._conn.execute(
+            "SELECT created_at FROM votes WHERE target_id = ? AND voter_id = ? AND voter_type = ?",
+            (vote.target_id, vote.voter_id, vote.voter_type),
+        ).fetchone()
+        if existing is not None:
+            # Already voted — UNIQUE constraint would fire; surface domain error.
+            return {"error": "duplicate_vote"}
+
+        # Also reject a new vote if they voted on this target in the last 24h
+        # (handles the case where the UNIQUE constraint was lifted but we still
+        # want to rate-limit within the window).
+        recent = self._conn.execute(
+            "SELECT created_at FROM votes WHERE target_id = ? AND voter_id = ? AND voter_type = ? AND created_at >= ?",
+            (vote.target_id, vote.voter_id, vote.voter_type, cutoff),
+        ).fetchone()
+        if recent is not None:
+            return {"error": "rate_limited"}
+
+        try:
+            self._conn.execute(
+                "INSERT INTO votes (id, target_id, target_type, voter_id, voter_type, value, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    vote.id,
+                    vote.target_id,
+                    vote.target_type,
+                    vote.voter_id,
+                    vote.voter_type,
+                    vote.value,
+                    vote.created_at.isoformat(),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            return {"error": "duplicate_vote"}
+
+        counts = self._recalculate_vote_counts(vote.target_id, vote.target_type)
+        self._conn.commit()
+        return counts
+
+    def _recalculate_vote_counts(self, target_id: str, target_type: str) -> dict[str, int]:
+        rows = self._conn.execute(
+            "SELECT voter_type, value, COUNT(*) FROM votes WHERE target_id = ? GROUP BY voter_type, value",
+            (target_id,),
+        ).fetchall()
+        counts: dict[str, int] = {
+            "agent_upvotes": 0,
+            "agent_downvotes": 0,
+            "human_upvotes": 0,
+            "human_downvotes": 0,
+        }
+        for voter_type, value, cnt in rows:
+            if voter_type == "agent" and value == 1:
+                counts["agent_upvotes"] = cnt
+            elif voter_type == "agent" and value == -1:
+                counts["agent_downvotes"] = cnt
+            elif voter_type == "human" and value == 1:
+                counts["human_upvotes"] = cnt
+            elif voter_type == "human" and value == -1:
+                counts["human_downvotes"] = cnt
+
+        # Persist denormalized counts back to the target row.
+        data_row = None
+        if target_type == "question":
+            data_row = self._conn.execute(
+                "SELECT data FROM questions WHERE id = ?", (target_id,)
+            ).fetchone()
+            if data_row:
+                q = Question.model_validate_json(data_row[0])
+                updated = q.model_copy(update=counts)
+                self._conn.execute(
+                    "UPDATE questions SET data = ? WHERE id = ?",
+                    (updated.model_dump_json(), target_id),
                 )
-            else:
-                activity.append(
-                    {
-                        "type": "proposed",
-                        "unit_id": row[0],
-                        "summary": unit.insight.summary,
-                        "timestamp": proposed_ts,
-                    }
+        elif target_type == "answer":
+            data_row = self._conn.execute(
+                "SELECT data FROM answers WHERE id = ?", (target_id,)
+            ).fetchone()
+            if data_row:
+                a = Answer.model_validate_json(data_row[0])
+                updated = a.model_copy(update=counts)
+                self._conn.execute(
+                    "UPDATE answers SET data = ? WHERE id = ?",
+                    (updated.model_dump_json(), target_id),
                 )
-        activity.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
-        return activity[:limit]
+        return counts
 
-    def daily_counts(self, *, days: int = 30) -> list[dict[str, Any]]:
-        """Return daily proposal and approval counts with contiguous dates.
+    # ------------------------------------------------------------------
+    # Moderation
+    # ------------------------------------------------------------------
 
-        Returns one entry per day from the earliest activity (within the
-        lookback window) through today, filling gaps with zero counts.
-        Pre-migration rows with NULL created_at are excluded.
+    def approve_content(self, content_id: str) -> bool:
+        """Approve an answer or comment. Returns True if found and updated."""
+        for table in ("answers", "comments"):
+            row = self._conn.execute(
+                f"SELECT data, status FROM {table} WHERE id = ?", (content_id,)
+            ).fetchone()
+            if row is not None:
+                if row[1] != "pending":
+                    return False
+                if table == "answers":
+                    obj = Answer.model_validate_json(row[0])
+                    updated = obj.model_copy(update={"status": "approved"})
+                    self._conn.execute(
+                        "UPDATE answers SET data = ?, status = 'approved' WHERE id = ?",
+                        (updated.model_dump_json(), content_id),
+                    )
+                else:
+                    obj = Comment.model_validate_json(row[0])
+                    updated = obj.model_copy(update={"status": "approved"})
+                    self._conn.execute(
+                        "UPDATE comments SET data = ?, status = 'approved' WHERE id = ?",
+                        (updated.model_dump_json(), content_id),
+                    )
+                self._conn.commit()
+                return True
+        return False
 
-        Args:
-            days: Number of days to look back.
+    def reject_content(self, content_id: str) -> bool:
+        """Reject an answer or comment. Returns True if found and updated."""
+        for table in ("answers", "comments"):
+            row = self._conn.execute(
+                f"SELECT data, status FROM {table} WHERE id = ?", (content_id,)
+            ).fetchone()
+            if row is not None:
+                if row[1] != "pending":
+                    return False
+                if table == "answers":
+                    obj = Answer.model_validate_json(row[0])
+                    updated = obj.model_copy(update={"status": "rejected"})
+                    self._conn.execute(
+                        "UPDATE answers SET data = ?, status = 'rejected' WHERE id = ?",
+                        (updated.model_dump_json(), content_id),
+                    )
+                else:
+                    obj = Comment.model_validate_json(row[0])
+                    updated = obj.model_copy(update={"status": "rejected"})
+                    self._conn.execute(
+                        "UPDATE comments SET data = ?, status = 'rejected' WHERE id = ?",
+                        (updated.model_dump_json(), content_id),
+                    )
+                self._conn.commit()
+                return True
+        return False
 
-        Returns:
-            List of dicts with date, proposed, approved, and rejected
-            counts, ordered ascending.
+    # ------------------------------------------------------------------
+    # Querying
+    # ------------------------------------------------------------------
 
-        Raises:
-            ValueError: If days is not positive.
-        """
-        if days <= 0:
-            raise ValueError("days must be positive")
-        self._check_open()
-        cutoff = f"-{days} days"
-        with self._lock:
-            proposed_rows = self._conn.execute(
-                "SELECT date(created_at) as day, COUNT(*) as cnt "
-                "FROM knowledge_units "
-                "WHERE created_at >= date('now', ?) "
-                "GROUP BY day",
-                (cutoff,),
+    def pending_queue(self) -> dict[str, list[Any]]:
+        answer_rows = self._conn.execute(
+            "SELECT data FROM answers WHERE status = 'pending' ORDER BY created_at ASC"
+        ).fetchall()
+        comment_rows = self._conn.execute(
+            "SELECT data FROM comments WHERE status = 'pending' ORDER BY created_at ASC"
+        ).fetchall()
+        return {
+            "answers": [Answer.model_validate_json(r[0]) for r in answer_rows],
+            "comments": [Comment.model_validate_json(r[0]) for r in comment_rows],
+        }
+
+    def get_question_thread(self, question_id: str) -> dict[str, Any] | None:
+        q = self.get_question(question_id)
+        if q is None:
+            return None
+
+        answer_rows = self._conn.execute(
+            "SELECT data FROM answers WHERE question_id = ? AND status = 'approved'",
+            (question_id,),
+        ).fetchall()
+        answers = [Answer.model_validate_json(r[0]) for r in answer_rows]
+        ranked = rank_answers(answers, q.pinned_answer_id)
+
+        comment_rows = self._conn.execute(
+            "SELECT data FROM comments WHERE parent_id = ? AND parent_type = 'question' AND status = 'approved'",
+            (question_id,),
+        ).fetchall()
+        q_comments = [Comment.model_validate_json(r[0]) for r in comment_rows]
+
+        answer_threads = []
+        for answer in ranked:
+            a_comment_rows = self._conn.execute(
+                "SELECT data FROM comments WHERE parent_id = ? AND parent_type = 'answer' AND status = 'approved'",
+                (answer.id,),
             ).fetchall()
-            approved_rows = self._conn.execute(
-                "SELECT date(reviewed_at) as day, COUNT(*) as cnt "
-                "FROM knowledge_units "
-                "WHERE status = 'approved' "
-                "AND reviewed_at >= date('now', ?) "
-                "GROUP BY day",
-                (cutoff,),
-            ).fetchall()
-            rejected_rows = self._conn.execute(
-                "SELECT date(reviewed_at) as day, COUNT(*) as cnt "
-                "FROM knowledge_units "
-                "WHERE status = 'rejected' "
-                "AND reviewed_at >= date('now', ?) "
-                "GROUP BY day",
-                (cutoff,),
-            ).fetchall()
-        proposed = {row[0]: row[1] for row in proposed_rows}
-        approved = {row[0]: row[1] for row in approved_rows}
-        rejected = {row[0]: row[1] for row in rejected_rows}
-        all_dates = set(proposed) | set(approved) | set(rejected)
-        if not all_dates:
+            a_comments = [Comment.model_validate_json(r[0]) for r in a_comment_rows]
+            answer_threads.append({"answer": answer, "comments": a_comments})
+
+        return {
+            "question": q,
+            "comments": q_comments,
+            "answers": answer_threads,
+        }
+
+    def search(
+        self,
+        query: str,
+        tags: list[str] | None = None,
+        language: str | None = None,
+        framework: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """FTS5 + tag Jaccard search returning ranked question threads."""
+        query_tags = set(tags or [])
+
+        # Query FTS5 for candidate questions.
+        fts_rows = self._conn.execute(
+            "SELECT entity_id, entity_type, question_id, rank FROM search_index WHERE search_index MATCH ? ORDER BY rank",
+            (query,),
+        ).fetchall()
+
+        if not fts_rows:
             return []
-        start = min(datetime.strptime(d, "%Y-%m-%d").date() for d in all_dates)
-        end = datetime.now(UTC).date()
-        result: list[dict[str, Any]] = []
-        current = start
-        while current <= end:
-            key = current.isoformat()
-            result.append(
-                {
-                    "date": key,
-                    "proposed": proposed.get(key, 0),
-                    "approved": approved.get(key, 0),
-                    "rejected": rejected.get(key, 0),
-                }
+
+        # Collect raw FTS ranks (negative in SQLite FTS5, lower = better match).
+        raw_ranks = [r[3] for r in fts_rows]
+        min_rank = min(raw_ranks)
+        max_rank = max(raw_ranks)
+        rank_range = max_rank - min_rank if max_rank != min_rank else 1.0
+
+        # Group by question_id, keeping best (lowest) rank per question.
+        best_rank_per_question: dict[str, float] = {}
+        for entity_id, entity_type, question_id, rank in fts_rows:
+            current = best_rank_per_question.get(question_id)
+            if current is None or rank < current:
+                best_rank_per_question[question_id] = rank
+
+        # Score each candidate question.
+        scored: list[tuple[float, str]] = []
+        for question_id, raw_rank in best_rank_per_question.items():
+            q = self.get_question(question_id)
+            if q is None:
+                continue
+
+            # Normalize FTS5 rank to [0,1]; higher = more relevant.
+            normalized_rank = 1.0 - (raw_rank - min_rank) / rank_range
+
+            # Compute tag Jaccard against question's tags.
+            q_tags = self._get_question_tag_names(question_id)
+            if query_tags or q_tags:
+                intersection = len(query_tags & q_tags)
+                union = len(query_tags | q_tags)
+                jaccard = intersection / union if union > 0 else 0.0
+            else:
+                jaccard = 0.0
+
+            language_match = language is not None and (
+                q.context_language is not None
+                and q.context_language.lower() == language.lower()
             )
-            current += timedelta(days=1)
-        return result
+            framework_match = framework is not None and (
+                q.context_framework is not None
+                and q.context_framework.lower() == framework.lower()
+            )
+
+            text_rel = text_relevance_score(
+                fts5_rank=normalized_rank,
+                tag_jaccard=jaccard,
+                language_match=language_match,
+                framework_match=framework_match,
+            )
+
+            # Get best approved answer for content score.
+            answer_rows = self._conn.execute(
+                "SELECT data FROM answers WHERE question_id = ? AND status = 'approved'",
+                (question_id,),
+            ).fetchall()
+            answers = [Answer.model_validate_json(r[0]) for r in answer_rows]
+            ranked_answers = rank_answers(answers, q.pinned_answer_id)
+            best_answer = ranked_answers[0] if ranked_answers else None
+
+            content_score = search_content_score(q, best_answer)
+            final_score = text_rel * (1.0 + content_score)
+
+            scored.append((final_score, question_id))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        scored = scored[:limit]
+
+        results = []
+        for _, question_id in scored:
+            thread = self.get_question_thread(question_id)
+            if thread is None:
+                continue
+            # Cap at top 3 approved answers (already ranked, pinned first).
+            thread["answers"] = thread["answers"][:3]
+            results.append(thread)
+
+        return results
+
+    def find_similar_questions(self, title: str, tag_names: list[str]) -> list[dict[str, Any]]:
+        """FTS5 on title field, Jaccard on tags, threshold 0.5, return top 3."""
+        query_tags = set(tag_names)
+
+        try:
+            fts_rows = self._conn.execute(
+                "SELECT entity_id, entity_type, question_id, rank FROM search_index WHERE search_index MATCH ? AND entity_type = 'question' ORDER BY rank",
+                (title,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+        if not fts_rows:
+            return []
+
+        raw_ranks = [r[3] for r in fts_rows]
+        min_rank = min(raw_ranks)
+        max_rank = max(raw_ranks)
+        rank_range = max_rank - min_rank if max_rank != min_rank else 1.0
+
+        scored = []
+        for entity_id, entity_type, question_id, raw_rank in fts_rows:
+            q = self.get_question(question_id)
+            if q is None:
+                continue
+
+            normalized_rank = 1.0 - (raw_rank - min_rank) / rank_range
+
+            q_tags = self._get_question_tag_names(question_id)
+            if query_tags or q_tags:
+                intersection = len(query_tags & q_tags)
+                union = len(query_tags | q_tags)
+                jaccard = intersection / union if union > 0 else 0.0
+            else:
+                jaccard = 0.0
+
+            # Combined similarity: equal weight between FTS rank and tag overlap.
+            similarity = 0.5 * normalized_rank + 0.5 * jaccard
+
+            if similarity >= 0.5:
+                scored.append((similarity, q))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [{"question": q, "similarity": score} for score, q in scored[:3]]
+
+    def _get_question_tag_names(self, question_id: str) -> set[str]:
+        rows = self._conn.execute(
+            "SELECT t.name FROM tags t JOIN question_tags qt ON t.id = qt.tag_id WHERE qt.question_id = ?",
+            (question_id,),
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def get_status(self) -> dict[str, Any]:
+        total_questions = self._conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
+        total_answers = self._conn.execute("SELECT COUNT(*) FROM answers WHERE status = 'approved'").fetchone()[0]
+        total_tags = self._conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+        total_votes = self._conn.execute("SELECT COUNT(*) FROM votes").fetchone()[0]
+        unanswered = self._conn.execute(
+            "SELECT COUNT(DISTINCT q.id) FROM questions q LEFT JOIN answers a ON a.question_id = q.id AND a.status = 'approved' WHERE a.id IS NULL"
+        ).fetchone()[0]
+        pending_answers = self._conn.execute("SELECT COUNT(*) FROM answers WHERE status = 'pending'").fetchone()[0]
+        pending_comments = self._conn.execute("SELECT COUNT(*) FROM comments WHERE status = 'pending'").fetchone()[0]
+        return {
+            "total_questions": total_questions,
+            "total_answers": total_answers,
+            "total_tags": total_tags,
+            "total_votes": total_votes,
+            "unanswered": unanswered,
+            "pending": pending_answers + pending_comments,
+        }
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+def _row_to_edit_history(row: tuple) -> EditHistory:
+    return EditHistory(
+        id=row[0],
+        target_id=row[1],
+        target_type=row[2],
+        previous_body=row[3],
+        new_body=row[4],
+        edited_by=row[5],
+        edited_by_type=row[6],
+        edited_at=datetime.fromisoformat(row[7]),
+    )
