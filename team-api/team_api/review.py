@@ -24,10 +24,33 @@ def review_queue(
     store: TeamStore = Depends(get_store),
 ) -> dict[str, Any]:
     queue = store.pending_queue()
-    return {
-        "answers": [a.model_dump(mode="json") for a in queue["answers"]],
-        "comments": [c.model_dump(mode="json") for c in queue["comments"]],
-    }
+    items: list[dict[str, Any]] = []
+    for answer in queue["answers"]:
+        question = store.get_question(answer.question_id)
+        items.append({
+            "id": answer.id,
+            "type": "answer",
+            "content": answer.model_dump(mode="json"),
+            "question": question.model_dump(mode="json") if question else None,
+            "status": answer.status,
+        })
+    for comment in queue["comments"]:
+        # For comments on answers, find the parent question
+        question = None
+        if comment.parent_type == "answer":
+            parent_answer = store.get_answer(comment.parent_id)
+            if parent_answer:
+                question = store.get_question(parent_answer.question_id)
+        elif comment.parent_type == "question":
+            question = store.get_question(comment.parent_id)
+        items.append({
+            "id": comment.id,
+            "type": "comment",
+            "content": comment.model_dump(mode="json"),
+            "question": question.model_dump(mode="json") if question else None,
+            "status": comment.status,
+        })
+    return {"items": items, "total": len(items)}
 
 
 # ------------------------------------------------------------------

@@ -46,7 +46,6 @@ def _create_question(client: TestClient, **overrides: Any) -> dict[str, Any]:
     defaults: dict[str, Any] = {
         "title": "How do I configure connection pooling?",
         "body": "I need a pool with max size.",
-        "created_by": "agent-smith",
         "tags": ["databases"],
     }
     resp = client.post("/questions", json={**defaults, **overrides}, headers=_agent_headers())
@@ -73,7 +72,11 @@ class TestReviewQueue:
         resp = client.get("/review/queue", headers=_auth_header(token))
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body["answers"]) == 1
+        assert len(body["items"]) == 1
+        item = body["items"][0]
+        assert item["type"] == "answer"
+        assert item["question"]["id"] == q["id"]
+        assert item["status"] == "pending"
 
     def test_queue_requires_auth(self, client: TestClient) -> None:
         resp = client.get("/review/queue")
@@ -84,8 +87,8 @@ class TestReviewQueue:
         resp = client.get("/review/queue", headers=_auth_header(token))
         assert resp.status_code == 200
         body = resp.json()
-        assert body["answers"] == []
-        assert body["comments"] == []
+        assert body["items"] == []
+        assert body["total"] == 0
 
 
 class TestApprove:
