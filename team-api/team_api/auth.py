@@ -1,5 +1,6 @@
-"""Authentication: password hashing, JWT creation and validation."""
+"""Authentication: password hashing, JWT creation and validation, API key support."""
 
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -14,17 +15,14 @@ from .store import TeamStore
 
 
 def hash_password(password: str) -> str:
-    """Hash a password with bcrypt."""
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    """Verify a password against its bcrypt hash."""
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
 def create_token(username: str, *, secret: str, ttl_hours: int = 24) -> str:
-    """Create a JWT token for the given username."""
     now = datetime.now(UTC)
     payload = {
         "sub": username,
@@ -35,58 +33,47 @@ def create_token(username: str, *, secret: str, ttl_hours: int = 24) -> str:
 
 
 def verify_token(token: str, *, secret: str) -> dict[str, Any]:
-    """Verify and decode a JWT token."""
     return jwt.decode(token, secret, algorithms=["HS256"])
 
 
 class LoginRequest(BaseModel):
-    """Login request body."""
-
     username: str
     password: str
 
 
 class LoginResponse(BaseModel):
-    """Login response body."""
-
     token: str
     username: str
 
 
 class MeResponse(BaseModel):
-    """Current user response body."""
-
     username: str
     created_at: str
 
 
 def _get_jwt_secret() -> str:
-    """Return the JWT secret, failing if unset.
-
-    Returns:
-        The value of the CQ_JWT_SECRET environment variable.
-
-    Raises:
-        RuntimeError: If the environment variable is not set.
-    """
-    secret = os.environ.get("CQ_JWT_SECRET")
+    """Return ACQ_JWT_SECRET, failing loudly if unset."""
+    secret = os.environ.get("ACQ_JWT_SECRET")
     if not secret:
-        raise RuntimeError("CQ_JWT_SECRET environment variable is required")
+        raise RuntimeError("ACQ_JWT_SECRET environment variable is required")
     return secret
 
 
-def get_current_user(request: Request) -> str:
-    """FastAPI dependency that extracts and validates the JWT from the Authorization header.
+def _get_api_keys() -> dict[str, str]:
+    """Return the API key → agent_name mapping from ACQ_API_KEYS env var.
 
-    Args:
-        request: The incoming FastAPI request.
-
-    Returns:
-        The username extracted from the validated token.
-
-    Raises:
-        HTTPException: With status 401 if the header is missing, malformed, or the token is invalid.
+    ACQ_API_KEYS is a JSON string like {"key1": "agent-name-1"}.
+    Returns an empty dict if unset.
     """
+    raw = os.environ.get("ACQ_API_KEYS", "{}")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+
+def get_current_user(request: Request) -> str:
+    """FastAPI dependency: validates Bearer JWT and returns username."""
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(
@@ -101,6 +88,18 @@ def get_current_user(request: Request) -> str:
     return payload["sub"]
 
 
+def get_agent_identity(request: Request) -> str:
+    """FastAPI dependency: validates X-API-Key header and returns agent_name."""
+    key = request.headers.get("X-API-Key")
+    if not key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+    api_keys = _get_api_keys()
+    agent_name = api_keys.get(key)
+    if agent_name is None:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return agent_name
+
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
@@ -108,18 +107,6 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 def login(
     request: LoginRequest, store: TeamStore = Depends(get_store)
 ) -> LoginResponse:
-    """Authenticate a user and return a JWT token.
-
-    Args:
-        request: Login credentials.
-        store: The team store dependency.
-
-    Returns:
-        A LoginResponse with a signed JWT and the username.
-
-    Raises:
-        HTTPException: With status 401 if credentials are invalid.
-    """
     user = store.get_user(request.username)
     if user is None or not verify_password(request.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password")
@@ -131,18 +118,6 @@ def login(
 def me(
     username: str = Depends(get_current_user), store: TeamStore = Depends(get_store)
 ) -> MeResponse:
-    """Return the current user's info.
-
-    Args:
-        username: The authenticated username from the JWT dependency.
-        store: The team store dependency.
-
-    Returns:
-        A MeResponse with the user's username and creation timestamp.
-
-    Raises:
-        HTTPException: With status 404 if the user no longer exists.
-    """
     user = store.get_user(username)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")

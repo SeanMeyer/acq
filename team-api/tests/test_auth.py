@@ -1,5 +1,8 @@
-"""Tests for authentication module."""
+"""Tests for authentication: JWT, API key, and auth endpoints."""
 
+from __future__ import annotations
+
+import json
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -13,8 +16,9 @@ from team_api.auth import create_token, hash_password, verify_password, verify_t
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    monkeypatch.setenv("CQ_DB_PATH", str(tmp_path / "test.db"))
-    monkeypatch.setenv("CQ_JWT_SECRET", "test-secret")
+    monkeypatch.setenv("ACQ_DB_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("ACQ_JWT_SECRET", "test-secret")
+    monkeypatch.setenv("ACQ_API_KEYS", json.dumps({"valid-key": "agent-smith"}))
     with TestClient(app) as c:
         yield c
 
@@ -22,9 +26,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
 def _seed_user(
     client: TestClient, username: str = "peter", password: str = "secret123"
 ) -> None:
-    """Seed a user directly via the store."""
     from team_api.app import _get_store
-    from team_api.auth import hash_password
 
     store = _get_store()
     store.create_user(username, hash_password(password))
@@ -65,6 +67,21 @@ class TestJWT:
         token = create_token("peter", secret=secret_a)
         with pytest.raises(jwt.InvalidSignatureError):
             verify_token(token, secret=secret_b)
+
+
+class TestApiKeyAuth:
+    def test_valid_api_key_accepted(self, client: TestClient) -> None:
+        # The /status endpoint uses agent identity (API key auth).
+        resp = client.get("/status", headers={"X-API-Key": "valid-key"})
+        assert resp.status_code == 200
+
+    def test_invalid_api_key_returns_401(self, client: TestClient) -> None:
+        resp = client.get("/status", headers={"X-API-Key": "bad-key"})
+        assert resp.status_code == 401
+
+    def test_missing_api_key_returns_401(self, client: TestClient) -> None:
+        resp = client.get("/status")
+        assert resp.status_code == 401
 
 
 class TestLoginEndpoint:

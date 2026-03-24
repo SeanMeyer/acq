@@ -6,12 +6,5 @@ from .store import TeamStore
 
 
 def get_store(request: Request) -> TeamStore:
-    """FastAPI dependency that returns the store from app state.
-
-    Args:
-        request: The incoming FastAPI request.
-
-    Returns:
-        The TeamStore instance attached to the application state.
-    """
+    """FastAPI dependency: returns the TeamStore from app.state."""
     return request.app.state.store
