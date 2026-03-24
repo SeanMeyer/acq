@@ -74,11 +74,11 @@ export const ReviewCard = forwardRef<HTMLDivElement, Props>(
               </span>
             </div>
 
-            {question.tags.length > 0 && (
+            {question.tags && question.tags.length > 0 && (
               <div className="flex flex-wrap gap-1 mb-2">
                 {question.tags.map((tag) => (
                   <span
-                    key={tag.id}
+                    key={tag.id ?? tag.name}
                     className="inline-block rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700"
                   >
                     {tag.name}
