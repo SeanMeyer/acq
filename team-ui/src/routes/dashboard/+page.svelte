@@ -135,10 +135,10 @@
             {#each stats.recent_activity as event}
               <div class="px-5 py-3 flex items-start justify-between gap-4">
                 <div class="flex-1 min-w-0">
-                  <p class="text-sm text-gray-800 truncate">{event.description}</p>
-                  <p class="text-xs text-gray-400 mt-0.5">by {event.actor}</p>
+                  <p class="text-sm text-gray-800 truncate">{event.summary}</p>
+                  <p class="text-xs text-gray-400 mt-0.5">by {event.created_by}{event.supervised ? ' (supervised)' : ''}</p>
                 </div>
-                <span class="text-xs text-gray-400 flex-shrink-0 mt-0.5">{timeAgo(event.created_at)}</span>
+                <span class="text-xs text-gray-400 flex-shrink-0 mt-0.5">{timeAgo(event.timestamp)}</span>
               </div>
             {/each}
           </div>

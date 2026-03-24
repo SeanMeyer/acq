@@ -2,8 +2,6 @@
   import type { ReviewItem, Answer } from '$lib/types';
   import { timeAgo } from '$lib/utils';
   import Markdown from './Markdown.svelte';
-  import VoteBadge from './VoteBadge.svelte';
-  import StatusBadge from './StatusBadge.svelte';
   import EditModal from './EditModal.svelte';
   import { api } from '$lib/api';
 
@@ -19,13 +17,11 @@
   let showEditModal = $state(false);
 
   const isAnswer = $derived(item.type === 'answer');
-  const content = $derived(item.content as Answer);
+  const content = $derived(item.content);
+  const answer = $derived(isAnswer ? item.content as Answer : null);
 
   async function saveEdit(body: string) {
     if (isAnswer) {
-      await api.editAnswer(item.content.id, body);
-    } else {
-      // Comments don't have a dedicated edit endpoint in the spec, fall back to answer edit
       await api.editAnswer(item.content.id, body);
     }
     onEditSaved?.();
@@ -79,11 +75,10 @@
   <div class="px-6 py-5">
     <div class="flex items-center justify-between mb-3">
       <div class="flex items-center gap-2">
-        <p class="text-xs font-medium text-gray-400 uppercase tracking-wide">
-          {isAnswer ? 'Answer' : 'Comment'}
+        <p class="text-xs font-medium text-indigo-600 uppercase tracking-wide">
+          {isAnswer ? 'Answer for review' : 'Comment for review'}
         </p>
-        <StatusBadge status={item.content.status} />
-        {#if isAnswer && (content as Answer).supervised}
+        {#if answer?.supervised}
           <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
             supervised
           </span>
@@ -91,40 +86,29 @@
       </div>
       <button
         onclick={() => (showEditModal = true)}
-        class="text-xs text-indigo-600 hover:text-indigo-800 font-medium transition-colors"
+        class="text-xs text-indigo-600 hover:text-indigo-800 font-medium transition-colors hover:underline"
       >
         Edit before approving
       </button>
     </div>
 
-    <Markdown content={item.content.body} />
-
-    <!-- Votes (answers only) -->
-    {#if isAnswer && (content as Answer).votes}
-      <div class="mt-3">
-        <VoteBadge
-          agent_upvotes={(content as Answer).votes.agent_upvotes}
-          agent_downvotes={(content as Answer).votes.agent_downvotes}
-          human_upvotes={(content as Answer).votes.human_upvotes}
-          human_downvotes={(content as Answer).votes.human_downvotes}
-        />
-      </div>
-    {/if}
+    <Markdown content={content.body} />
   </div>
 
   <!-- Footer -->
   <div class="px-6 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
     <span class="text-xs text-gray-500">
-      by <span class="font-medium text-gray-700">{item.content.author}</span>
+      by <span class="font-medium text-gray-700">{content.created_by}</span>
+      <span class="text-gray-400">({content.created_by_type})</span>
     </span>
-    <span class="text-xs text-gray-400">{timeAgo(item.content.created_at)}</span>
+    <span class="text-xs text-gray-400">{timeAgo(content.created_at)}</span>
   </div>
 </div>
 
 {#if showEditModal}
   <EditModal
     title="Edit {isAnswer ? 'answer' : 'comment'}"
-    initialBody={item.content.body}
+    initialBody={content.body}
     onSave={saveEdit}
     onClose={() => (showEditModal = false)}
   />

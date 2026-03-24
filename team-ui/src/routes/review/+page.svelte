@@ -4,6 +4,7 @@
   import type { ReviewItem } from '$lib/types';
   import ReviewCard from '../../components/ReviewCard.svelte';
   import ReviewActions from '../../components/ReviewActions.svelte';
+  import { swipe } from '$lib/actions/swipe';
 
   let items = $state<ReviewItem[]>([]);
   let total = $state(0);
@@ -208,7 +209,9 @@
           </span>
         </div>
 
-        <ReviewCard item={currentItem} onEditSaved={() => {}} />
+        <div use:swipe={{ onRight: handleApprove, onLeft: handleReject, onUp: handleSkip, threshold: 100 }}>
+          <ReviewCard item={currentItem} onEditSaved={() => {}} />
+        </div>
 
         <div class="flex justify-center pt-2">
           <ReviewActions
