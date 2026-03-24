@@ -49,8 +49,28 @@ jobs:
 
       - name: Sync Python dependencies
         run: |
-          (cd plugins/cq/server && uv sync --group dev)
+          (cd shared && uv sync --group dev)
+          (cd plugins/acq/server && uv sync --group dev)
           (cd team-api && uv sync --group dev)
 
       - name: Test
         run: make test
+
+  build-ui:
+    name: Build UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: team-ui/pnpm-lock.yaml
+
+      - name: Install and build
+        run: cd team-ui && pnpm install --frozen-lockfile && pnpm tsc --noEmit
