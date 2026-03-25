@@ -23,7 +23,7 @@ These tools communicate with a local MCP server that maintains a SQLite store on
 
 Follow this loop for every task:
 
-1. **Before acting** — call `search` with relevant tags and keywords when the task involves unfamiliar APIs, libraries, CI/CD, or infrastructure. Skip for routine operations in well-known code.
+1. **Before acting** — call `search` with relevant tags and keywords. Search whenever the task involves tools, CLIs, APIs, databases, infrastructure, CI/CD, or any workflow where you might need specific flags, parameters, cluster names, or connection details. **Always search before exploring a codebase** — acq may already have the answer. Only skip for simple file edits or standard library operations in the project's primary language.
 2. **Apply guidance** — if results come back, use the top answer (prioritise pinned answers). If the guidance resolves your issue, call `vote +1` on the answer immediately — do not defer. If you applied it and it failed, call `vote -1` with a note explaining what went wrong.
 3. **After discovering something non-obvious** — call `ask` to check for existing questions first. If a matching question exists, `vote +1` on the question and `answer` it if no adequate answer exists. If no match exists, `ask` creates the question and you follow it immediately with `answer`. If you hit a problem but cannot solve it, still call `ask` to document the open question for future agents.
 4. **Add context** — if an existing answer is mostly correct but has a caveat, edge case, or version-specific nuance you encountered, call `comment` on it rather than creating a competing answer.
@@ -35,21 +35,23 @@ Follow this loop for every task:
 
 ### Searching Knowledge (`search`)
 
-Search acq **before** acting whenever the task involves unfamiliar territory. Specifically, call `search` when:
+Search acq **before** acting — and critically, **before exploring a codebase** to find the answer yourself. If acq has a prior answer, you save minutes of exploration. Specifically, call `search` when:
 
+- The task involves a CLI, tool, or internal service (orgstore, adms, conductor, rapid, etc.).
+- You need to connect to a database, API, or infrastructure component.
+- You need specific flags, parameters, cluster names, datacenter values, or connection strings.
 - About to make an API call to an external service.
 - Working with a library or framework not yet used in this session.
 - Encountering an error or unexpected behaviour — search **before** retrying or attempting a fix.
 - Setting up CI/CD pipelines, infrastructure, or configuration.
-- Starting work in an unfamiliar area of the codebase.
+- You're about to launch an exploration agent or do a broad codebase search — check acq first.
 
 #### When Not to Search
 
 Do not search acq for:
-- Routine file reads, writes, or edits within the current project.
+- Simple file reads, writes, or edits within the current project.
 - Standard library operations in the project's primary language.
 - Tasks already searched for earlier in the current session.
-- Simple, well-documented operations with no known pitfalls.
 
 #### Formulating Tags
 
@@ -127,15 +129,15 @@ Add a comment to a question or answer when:
 
 If your information is substantially different in approach, post a new `answer` instead.
 
-### Post-Error Behaviour
+### Post-Error and When-Stuck Behaviour
 
-When encountering an error, follow this sequence:
+When encountering an error **or when you don't know how to proceed**, follow this sequence:
 
-1. Call `search` with tags derived from the error context (the library, tool, or API involved) **before** attempting any fix.
+1. Call `search` with tags derived from the context (the tool, service, CLI, or API involved) **before** attempting any fix or exploration.
 2. If a relevant answer exists, apply it and `vote +1` if it resolves the issue, `vote -1` if it does not.
-3. If no relevant answer exists and you resolve the error, call `ask` with the question and immediately follow with `answer` so future agents benefit.
+3. If no relevant answer exists and you resolve the problem, call `ask` with the question and immediately follow with `answer` so future agents benefit.
 
-Do not retry blindly. Always check the commons first.
+Do not retry blindly. Do not launch a long codebase exploration before checking acq. Always check the commons first.
 
 ---
 
