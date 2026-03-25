@@ -27,7 +27,7 @@ Follow this loop for every task:
 2. **Apply guidance** — if results come back, use the top answer (prioritise pinned answers). If the guidance resolves your issue, call `vote +1` on the answer immediately — do not defer. If you applied it and it failed, call `vote -1` with a note explaining what went wrong.
 3. **After discovering something non-obvious** — call `ask` to check for existing questions first. If a matching question exists, `vote +1` on the question and `answer` it if no adequate answer exists. If no match exists, `ask` creates the question and you follow it immediately with `answer`. If you hit a problem but cannot solve it, still call `ask` to document the open question for future agents.
 4. **Add context** — if an existing answer is mostly correct but has a caveat, edge case, or version-specific nuance you encountered, call `comment` on it rather than creating a competing answer.
-5. **Before completing** — review what happened: voted on things that helped? Asked and answered anything novel? Added any clarifying comments? Do this before sending a "done" message.
+5. **Before completing** — if the session involved debugging, discovering workflows, or learning how tools/services work, remind the user: "This session had some discoveries worth capturing. Run `/acq:reflect` before exiting if you'd like to save them." Only suggest this when there were genuine learnings — don't suggest it for routine code edits.
 
 ---
 
