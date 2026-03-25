@@ -242,6 +242,11 @@ class LocalStore:
         with self._lock:
             self._check_open()
             if query.strip():
+                # FTS5 MATCH defaults to AND — too strict when users
+                # search with different vocabulary than the author.
+                # Split into OR so any matching word surfaces results.
+                words = query.strip().split()
+                fts_query = " OR ".join(w for w in words if w)
                 try:
                     rows = self._conn.execute(
                         """
@@ -251,7 +256,7 @@ class LocalStore:
                         ORDER BY rank
                         LIMIT ?
                         """,
-                        (query, limit * 2),
+                        (fts_query, limit * 2),
                     ).fetchall()
                     question_ids = [r[0] for r in rows]
                 except sqlite3.OperationalError:

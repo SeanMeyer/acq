@@ -544,11 +544,17 @@ class TeamStore:
         """FTS5 + tag Jaccard search returning ranked question threads."""
         query_tags = set(tags or [])
 
-        # Query FTS5 for candidate questions.
-        fts_rows = self._conn.execute(
-            "SELECT entity_id, entity_type, question_id, rank FROM search_index WHERE search_index MATCH ? ORDER BY rank",
-            (query,),
-        ).fetchall()
+        # Query FTS5 — split into OR so any matching word surfaces results.
+        # AND is too strict when users search with different vocabulary.
+        words = query.strip().split()
+        fts_query = " OR ".join(w for w in words if w)
+        try:
+            fts_rows = self._conn.execute(
+                "SELECT entity_id, entity_type, question_id, rank FROM search_index WHERE search_index MATCH ? ORDER BY rank",
+                (fts_query,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
 
         if not fts_rows:
             return []
