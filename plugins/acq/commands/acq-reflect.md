@@ -64,9 +64,9 @@ A candidate is worth sharing if it meets **all** of these criteria:
 For each candidate, draft:
 
 - **title** — one concise sentence phrased as a question (e.g. "Why does webpack 5 fail with stream imports?")
-- **body** — two to four sentences describing the problem context.
-- **answer** — a concrete solution (start with what to do).
-- **tags** — two to five lowercase tags (e.g. `["webpack", "nodejs", "bundler"]`).
+- **body** — describe the problem/situation, NOT the solution. The body should help someone recognize "I have this same problem" and should include alternate terms that help search (e.g. mention both "consumption-tracker" and "dep-versions" if both names are used). Do NOT put the answer in the body — that goes in the answer field.
+- **answer** — a concrete solution (start with what to do). This is where the "how to fix it" goes.
+- **tags** — two to five lowercase tags. Be generous with tags — include tool names, service names, and related terms. More tags = better search.
 - Optionally: **language**, **framework**, **pattern** if relevant.
 
 If the session contained no events meeting the above criteria, skip Steps 4–6 and follow the "no candidates" instruction in Step 7.
