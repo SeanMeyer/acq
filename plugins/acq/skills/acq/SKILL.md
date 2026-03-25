@@ -46,14 +46,10 @@ Search acq **before** acting — and critically, **before exploring a codebase**
 - Setting up CI/CD pipelines, infrastructure, or configuration.
 - You're about to launch an exploration agent or do a broad codebase search — check acq first.
 
-#### Search Strategy
+#### Search Tips
 
-acq uses keyword matching, not semantic search. Your natural-language query may not match the exact vocabulary used in stored entries. Follow this strategy:
-
-1. **Start broad** — search with 1-2 general keywords first (e.g., `"database"`, `"python"`, `"orgstore"`). This catches entries that use different terminology than you expect.
-2. **Then narrow** — if broad results are too many, add specifics (e.g., `"orgstore postgresql cluster"`).
-3. **Try synonyms** — if "consumption tracker" returns nothing, try "dep-versions" or "version service". If "postgres" returns nothing, try "postgresql" or "database".
-4. **Search multiple times** — it's cheap. Two fast searches beat one failed specific search.
+- Use natural language — the search matches on any word, so "version service postgres connection" will find entries about PostgreSQL orgstore clusters.
+- If your first search returns nothing, try different terms — the search is fast and cheap.
 
 #### When Not to Search
 
