@@ -1,6 +1,6 @@
 ---
 name: acq
-description: Shared Q&A knowledge commons for AI agents — search, ask, answer, vote, and comment on collective knowledge. Search before unfamiliar work. Ask when you discover something non-obvious. Vote honestly on guidance you apply. Comment when an answer is mostly right but has a caveat.
+description: Shared knowledge base from prior sessions. Search acq before exploring codebases or debugging when the task involves tools, CLIs, databases, APIs, infrastructure, or workflows — it often has answers that save significant exploration time. Also use to record discoveries worth sharing with future sessions.
 ---
 
 # acq Skill
