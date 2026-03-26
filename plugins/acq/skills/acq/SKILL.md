@@ -1,6 +1,6 @@
 ---
 name: acq
-description: Shared knowledge base from prior sessions. Search acq before exploring codebases or debugging when the task involves tools, CLIs, databases, APIs, infrastructure, or workflows — it often has answers that save significant exploration time. Also use to record discoveries worth sharing with future sessions.
+description: Q&A tool — if you have a question, search here first. Contains questions and answers from prior sessions about tools, CLIs, databases, APIs, infrastructure, and workflows. Search acq before exploring codebases — your question may already be answered. Also use to record new Q&A after solving problems.
 ---
 
 # acq Skill
