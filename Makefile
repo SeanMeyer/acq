@@ -86,6 +86,22 @@ dev-api:
 dev-ui:
 	cd team-ui && pnpm dev
 
+# Re-lock dependencies using public PyPI regardless of local env vars.
+.PHONY: lock
+lock:
+	cd shared && UV_DEFAULT_INDEX= UV_INDEX= uv lock
+	cd plugins/acq/server && UV_DEFAULT_INDEX= UV_INDEX= uv lock
+	cd team-api && UV_DEFAULT_INDEX= UV_INDEX= uv lock
+
+# Fail if any lock file contains internal-mirror URLs that CI can't reach.
+.PHONY: check-lockfiles
+check-lockfiles:
+	@if grep -rq 'depot-read-api-python' shared/uv.lock plugins/acq/server/uv.lock team-api/uv.lock 2>/dev/null; then \
+		echo "ERROR: lock files contain internal PyPI mirror URLs."; \
+		echo "Run 'make lock' to regenerate with public PyPI."; \
+		exit 1; \
+	fi
+
 .PHONY: lint
 lint:
 	cd shared && uv run ruff check . && uv run ruff format --check .
