@@ -11,6 +11,8 @@ from typing import Annotated, Any
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query
+from starlette.exceptions import HTTPException as _StarletteHTTPException
+from starlette.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from acq_shared.models import Answer, Comment, Question, Vote
@@ -340,6 +342,29 @@ def _serialise_thread(thread: dict[str, Any]) -> dict[str, Any]:
             for t in thread["answers"]
         ],
     }
+
+
+# ------------------------------------------------------------------
+# SPA static files (must be last — catch-all for UI routes)
+# ------------------------------------------------------------------
+
+_STATIC_DIR = Path(os.environ.get("ACQ_STATIC_DIR", "/app/static"))
+
+
+class _SPAStaticFiles(StaticFiles):
+    """Serve static files with SPA fallback (index.html for unknown paths)."""
+
+    async def get_response(self, path: str, scope: dict) -> Any:
+        try:
+            return await super().get_response(path, scope)
+        except _StarletteHTTPException as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
+
+
+if _STATIC_DIR.is_dir():
+    app.mount("/", _SPAStaticFiles(directory=_STATIC_DIR, html=True), name="ui")
 
 
 def main() -> None:
