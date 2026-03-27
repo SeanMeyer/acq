@@ -1,5 +1,5 @@
 import sqlite3
-from acq_shared.schema import create_tables, SCHEMA_VERSION
+from acq_shared.sqlite_schema import create_tables, SCHEMA_VERSION
 
 
 class TestSchema:

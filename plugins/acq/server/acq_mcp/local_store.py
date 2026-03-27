@@ -15,7 +15,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING
 
 from acq_shared.models import Answer, Comment, Question, Tag, Vote
-from acq_shared.schema import create_tables
+from acq_shared.sqlite_schema import create_tables
 
 if TYPE_CHECKING:
     from .team_client import TeamClient

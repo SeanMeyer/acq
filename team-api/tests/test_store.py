@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from acq_shared.models import Answer, Comment, Question, Tag, Vote
-from acq_shared.schema import create_tables
+from acq_shared.sqlite_schema import create_tables
 from team_api.store import TeamStore
 
 

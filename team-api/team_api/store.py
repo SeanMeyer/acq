@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from acq_shared.models import Answer, Comment, EditHistory, Question, Tag, Vote
-from acq_shared.schema import create_tables
+from acq_shared.sqlite_schema import create_tables
 from acq_shared.scoring import rank_answers, search_content_score, text_relevance_score
 
 
