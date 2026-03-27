@@ -445,10 +445,12 @@ async def comment(
 
     store = _get_store()
     team_client = _get_team_client()
+    parent_type = "answer" if parent_id.startswith("a_") else "question"
 
     if team_client is not None:
         result = await team_client.create_comment(
             parent_id=parent_id,
+            parent_type=parent_type,
             body=body,
             created_by=_get_agent_name(),
             supervised=supervised,
@@ -467,7 +469,7 @@ async def comment(
     # Fallback: local only (mark for drain)
     c = Comment(
         parent_id=parent_id,
-        parent_type="question",
+        parent_type=parent_type,
         body=body,
         created_by=_get_agent_name(),
         created_by_type="agent",

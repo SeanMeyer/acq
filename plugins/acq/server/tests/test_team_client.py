@@ -212,7 +212,7 @@ class TestCreateComment:
     ) -> None:
         data = {"id": "c_team_1", "status": "pending"}
         monkeypatch.setattr(client._client, "post", _async_returning(_mock_response(201, data)))
-        result = await client.create_comment("q_1", "Great question!", "agent-1")
+        result = await client.create_comment("q_1", "question", "Great question!", "agent-1")
         assert result is not None
         assert result["id"] == "c_team_1"
 
@@ -220,7 +220,7 @@ class TestCreateComment:
         self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(client._client, "post", _raise_connect_error)
-        assert await client.create_comment("q_1", "C", "a") is None
+        assert await client.create_comment("q_1", "question", "C", "a") is None
 
 
 class TestReflect:

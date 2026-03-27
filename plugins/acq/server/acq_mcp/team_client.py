@@ -175,11 +175,14 @@ class TeamClient:
     async def create_comment(
         self,
         parent_id: str,
+        parent_type: str,
         body: str,
         created_by: str,
         supervised: bool = False,
     ) -> dict | None:
         payload = {
+            "parent_id": parent_id,
+            "parent_type": parent_type,
             "body": body,
             "created_by": created_by,
             "supervised": supervised,
