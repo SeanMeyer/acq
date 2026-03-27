@@ -74,6 +74,15 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
 
+-- Tracks IDs of locally-created content that needs to be drained to the
+-- team API. Content pulled from team via bulk_upsert is NOT added here.
+-- Drain removes entries after successful push.
+CREATE TABLE IF NOT EXISTS pending_drain (
+    entity_id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
     entity_id UNINDEXED,
     entity_type UNINDEXED,

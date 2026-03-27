@@ -289,7 +289,7 @@ async def ask(
                 "source": "team",
             }
 
-    # Fallback: local only
+    # Fallback: local only (mark for drain to team when available)
     q = Question(
         title=title,
         body=body,
@@ -300,6 +300,7 @@ async def ask(
         context_pattern=pattern,
     )
     result = await asyncio.to_thread(store.store.create_question, q, tags)
+    await asyncio.to_thread(store.store.mark_for_drain, result.id, "question")
     return {"action": "created", "question_id": result.id, "similar_questions": [], "source": "local"}
 
 
@@ -344,7 +345,7 @@ async def answer(
                     logger.warning("Write-through answer to local failed", exc_info=True)
             return {"answer_id": result.get("id"), "status": result.get("status", "pending"), "source": "team"}
 
-    # Fallback: local only
+    # Fallback: local only (mark for drain)
     a = Answer(
         question_id=question_id,
         body=body,
@@ -353,6 +354,7 @@ async def answer(
         supervised=supervised,
     )
     result_a = await asyncio.to_thread(store.store.create_answer, a)
+    await asyncio.to_thread(store.store.mark_for_drain, result_a.id, "answer")
     return {"answer_id": result_a.id, "status": result_a.status, "source": "local"}
 
 
@@ -406,7 +408,7 @@ async def vote(
                     logger.warning("Write-through vote to local failed", exc_info=True)
                 return result
 
-    # Fallback: local only
+    # Fallback: local only (mark for drain)
     v = Vote(
         target_id=target_id,
         target_type="question",
@@ -415,6 +417,7 @@ async def vote(
         value=value,
     )
     await asyncio.to_thread(store.store.cast_vote, v)
+    await asyncio.to_thread(store.store.mark_for_drain, v.id, "vote")
     return {"vote_id": v.id, "source": "local"}
 
 
@@ -459,7 +462,7 @@ async def comment(
                     logger.warning("Write-through comment to local failed", exc_info=True)
             return {"comment_id": result.get("id"), "status": result.get("status", "pending"), "source": "team"}
 
-    # Fallback: local only
+    # Fallback: local only (mark for drain)
     c = Comment(
         parent_id=parent_id,
         parent_type="question",
@@ -469,6 +472,7 @@ async def comment(
         supervised=supervised,
     )
     result_c = await asyncio.to_thread(store.store.create_comment, c)
+    await asyncio.to_thread(store.store.mark_for_drain, result_c.id, "comment")
     return {"comment_id": result_c.id, "status": result_c.status, "source": "local"}
 
 

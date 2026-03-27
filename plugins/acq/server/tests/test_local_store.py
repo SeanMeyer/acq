@@ -252,72 +252,87 @@ class TestAllMethods:
 
 
 class TestDrainToTeam:
-    async def test_drain_moves_questions_to_team(self, store: LocalStore) -> None:
-        store.create_question("Q", "B", "a", ["t"])
+    async def test_drain_pushes_pending_questions(self, store: LocalStore) -> None:
+        q = store.create_question("Q", "B", "a", ["t"])
+        store.store.mark_for_drain(q.id, "question")
+
         mock_client = MagicMock()
-        mock_client.create_question = AsyncMock(return_value={"id": "q_team_1"})
-        mock_client.create_answer = AsyncMock(return_value={"id": "a_1"})
-        mock_client.cast_vote = AsyncMock(return_value={"id": "v_1"})
-        mock_client.create_comment = AsyncMock(return_value={"id": "c_1"})
+        mock_client.create_question = AsyncMock(return_value={"id": q.id})
 
         drained = await store.drain_to_team(mock_client)
 
         assert drained == 1
-        assert len(store.all_questions()) == 0
-
-    async def test_drain_keeps_question_on_team_error(self, store: LocalStore) -> None:
-        store.create_question("Q", "B", "a", ["t"])
-        mock_client = MagicMock()
-        mock_client.create_question = AsyncMock(return_value=None)
-        mock_client.create_answer = AsyncMock(return_value=None)
-        mock_client.cast_vote = AsyncMock(return_value=None)
-        mock_client.create_comment = AsyncMock(return_value=None)
-
-        drained = await store.drain_to_team(mock_client)
-
-        assert drained == 0
+        mock_client.create_question.assert_called_once()
+        # Content stays in local (read replica) but drain queue is cleared
         assert len(store.all_questions()) == 1
+        assert len(store.store.get_pending_drain()) == 0
 
-    async def test_drain_handles_exception_gracefully(self, store: LocalStore) -> None:
+    async def test_drain_skips_content_not_marked(self, store: LocalStore) -> None:
+        """Content from bulk_upsert (team sync) is NOT marked for drain."""
         store.create_question("Q", "B", "a", ["t"])
-        mock_client = MagicMock()
-        mock_client.create_question = AsyncMock(side_effect=Exception("network error"))
-        mock_client.create_answer = AsyncMock(return_value=None)
-        mock_client.cast_vote = AsyncMock(return_value=None)
-        mock_client.create_comment = AsyncMock(return_value=None)
-
-        drained = await store.drain_to_team(mock_client)
-
-        assert drained == 0
-        assert len(store.all_questions()) == 1
-
-    async def test_drain_moves_answers(self, store: LocalStore) -> None:
-        q = store.create_question("Q", "B", "a", ["t"])
-        store.create_answer(q.id, "Answer body", "a")
+        # Not marked for drain — should not be pushed to team
 
         mock_client = MagicMock()
         mock_client.create_question = AsyncMock(return_value={"id": "q_team_1"})
-        mock_client.create_answer = AsyncMock(return_value={"id": "a_team_1"})
-        mock_client.cast_vote = AsyncMock(return_value={"id": "v_1"})
-        mock_client.create_comment = AsyncMock(return_value={"id": "c_1"})
 
         drained = await store.drain_to_team(mock_client)
 
-        assert drained == 2
-        assert len(store.all_answers()) == 0
+        assert drained == 0
+        mock_client.create_question.assert_not_called()
 
-    async def test_drain_moves_votes_and_comments(self, store: LocalStore) -> None:
-        store.cast_vote("q_123", "question", "a", "agent", 1)
-        store.create_comment("q_123", "question", "Nice question", "a")
+    async def test_drain_keeps_pending_on_team_error(self, store: LocalStore) -> None:
+        q = store.create_question("Q", "B", "a", ["t"])
+        store.store.mark_for_drain(q.id, "question")
 
         mock_client = MagicMock()
-        mock_client.create_question = AsyncMock(return_value={"id": "q_1"})
-        mock_client.create_answer = AsyncMock(return_value={"id": "a_1"})
-        mock_client.cast_vote = AsyncMock(return_value={"id": "v_team_1"})
-        mock_client.create_comment = AsyncMock(return_value={"id": "c_team_1"})
+        mock_client.create_question = AsyncMock(return_value=None)
+
+        drained = await store.drain_to_team(mock_client)
+
+        assert drained == 0
+        assert len(store.store.get_pending_drain()) == 1  # still pending
+
+    async def test_drain_handles_exception_gracefully(self, store: LocalStore) -> None:
+        q = store.create_question("Q", "B", "a", ["t"])
+        store.store.mark_for_drain(q.id, "question")
+
+        mock_client = MagicMock()
+        mock_client.create_question = AsyncMock(side_effect=Exception("network error"))
+
+        drained = await store.drain_to_team(mock_client)
+
+        assert drained == 0
+        assert len(store.store.get_pending_drain()) == 1
+
+    async def test_drain_pushes_answers(self, store: LocalStore) -> None:
+        q = store.create_question("Q", "B", "a", ["t"])
+        store.store.mark_for_drain(q.id, "question")
+        a = store.create_answer(q.id, "Answer body", "a")
+        store.store.mark_for_drain(a.id, "answer")
+
+        mock_client = MagicMock()
+        mock_client.create_question = AsyncMock(return_value={"id": q.id})
+        mock_client.create_answer = AsyncMock(return_value={"id": a.id})
 
         drained = await store.drain_to_team(mock_client)
 
         assert drained == 2
-        assert len(store.all_votes()) == 0
-        assert len(store.all_comments()) == 0
+        assert len(store.store.get_pending_drain()) == 0
+
+    async def test_drain_pushes_votes_and_comments(self, store: LocalStore) -> None:
+        v = store.cast_vote("q_123", "question", "a", "agent", 1)
+        store.store.mark_for_drain(v.id, "vote")
+        c = store.create_comment("q_123", "question", "Nice question", "a")
+        store.store.mark_for_drain(c.id, "comment")
+
+        mock_client = MagicMock()
+        mock_client.cast_vote = AsyncMock(return_value={"id": v.id})
+        mock_client.create_comment = AsyncMock(return_value={"id": c.id})
+
+        drained = await store.drain_to_team(mock_client)
+
+        assert drained == 2
+        assert len(store.store.get_pending_drain()) == 0
+        # Content stays in local (read replica), only drain queue is cleared
+        assert len(store.all_votes()) == 1
+        assert len(store.all_comments()) == 1

@@ -383,16 +383,19 @@ class TestDrainOnStartup:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         store = server._get_store()
-        store.create_question("Local Q", "B", "a", ["t"])
+        q = store.create_question("Local Q", "B", "a", ["t"])
+        store.store.mark_for_drain(q.id, "question")
 
         mock = _make_mock_team_client(
-            create_question_result={"id": "q_team_1"},
+            create_question_result={"id": q.id},
         )
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
         await _do_drain()
 
-        assert len(store.all_questions()) == 0
+        # Content stays in local (read replica) but drain queue is cleared
+        assert len(store.all_questions()) == 1
+        assert len(store.store.get_pending_drain()) == 0
         assert server._drain_done is True
 
     async def test_drain_skips_when_no_team(self) -> None:
@@ -430,11 +433,12 @@ class TestDrainOnStartup:
         # health() called only once — drain was skipped on second call
         assert mock.health.call_count == 1
 
-    async def test_drain_keeps_content_on_team_failure(
+    async def test_drain_keeps_pending_on_team_failure(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         store = server._get_store()
-        store.create_question("Local Q", "B", "a", ["t"])
+        q = store.create_question("Local Q", "B", "a", ["t"])
+        store.store.mark_for_drain(q.id, "question")
 
         mock = _make_mock_team_client(create_question_result=None)
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
@@ -442,6 +446,7 @@ class TestDrainOnStartup:
         await _do_drain()
 
         assert len(store.all_questions()) == 1
+        assert len(store.store.get_pending_drain()) == 1  # still pending
 
 
 class TestPullSync:

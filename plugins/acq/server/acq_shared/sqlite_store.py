@@ -852,6 +852,32 @@ class SqliteStore:
         self._conn.commit()
         return count
 
+    # ------------------------------------------------------------------
+    # Drain tracking
+    # ------------------------------------------------------------------
+
+    def mark_for_drain(self, entity_id: str, entity_type: str) -> None:
+        """Mark a locally-created entity as needing drain to team API."""
+        self._conn.execute(
+            "INSERT OR IGNORE INTO pending_drain (entity_id, entity_type) VALUES (?, ?)",
+            (entity_id, entity_type),
+        )
+        self._conn.commit()
+
+    def get_pending_drain(self) -> list[dict]:
+        """Return all entities pending drain, grouped by type."""
+        rows = self._conn.execute(
+            "SELECT entity_id, entity_type FROM pending_drain ORDER BY created_at"
+        ).fetchall()
+        return [{"entity_id": r[0], "entity_type": r[1]} for r in rows]
+
+    def clear_drain(self, entity_id: str) -> None:
+        """Remove an entity from the pending drain queue after successful push."""
+        self._conn.execute(
+            "DELETE FROM pending_drain WHERE entity_id = ?", (entity_id,)
+        )
+        self._conn.commit()
+
     def close(self) -> None:
         self._conn.close()
 

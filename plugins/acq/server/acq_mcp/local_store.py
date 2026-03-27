@@ -275,72 +275,92 @@ class LocalStore:
     # ------------------------------------------------------------------
 
     async def drain_to_team(self, team_client: "TeamClient") -> int:
-        """POST all local content to the team API, deleting on success.
+        """Push locally-created content to the team API.
 
-        Returns the number of items successfully drained.
+        Only drains items in the pending_drain queue — content pulled from the
+        team via bulk_upsert is never drained back. Returns the number of items
+        successfully drained.
         """
+        with self._lock:
+            self._check_open()
+            pending = self._store.get_pending_drain()
+
+        if not pending:
+            return 0
+
         drained = 0
+        from acq_shared.models import Question, Answer, Vote, Comment
 
-        # Drain answers before questions so FK cascade deletion doesn't remove them first.
-        for a in self.all_answers():
+        for item in pending:
+            eid, etype = item["entity_id"], item["entity_type"]
             try:
-                result = await team_client.create_answer(
-                    question_id=a.question_id,
-                    body=a.body,
-                    created_by=a.created_by,
-                    supervised=a.supervised,
-                )
-                if result is not None:
-                    self.delete_answer(a.id)
-                    drained += 1
-            except Exception:
-                logger.warning("Failed to drain answer %s to team", a.id, exc_info=True)
+                if etype == "question":
+                    row = self._conn.execute(
+                        "SELECT data FROM questions WHERE id = ?", (eid,)
+                    ).fetchone()
+                    if not row:
+                        self._store.clear_drain(eid)
+                        continue
+                    q = Question.model_validate_json(row[0])
+                    tags = self._get_tag_names_for_question_unlocked(q.id)
+                    result = await team_client.create_question(
+                        title=q.title, body=q.body, created_by=q.created_by,
+                        tags=tags, language=q.context_language,
+                        framework=q.context_framework, pattern=q.context_pattern,
+                        force_create=True,
+                    )
+                    if result is not None:
+                        self._store.clear_drain(eid)
+                        drained += 1
 
-        for q in self.all_questions():
-            try:
-                tags = self._get_tag_names_for_question_unlocked(q.id)
-                result = await team_client.create_question(
-                    title=q.title,
-                    body=q.body,
-                    created_by=q.created_by,
-                    tags=tags,
-                    language=q.context_language,
-                    framework=q.context_framework,
-                    pattern=q.context_pattern,
-                    force_create=True,
-                )
-                if result is not None:
-                    self.delete_question(q.id)
-                    drained += 1
-            except Exception:
-                logger.warning("Failed to drain question %s to team", q.id, exc_info=True)
+                elif etype == "answer":
+                    row = self._conn.execute(
+                        "SELECT data FROM answers WHERE id = ?", (eid,)
+                    ).fetchone()
+                    if not row:
+                        self._store.clear_drain(eid)
+                        continue
+                    a = Answer.model_validate_json(row[0])
+                    result = await team_client.create_answer(
+                        question_id=a.question_id, body=a.body,
+                        created_by=a.created_by, supervised=a.supervised,
+                    )
+                    if result is not None:
+                        self._store.clear_drain(eid)
+                        drained += 1
 
-        for v in self.all_votes():
-            try:
-                result = await team_client.cast_vote(
-                    target_id=v.target_id,
-                    value=v.value,
-                    voter_id=v.voter_id,
-                )
-                if result is not None:
-                    self.delete_vote(v.id)
-                    drained += 1
-            except Exception:
-                logger.warning("Failed to drain vote %s to team", v.id, exc_info=True)
+                elif etype == "vote":
+                    row = self._conn.execute(
+                        "SELECT target_id, voter_id, value FROM votes WHERE id = ?", (eid,)
+                    ).fetchone()
+                    if not row:
+                        self._store.clear_drain(eid)
+                        continue
+                    result = await team_client.cast_vote(
+                        target_id=row[0], value=row[2], voter_id=row[1],
+                    )
+                    if result is not None:
+                        self._store.clear_drain(eid)
+                        drained += 1
 
-        for c in self.all_comments():
-            try:
-                result = await team_client.create_comment(
-                    parent_id=c.parent_id,
-                    body=c.body,
-                    created_by=c.created_by,
-                    supervised=c.supervised,
-                )
-                if result is not None:
-                    self.delete_comment(c.id)
-                    drained += 1
+                elif etype == "comment":
+                    row = self._conn.execute(
+                        "SELECT data FROM comments WHERE id = ?", (eid,)
+                    ).fetchone()
+                    if not row:
+                        self._store.clear_drain(eid)
+                        continue
+                    c = Comment.model_validate_json(row[0])
+                    result = await team_client.create_comment(
+                        parent_id=c.parent_id, body=c.body,
+                        created_by=c.created_by, supervised=c.supervised,
+                    )
+                    if result is not None:
+                        self._store.clear_drain(eid)
+                        drained += 1
+
             except Exception:
-                logger.warning("Failed to drain comment %s to team", c.id, exc_info=True)
+                logger.warning("Failed to drain %s %s to team", etype, eid, exc_info=True)
 
         return drained
 
