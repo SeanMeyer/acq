@@ -25,9 +25,10 @@ class PostgresStore:
     to ensure the ``dogpark`` schema exists.
     """
 
-    def __init__(self, conn, *, create_schema: bool = True) -> None:
+    def __init__(self, conn, *, create_schema: bool = True, connect: Any = None) -> None:
         self._conn = conn
         self._lock = threading.Lock()
+        self._connect = connect  # Optional callable that returns a fresh connection
         if create_schema:
             create_tables(conn)
 
@@ -35,11 +36,30 @@ class PostgresStore:
     # helpers
     # ------------------------------------------------------------------
 
+    def _reconnect(self) -> None:
+        """Replace the connection using the connect factory, if available."""
+        if self._connect is None:
+            raise
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+        self._conn = self._connect()
+
     def _execute(self, sql: str, params: tuple = ()) -> Any:
         with self._lock:
-            cur = self._conn.cursor()
-            cur.execute(sql, params)
-            return cur
+            try:
+                cur = self._conn.cursor()
+                cur.execute(sql, params)
+                return cur
+            except Exception:
+                # Connection may be stale (e.g., JWT expired). Reconnect and retry once.
+                if self._connect is None:
+                    raise
+                self._reconnect()
+                cur = self._conn.cursor()
+                cur.execute(sql, params)
+                return cur
 
     def _execute_returning(self, sql: str, params: tuple = ()) -> Any:
         cur = self._execute(sql, params)

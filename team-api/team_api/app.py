@@ -94,20 +94,25 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             f"orgstore-{orgstore_cluster}-pg-proxy.orgstore-{orgstore_cluster}.svc.cluster.local",
         )
 
-        # Get JWT from emissary's Vault agent (runs as sidecar on Howler pods)
+        # Connection factory: fetches a fresh JWT from emissary's Vault agent
+        # and opens a new psycopg2 connection. Called at startup and on
+        # reconnect when the JWT expires (~4h).
         vault_addr = os.environ.get("VAULT_ADDR", "http://127.0.0.1:8658/vault/agent")
         token_url = f"{vault_addr}/v1/identity/oidc/token/orgstore-{orgstore_cluster}"
-        resp = requests.get(token_url, headers={"X-Vault-Request": "true"}, timeout=5)
-        resp.raise_for_status()
-        jwt_token = resp.json()["data"]["token"]
 
-        conn = psycopg2.connect(
-            host=db_host, dbname=db_name, user=db_user,
-            password=jwt_token, sslmode="require",
-        )
+        def _connect():
+            resp = requests.get(token_url, headers={"X-Vault-Request": "true"}, timeout=5)
+            resp.raise_for_status()
+            jwt_token = resp.json()["data"]["token"]
+            return psycopg2.connect(
+                host=db_host, dbname=db_name, user=db_user,
+                password=jwt_token, sslmode="require",
+            )
+
+        conn = _connect()
         # Tables already created via DogPark toolbox — skip CREATE TABLE
         # (the dev_db_acq user only has USAGE, not CREATE on dogpark schema)
-        _store = PostgresStore(conn, create_schema=False)
+        _store = PostgresStore(conn, create_schema=False, connect=_connect)
     else:
         # Local dev / test path — SQLite
         from acq_shared.sqlite_store import SqliteStore
