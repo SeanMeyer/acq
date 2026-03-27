@@ -25,10 +25,11 @@ class PostgresStore:
     to ensure the ``dogpark`` schema exists.
     """
 
-    def __init__(self, conn) -> None:
+    def __init__(self, conn, *, create_schema: bool = True) -> None:
         self._conn = conn
         self._lock = threading.Lock()
-        create_tables(conn)
+        if create_schema:
+            create_tables(conn)
 
     # ------------------------------------------------------------------
     # helpers
