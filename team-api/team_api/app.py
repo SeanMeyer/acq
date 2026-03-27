@@ -82,14 +82,29 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     orgstore_cluster = os.environ.get("ORGSTORE_CLUSTER")
     if orgstore_cluster:
-        # Production / Howler path — Postgres via OrgStore client (JWT auth via emissary)
+        # Production / Howler path — Postgres via DogPark pg-proxy with JWT auth
+        import psycopg2
+        import requests
         from acq_shared.postgres_store import PostgresStore
-        from orgstore_pg_client import OrgStorePostgresClient
 
         db_name = os.environ.get("DB_NAME", "dev_db_acq")
         db_user = os.environ.get("DB_USER", "dev_db_acq")
-        orgstore_client = OrgStorePostgresClient(orgstore_cluster, db_user, db_name)
-        conn = orgstore_client.engine.raw_connection()
+        db_host = os.environ.get(
+            "DB_HOST",
+            f"orgstore-{orgstore_cluster}-pg-proxy.orgstore-{orgstore_cluster}.svc.cluster.local",
+        )
+
+        # Get JWT from emissary's Vault agent (runs as sidecar on Howler pods)
+        vault_addr = os.environ.get("VAULT_ADDR", "http://127.0.0.1:8658/vault/agent")
+        token_url = f"{vault_addr}/v1/identity/oidc/token/orgstore-{orgstore_cluster}"
+        resp = requests.get(token_url, timeout=5)
+        resp.raise_for_status()
+        jwt_token = resp.json()["data"]["token"]
+
+        conn = psycopg2.connect(
+            host=db_host, dbname=db_name, user=db_user,
+            password=jwt_token, sslmode="require",
+        )
         _store = PostgresStore(conn)
     else:
         # Local dev / test path — SQLite
