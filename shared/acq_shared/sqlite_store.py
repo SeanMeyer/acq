@@ -99,16 +99,10 @@ class SqliteStore:
             """,
             (target_id, source_id, target_id),
         )
-        self._conn.execute(
-            "DELETE FROM question_tags WHERE tag_id = ?", (source_id,)
-        )
+        self._conn.execute("DELETE FROM question_tags WHERE tag_id = ?", (source_id,))
         self._conn.execute("DELETE FROM tags WHERE id = ?", (source_id,))
-        row = self._conn.execute(
-            "SELECT COUNT(*) FROM question_tags WHERE tag_id = ?", (target_id,)
-        ).fetchone()
-        self._conn.execute(
-            "UPDATE tags SET usage_count = ? WHERE id = ?", (row[0], target_id)
-        )
+        row = self._conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_id = ?", (target_id,)).fetchone()
+        self._conn.execute("UPDATE tags SET usage_count = ? WHERE id = ?", (row[0], target_id))
 
         # Refresh FTS entries for affected questions so the tags column stays current.
         for qid in affected_qids:
@@ -149,9 +143,7 @@ class SqliteStore:
                 "INSERT OR IGNORE INTO question_tags (question_id, tag_id) VALUES (?, ?)",
                 (question.id, tag.id),
             )
-            self._conn.execute(
-                "UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?", (tag.id,)
-            )
+            self._conn.execute("UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?", (tag.id,))
         tag_text = " ".join(t.name for t in tags)
         self._conn.execute(
             "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags)"
@@ -162,16 +154,12 @@ class SqliteStore:
         return question
 
     def get_question(self, question_id: str) -> Question | None:
-        row = self._conn.execute(
-            "SELECT data FROM questions WHERE id = ?", (question_id,)
-        ).fetchone()
+        row = self._conn.execute("SELECT data FROM questions WHERE id = ?", (question_id,)).fetchone()
         if row is None:
             return None
         return Question.model_validate_json(row[0])
 
-    def edit_question(
-        self, question_id: str, new_body: str, edited_by: str, edited_by_type: str
-    ) -> Question | None:
+    def edit_question(self, question_id: str, new_body: str, edited_by: str, edited_by_type: str) -> Question | None:
         q = self.get_question(question_id)
         if q is None:
             return None
@@ -273,16 +261,12 @@ class SqliteStore:
         return answer
 
     def get_answer(self, answer_id: str) -> Answer | None:
-        row = self._conn.execute(
-            "SELECT data FROM answers WHERE id = ?", (answer_id,)
-        ).fetchone()
+        row = self._conn.execute("SELECT data FROM answers WHERE id = ?", (answer_id,)).fetchone()
         if row is None:
             return None
         return Answer.model_validate_json(row[0])
 
-    def edit_answer(
-        self, answer_id: str, new_body: str, edited_by: str, edited_by_type: str
-    ) -> Answer | None:
+    def edit_answer(self, answer_id: str, new_body: str, edited_by: str, edited_by_type: str) -> Answer | None:
         a = self.get_answer(answer_id)
         if a is None:
             return None
@@ -414,9 +398,7 @@ class SqliteStore:
                 counts["human_downvotes"] = cnt
 
         if target_type == "question":
-            data_row = self._conn.execute(
-                "SELECT data FROM questions WHERE id = ?", (target_id,)
-            ).fetchone()
+            data_row = self._conn.execute("SELECT data FROM questions WHERE id = ?", (target_id,)).fetchone()
             if data_row:
                 q = Question.model_validate_json(data_row[0])
                 updated = q.model_copy(update=counts)
@@ -425,9 +407,7 @@ class SqliteStore:
                     (updated.model_dump_json(), target_id),
                 )
         elif target_type == "answer":
-            data_row = self._conn.execute(
-                "SELECT data FROM answers WHERE id = ?", (target_id,)
-            ).fetchone()
+            data_row = self._conn.execute("SELECT data FROM answers WHERE id = ?", (target_id,)).fetchone()
             if data_row:
                 a = Answer.model_validate_json(data_row[0])
                 updated = a.model_copy(update=counts)
@@ -443,9 +423,7 @@ class SqliteStore:
 
     def approve_content(self, content_id: str) -> bool:
         for table in ("answers", "comments"):
-            row = self._conn.execute(
-                f"SELECT data, status FROM {table} WHERE id = ?", (content_id,)
-            ).fetchone()
+            row = self._conn.execute(f"SELECT data, status FROM {table} WHERE id = ?", (content_id,)).fetchone()
             if row is not None:
                 if row[1] != "pending":
                     return False
@@ -469,9 +447,7 @@ class SqliteStore:
 
     def reject_content(self, content_id: str) -> bool:
         for table in ("answers", "comments"):
-            row = self._conn.execute(
-                f"SELECT data, status FROM {table} WHERE id = ?", (content_id,)
-            ).fetchone()
+            row = self._conn.execute(f"SELECT data, status FROM {table} WHERE id = ?", (content_id,)).fetchone()
             if row is not None:
                 if row[1] != "pending":
                     return False
@@ -596,12 +572,10 @@ class SqliteStore:
                 jaccard = 0.0
 
             language_match = language is not None and (
-                q.context_language is not None
-                and q.context_language.lower() == language.lower()
+                q.context_language is not None and q.context_language.lower() == language.lower()
             )
             framework_match = framework is not None and (
-                q.context_framework is not None
-                and q.context_framework.lower() == framework.lower()
+                q.context_framework is not None and q.context_framework.lower() == framework.lower()
             )
 
             text_rel = text_relevance_score(
@@ -747,36 +721,21 @@ class SqliteStore:
                 (since,),
             ).fetchall()
         else:
-            questions = self._conn.execute(
-                "SELECT data FROM questions ORDER BY created_at"
-            ).fetchall()
-            answers = self._conn.execute(
-                "SELECT data FROM answers ORDER BY created_at"
-            ).fetchall()
+            questions = self._conn.execute("SELECT data FROM questions ORDER BY created_at").fetchall()
+            answers = self._conn.execute("SELECT data FROM answers ORDER BY created_at").fetchall()
             votes = self._conn.execute(
                 "SELECT id, target_id, target_type, voter_id, voter_type, value, created_at FROM votes ORDER BY created_at"
             ).fetchall()
-            comments = self._conn.execute(
-                "SELECT data FROM comments ORDER BY created_at"
-            ).fetchall()
+            comments = self._conn.execute("SELECT data FROM comments ORDER BY created_at").fetchall()
 
-        tags = self._conn.execute(
-            "SELECT id, name, description, usage_count FROM tags ORDER BY name"
-        ).fetchall()
-        question_tags = self._conn.execute(
-            "SELECT question_id, tag_id FROM question_tags"
-        ).fetchall()
+        tags = self._conn.execute("SELECT id, name, description, usage_count FROM tags ORDER BY name").fetchall()
+        question_tags = self._conn.execute("SELECT question_id, tag_id FROM question_tags").fetchall()
 
         return {
             "questions": [json.loads(r[0]) for r in questions],
             "answers": [json.loads(r[0]) for r in answers],
-            "tags": [
-                {"id": r[0], "name": r[1], "description": r[2], "usage_count": r[3]}
-                for r in tags
-            ],
-            "question_tags": [
-                {"question_id": r[0], "tag_id": r[1]} for r in question_tags
-            ],
+            "tags": [{"id": r[0], "name": r[1], "description": r[2], "usage_count": r[3]} for r in tags],
+            "question_tags": [{"question_id": r[0], "tag_id": r[1]} for r in question_tags],
             "votes": [
                 {
                     "id": r[0],
@@ -824,7 +783,7 @@ class SqliteStore:
             tag_text = " ".join(q_tag_map.get(q.id, []))
             self._conn.execute(
                 "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?, ?, ?)",
                 (q.id, "question", q.id, q.title, q.body, tag_text),
             )
             count += 1
@@ -848,7 +807,7 @@ class SqliteStore:
             )
             self._conn.execute(
                 "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?, ?, ?)",
                 (a.id, "answer", a.question_id, "", a.body, ""),
             )
             count += 1
@@ -913,16 +872,12 @@ class SqliteStore:
 
     def get_pending_drain(self) -> list[dict]:
         """Return all entities pending drain, grouped by type."""
-        rows = self._conn.execute(
-            "SELECT entity_id, entity_type FROM pending_drain ORDER BY created_at"
-        ).fetchall()
+        rows = self._conn.execute("SELECT entity_id, entity_type FROM pending_drain ORDER BY created_at").fetchall()
         return [{"entity_id": r[0], "entity_type": r[1]} for r in rows]
 
     def clear_drain(self, entity_id: str) -> None:
         """Remove an entity from the pending drain queue after successful push."""
-        self._conn.execute(
-            "DELETE FROM pending_drain WHERE entity_id = ?", (entity_id,)
-        )
+        self._conn.execute("DELETE FROM pending_drain WHERE entity_id = ?", (entity_id,))
         self._conn.commit()
 
     def close(self) -> None:

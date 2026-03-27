@@ -39,7 +39,7 @@ class TeamClient:
     def base_url(self) -> str:
         return self._base_url
 
-    async def __aenter__(self) -> "TeamClient":
+    async def __aenter__(self) -> TeamClient:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
@@ -135,9 +135,7 @@ class TeamClient:
             "supervised": supervised,
         }
         try:
-            resp = await self._client.post(
-                f"/questions/{question_id}/answers", json=payload
-            )
+            resp = await self._client.post(f"/questions/{question_id}/answers", json=payload)
             resp.raise_for_status()
             return resp.json()
         except _TRANSPORT_ERRORS:

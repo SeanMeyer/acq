@@ -13,10 +13,7 @@ def weighted_vote_score(
     human_down: int,
     human_weight: int = DEFAULT_HUMAN_VOTE_WEIGHT,
 ) -> float:
-    return (
-        (human_up * human_weight) + agent_up
-        - (human_down * human_weight) - agent_down
-    )
+    return (human_up * human_weight) + agent_up - (human_down * human_weight) - agent_down
 
 
 def _entity_vote_score(
@@ -57,9 +54,7 @@ def text_relevance_score(
     score.
     """
     context_bonus = (
-        0.7 * tag_jaccard
-        + 0.15 * (1.0 if language_match else 0.0)
-        + 0.15 * (1.0 if framework_match else 0.0)
+        0.7 * tag_jaccard + 0.15 * (1.0 if language_match else 0.0) + 0.15 * (1.0 if framework_match else 0.0)
     )
     return fts_rank + 0.3 * context_bonus
 

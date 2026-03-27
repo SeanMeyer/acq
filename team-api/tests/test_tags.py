@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,7 +24,9 @@ def _agent_headers() -> dict[str, str]:
     return {"X-API-Key": "agent-key"}
 
 
-def _login(client: TestClient, username: str = "reviewer", password: str = "pass123") -> str:
+def _login(
+    client: TestClient, username: str = "reviewer", password: str = "pass123"
+) -> str:
     from team_api.app import _get_store
     from team_api.auth import hash_password
 

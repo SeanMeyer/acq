@@ -32,12 +32,16 @@ def _create_question(client: TestClient, **overrides: Any) -> dict[str, Any]:
         "created_by": "agent-smith",
         "tags": ["databases"],
     }
-    resp = client.post("/questions", json={**defaults, **overrides}, headers=_agent_headers())
+    resp = client.post(
+        "/questions", json={**defaults, **overrides}, headers=_agent_headers()
+    )
     assert resp.status_code == 201
     return resp.json()
 
 
-def _create_and_approve_answer(client: TestClient, question_id: str, body: str = "Use max_size=10") -> dict[str, Any]:
+def _create_and_approve_answer(
+    client: TestClient, question_id: str, body: str = "Use max_size=10"
+) -> dict[str, Any]:
     resp = client.post(
         f"/questions/{question_id}/answers",
         json={"body": body, "supervised": True},
@@ -86,7 +90,9 @@ class TestSearch:
         r = _create_question(client, title="connection pool max size configuration")
         question_id = r["question"]["id"]
         _create_and_approve_answer(client, question_id)
-        resp = client.get("/search", params={"q": "connection pool"}, headers=_agent_headers())
+        resp = client.get(
+            "/search", params={"q": "connection pool"}, headers=_agent_headers()
+        )
         assert resp.status_code == 200
         results = resp.json()
         assert len(results) >= 1
@@ -95,24 +101,33 @@ class TestSearch:
         r = _create_question(client, title="max answers search test scenario")
         question_id = r["question"]["id"]
         for i in range(5):
-            _create_and_approve_answer(client, question_id, body=f"Answer {i} with more content here")
-        resp = client.get("/search", params={"q": "max answers search test"}, headers=_agent_headers())
+            _create_and_approve_answer(
+                client, question_id, body=f"Answer {i} with more content here"
+            )
+        resp = client.get(
+            "/search", params={"q": "max answers search test"}, headers=_agent_headers()
+        )
         assert resp.status_code == 200
         results = resp.json()
         if results:
             assert len(results[0]["answers"]) <= 3
 
-    def test_search_empty_query_returns_results_or_empty(self, client: TestClient) -> None:
-        resp = client.get("/search", params={"q": "nonexistent xyz123"}, headers=_agent_headers())
+    def test_search_empty_query_returns_results_or_empty(
+        self, client: TestClient
+    ) -> None:
+        resp = client.get(
+            "/search", params={"q": "nonexistent xyz123"}, headers=_agent_headers()
+        )
         assert resp.status_code == 200
         assert resp.json() == []
 
 
 class TestCreateQuestion:
     def test_create_question_requires_api_key(self, client: TestClient) -> None:
-        resp = client.post("/questions", json={
-            "title": "test", "body": "test body", "created_by": "agent"
-        })
+        resp = client.post(
+            "/questions",
+            json={"title": "test", "body": "test body", "created_by": "agent"},
+        )
         assert resp.status_code == 401
 
     def test_create_question_success(self, client: TestClient) -> None:
@@ -234,7 +249,11 @@ class TestCreateComment:
         answer = _create_and_approve_answer(client, question_id)
         resp = client.post(
             "/comments",
-            json={"parent_id": answer["id"], "parent_type": "answer", "body": "Great answer!"},
+            json={
+                "parent_id": answer["id"],
+                "parent_type": "answer",
+                "body": "Great answer!",
+            },
             headers=_agent_headers(),
         )
         assert resp.status_code == 201

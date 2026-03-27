@@ -113,9 +113,7 @@ def create_tables(conn) -> None:
             (SCHEMA_VERSION,),
         )
     elif current_version < SCHEMA_VERSION:
-        cur.execute(
-            "UPDATE dogpark.schema_version SET version = %s", (SCHEMA_VERSION,)
-        )
+        cur.execute("UPDATE dogpark.schema_version SET version = %s", (SCHEMA_VERSION,))
 
     # v1→v2: rebuild tsvectors to include tag names.
     if current_version == 1:

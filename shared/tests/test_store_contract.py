@@ -10,10 +10,8 @@ import os
 import sqlite3
 
 import pytest
-
 from acq_shared.models import Answer, Comment, Question, Tag, Vote
 from acq_shared.sqlite_store import SqliteStore
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -32,7 +30,6 @@ def store(request):
         if dsn is None:
             pytest.skip("ACQ_TEST_PG_DSN not set")
         import psycopg2
-
         from acq_shared.postgres_store import PostgresStore
 
         conn = psycopg2.connect(dsn)

@@ -124,9 +124,7 @@ def create_tables(conn: sqlite3.Connection) -> None:
             (SCHEMA_VERSION,),
         )
     elif existing[0] < SCHEMA_VERSION:
-        conn.execute(
-            "UPDATE schema_version SET version = ?", (SCHEMA_VERSION,)
-        )
+        conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
 
     # Rebuild FTS5 index after migration so existing rows include tags.
     if current_version == 1:
@@ -144,9 +142,7 @@ def _rebuild_fts_index(conn: sqlite3.Connection) -> None:
         title = data.get("title", "")
         body = data.get("body", "")
         tag_rows = conn.execute(
-            "SELECT t.name FROM tags t "
-            "JOIN question_tags qt ON t.id = qt.tag_id "
-            "WHERE qt.question_id = ?",
+            "SELECT t.name FROM tags t JOIN question_tags qt ON t.id = qt.tag_id WHERE qt.question_id = ?",
             (qid,),
         ).fetchall()
         tag_text = " ".join(r[0] for r in tag_rows)

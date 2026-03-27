@@ -19,9 +19,8 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
-
 from acq_shared.models import Answer, Comment, Question, Vote
+from mcp.server.fastmcp import FastMCP
 
 from .local_store import LocalStore
 from .team_client import TeamClient
@@ -170,18 +169,20 @@ def _serialize_results(results: list) -> list[dict]:
             first = answers[0]
             a = first.get("answer", first) if isinstance(first, dict) else first
             top_answer = a.model_dump(mode="json") if hasattr(a, "model_dump") else a
-        serialized.append({
-            "id": q_dict.get("id", ""),
-            "title": q_dict.get("title", ""),
-            "body": q_dict.get("body", ""),
-            "status": q_dict.get("status", ""),
-            "created_by": q_dict.get("created_by", ""),
-            "tags": thread.get("tags", []),
-            "context_language": q_dict.get("context_language"),
-            "context_framework": q_dict.get("context_framework"),
-            "top_answer": top_answer,
-            "answer_count": len(answers),
-        })
+        serialized.append(
+            {
+                "id": q_dict.get("id", ""),
+                "title": q_dict.get("title", ""),
+                "body": q_dict.get("body", ""),
+                "status": q_dict.get("status", ""),
+                "created_by": q_dict.get("created_by", ""),
+                "tags": thread.get("tags", []),
+                "context_language": q_dict.get("context_language"),
+                "context_framework": q_dict.get("context_framework"),
+                "top_answer": top_answer,
+                "answer_count": len(answers),
+            }
+        )
     return serialized
 
 
