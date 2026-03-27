@@ -97,7 +97,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         # Get JWT from emissary's Vault agent (runs as sidecar on Howler pods)
         vault_addr = os.environ.get("VAULT_ADDR", "http://127.0.0.1:8658/vault/agent")
         token_url = f"{vault_addr}/v1/identity/oidc/token/orgstore-{orgstore_cluster}"
-        resp = requests.get(token_url, timeout=5)
+        resp = requests.get(token_url, headers={"X-Vault-Request": "true"}, timeout=5)
         resp.raise_for_status()
         jwt_token = resp.json()["data"]["token"]
 
