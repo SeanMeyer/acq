@@ -112,9 +112,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login")
-def login(
-    request: LoginRequest, store: Store = Depends(get_store)
-) -> LoginResponse:
+def login(request: LoginRequest, store: Store = Depends(get_store)) -> LoginResponse:
     user = store.get_user(request.username)
     if user is None or not verify_password(request.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password")
@@ -160,11 +158,13 @@ def _callback_uri(request: Request) -> str:
 @router.get("/github")
 def github_login(request: Request) -> RedirectResponse:
     """Redirect to GitHub OAuth authorize page."""
-    params = urlencode({
-        "client_id": _github_client_id(),
-        "redirect_uri": _callback_uri(request),
-        "scope": "read:user",
-    })
+    params = urlencode(
+        {
+            "client_id": _github_client_id(),
+            "redirect_uri": _callback_uri(request),
+            "scope": "read:user",
+        }
+    )
     return RedirectResponse(f"{GITHUB_AUTHORIZE_URL}?{params}")
 
 
@@ -188,12 +188,17 @@ def github_callback(
     data = resp.json()
     github_token = data.get("access_token")
     if not github_token:
-        raise HTTPException(status_code=401, detail=data.get("error_description", "GitHub auth failed"))
+        raise HTTPException(
+            status_code=401, detail=data.get("error_description", "GitHub auth failed")
+        )
 
     # Fetch GitHub user profile
     user_resp = http_requests.get(
         GITHUB_USER_URL,
-        headers={"Authorization": f"Bearer {github_token}", "Accept": "application/json"},
+        headers={
+            "Authorization": f"Bearer {github_token}",
+            "Accept": "application/json",
+        },
         timeout=10,
     )
     if user_resp.status_code != 200:
