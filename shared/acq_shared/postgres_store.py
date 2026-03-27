@@ -183,7 +183,8 @@ class PostgresStore:
         # Update tsvector with title + body + tag names.
         tag_text = " ".join(t.name for t in tags)
         self._execute(
-            "UPDATE dogpark.questions SET search_vector = to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
+            "UPDATE dogpark.questions SET search_vector ="
+            " to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
             (question.title, question.body, tag_text, question.id),
         )
         self._conn.commit()
@@ -234,7 +235,8 @@ class PostgresStore:
         # Refresh tsvector with title + body + tag names.
         tag_text = " ".join(sorted(self._get_question_tag_names(question_id)))
         self._execute(
-            "UPDATE dogpark.questions SET search_vector = to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
+            "UPDATE dogpark.questions SET search_vector ="
+            " to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
             (updated.title, updated.body, tag_text, question_id),
         )
         self._conn.commit()
@@ -588,7 +590,7 @@ class PostgresStore:
         framework: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """tsvector + tag Jaccard search returning ranked question threads."""
+        """Tsvector + tag Jaccard search returning ranked question threads."""
         query_tags = set(tags or [])
 
         words = query.strip().split()
@@ -701,7 +703,7 @@ class PostgresStore:
         return results
 
     def find_similar_questions(self, title: str, tag_names: list[str]) -> list[dict[str, Any]]:
-        """tsvector on title field, Jaccard on tags, threshold 0.5, return top 3."""
+        """Tsvector on title field, Jaccard on tags, threshold 0.5, return top 3."""
         query_tags = set(tag_names)
 
         words = title.strip().split()
@@ -770,7 +772,8 @@ class PostgresStore:
             return
         tag_text = " ".join(sorted(self._get_question_tag_names(question_id)))
         self._execute(
-            "UPDATE dogpark.questions SET search_vector = to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
+            "UPDATE dogpark.questions SET search_vector ="
+            " to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
             (q.title, q.body, tag_text, question_id),
         )
 
@@ -891,7 +894,8 @@ class PostgresStore:
             )
             tag_text = " ".join(q_tag_map.get(q.id, []))
             self._execute(
-                "UPDATE dogpark.questions SET search_vector = to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
+                "UPDATE dogpark.questions SET search_vector ="
+            " to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
                 (q.title, q.body, tag_text, q.id),
             )
             count += 1

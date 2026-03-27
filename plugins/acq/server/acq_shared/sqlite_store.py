@@ -154,7 +154,8 @@ class SqliteStore:
             )
         tag_text = " ".join(t.name for t in tags)
         self._conn.execute(
-            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
             (question.id, "question", question.id, question.title, question.body, tag_text),
         )
         self._conn.commit()
@@ -207,7 +208,8 @@ class SqliteStore:
         )
         tag_text = " ".join(sorted(self._get_question_tag_names(question_id)))
         self._conn.execute(
-            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
             (question_id, "question", question_id, updated.title, updated.body, tag_text),
         )
         self._conn.commit()
@@ -263,7 +265,8 @@ class SqliteStore:
             ),
         )
         self._conn.execute(
-            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
             (answer.id, "answer", answer.question_id, "", answer.body, ""),
         )
         self._conn.commit()
@@ -315,7 +318,8 @@ class SqliteStore:
             (answer_id,),
         )
         self._conn.execute(
-            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
             (answer_id, "answer", updated.question_id, "", updated.body, ""),
         )
         self._conn.commit()
@@ -695,7 +699,8 @@ class SqliteStore:
         )
         tag_text = " ".join(sorted(self._get_question_tag_names(question_id)))
         self._conn.execute(
-            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
             (question_id, "question", question_id, q.title, q.body, tag_text),
         )
 
@@ -818,7 +823,8 @@ class SqliteStore:
             )
             tag_text = " ".join(q_tag_map.get(q.id, []))
             self._conn.execute(
-                "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
                 (q.id, "question", q.id, q.title, q.body, tag_text),
             )
             count += 1
@@ -841,7 +847,8 @@ class SqliteStore:
                 (a.id,),
             )
             self._conn.execute(
-                "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
                 (a.id, "answer", a.question_id, "", a.body, ""),
             )
             count += 1
