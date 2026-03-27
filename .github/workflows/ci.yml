@@ -30,6 +30,9 @@ jobs:
           cache: pnpm
           cache-dependency-path: team-ui/pnpm-lock.yaml
 
+      - name: Check lock files for internal URLs
+        run: make check-lockfiles
+
       - name: Setup and lint
         run: make setup lint
 
