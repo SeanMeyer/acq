@@ -6,6 +6,7 @@ Currently: SqliteStore. Later: PostgresStore.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 
 import pytest
@@ -19,12 +20,33 @@ from acq_shared.sqlite_store import SqliteStore
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
-def store() -> SqliteStore:
-    conn = sqlite3.connect(":memory:")
-    s = SqliteStore(conn)
-    yield s
-    s.close()
+@pytest.fixture(params=["sqlite", "postgres"])
+def store(request):
+    if request.param == "sqlite":
+        conn = sqlite3.connect(":memory:")
+        s = SqliteStore(conn)
+        yield s
+        s.close()
+    else:
+        dsn = os.environ.get("ACQ_TEST_PG_DSN")
+        if dsn is None:
+            pytest.skip("ACQ_TEST_PG_DSN not set")
+        import psycopg2
+
+        from acq_shared.postgres_store import PostgresStore
+
+        conn = psycopg2.connect(dsn)
+        cur = conn.cursor()
+        cur.execute("DROP SCHEMA IF EXISTS dogpark CASCADE")
+        conn.commit()
+        cur.close()
+        s = PostgresStore(conn)
+        yield s
+        cur = conn.cursor()
+        cur.execute("DROP SCHEMA IF EXISTS dogpark CASCADE")
+        conn.commit()
+        cur.close()
+        s.close()
 
 
 def _make_question(**overrides) -> Question:
@@ -57,13 +79,13 @@ def _make_answer(question_id: str, **overrides) -> Answer:
 
 
 class TestCreateQuestion:
-    def test_returns_question(self, store: SqliteStore):
+    def test_returns_question(self, store):
         q = _make_question()
         result = store.create_question(q, ["webpack", "typescript"])
         assert result.id == q.id
         assert result.title == q.title
 
-    def test_tags_created(self, store: SqliteStore):
+    def test_tags_created(self, store):
         q = _make_question()
         store.create_question(q, ["webpack", "typescript"])
         tags = store.list_tags()
@@ -71,7 +93,7 @@ class TestCreateQuestion:
         assert "webpack" in names
         assert "typescript" in names
 
-    def test_get_question_after_create(self, store: SqliteStore):
+    def test_get_question_after_create(self, store):
         q = _make_question()
         store.create_question(q, [])
         fetched = store.get_question(q.id)
@@ -81,19 +103,19 @@ class TestCreateQuestion:
 
 
 class TestGetQuestion:
-    def test_missing_returns_none(self, store: SqliteStore):
+    def test_missing_returns_none(self, store):
         assert store.get_question("q_nonexistent") is None
 
 
 class TestEditQuestion:
-    def test_edit_updates_body(self, store: SqliteStore):
+    def test_edit_updates_body(self, store):
         q = _make_question()
         store.create_question(q, [])
         updated = store.edit_question(q.id, "New body text", "editor", "human")
         assert updated is not None
         assert updated.body == "New body text"
 
-    def test_edit_missing_returns_none(self, store: SqliteStore):
+    def test_edit_missing_returns_none(self, store):
         assert store.edit_question("q_none", "x", "e", "human") is None
 
 
@@ -103,21 +125,21 @@ class TestEditQuestion:
 
 
 class TestCreateAnswer:
-    def test_returns_answer(self, store: SqliteStore):
+    def test_returns_answer(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
         result = store.create_answer(a)
         assert result.id == a.id
 
-    def test_supervised_answer_auto_approved(self, store: SqliteStore):
+    def test_supervised_answer_auto_approved(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=True)
         result = store.create_answer(a)
         assert result.status == "approved"
 
-    def test_unsupervised_answer_pending(self, store: SqliteStore):
+    def test_unsupervised_answer_pending(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=False)
@@ -126,7 +148,7 @@ class TestCreateAnswer:
 
 
 class TestGetAnswer:
-    def test_get_after_create(self, store: SqliteStore):
+    def test_get_after_create(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -135,12 +157,12 @@ class TestGetAnswer:
         assert fetched is not None
         assert fetched.body == a.body
 
-    def test_missing_returns_none(self, store: SqliteStore):
+    def test_missing_returns_none(self, store):
         assert store.get_answer("a_nonexistent") is None
 
 
 class TestEditAnswer:
-    def test_edit_updates_body(self, store: SqliteStore):
+    def test_edit_updates_body(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -149,7 +171,7 @@ class TestEditAnswer:
         assert updated is not None
         assert updated.body == "Updated answer body"
 
-    def test_edit_missing_returns_none(self, store: SqliteStore):
+    def test_edit_missing_returns_none(self, store):
         assert store.edit_answer("a_none", "x", "e", "human") is None
 
 
@@ -159,7 +181,7 @@ class TestEditAnswer:
 
 
 class TestCreateComment:
-    def test_returns_comment(self, store: SqliteStore):
+    def test_returns_comment(self, store):
         q = _make_question()
         store.create_question(q, [])
         c = Comment(
@@ -172,7 +194,7 @@ class TestCreateComment:
         result = store.create_comment(c)
         assert result.id == c.id
 
-    def test_human_comment_auto_approved(self, store: SqliteStore):
+    def test_human_comment_auto_approved(self, store):
         q = _make_question()
         store.create_question(q, [])
         c = Comment(
@@ -192,7 +214,7 @@ class TestCreateComment:
 
 
 class TestCastVote:
-    def test_upvote_returns_counts(self, store: SqliteStore):
+    def test_upvote_returns_counts(self, store):
         q = _make_question()
         store.create_question(q, [])
         v = Vote(
@@ -205,7 +227,7 @@ class TestCastVote:
         result = store.cast_vote(v)
         assert result.get("agent_upvotes") == 1
 
-    def test_duplicate_vote_rejected(self, store: SqliteStore):
+    def test_duplicate_vote_rejected(self, store):
         q = _make_question()
         store.create_question(q, [])
         v1 = Vote(
@@ -226,7 +248,7 @@ class TestCastVote:
         result = store.cast_vote(v2)
         assert result.get("error") == "duplicate_vote"
 
-    def test_different_voters_both_count(self, store: SqliteStore):
+    def test_different_voters_both_count(self, store):
         q = _make_question()
         store.create_question(q, [])
         v1 = Vote(
@@ -247,7 +269,7 @@ class TestCastVote:
         result = store.cast_vote(v2)
         assert result.get("agent_upvotes") == 2
 
-    def test_vote_updates_denormalized_counts(self, store: SqliteStore):
+    def test_vote_updates_denormalized_counts(self, store):
         q = _make_question()
         store.create_question(q, [])
         v = Vote(
@@ -269,7 +291,7 @@ class TestCastVote:
 
 
 class TestModeration:
-    def test_approve_pending_answer(self, store: SqliteStore):
+    def test_approve_pending_answer(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=False)
@@ -278,14 +300,14 @@ class TestModeration:
         fetched = store.get_answer(a.id)
         assert fetched.status == "approved"
 
-    def test_approve_non_pending_returns_false(self, store: SqliteStore):
+    def test_approve_non_pending_returns_false(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=True)
         store.create_answer(a)  # auto-approved
         assert store.approve_content(a.id) is False
 
-    def test_reject_pending_answer(self, store: SqliteStore):
+    def test_reject_pending_answer(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=False)
@@ -294,13 +316,13 @@ class TestModeration:
         fetched = store.get_answer(a.id)
         assert fetched.status == "rejected"
 
-    def test_approve_missing_returns_false(self, store: SqliteStore):
+    def test_approve_missing_returns_false(self, store):
         assert store.approve_content("nonexistent") is False
 
-    def test_reject_missing_returns_false(self, store: SqliteStore):
+    def test_reject_missing_returns_false(self, store):
         assert store.reject_content("nonexistent") is False
 
-    def test_pending_queue_lists_pending(self, store: SqliteStore):
+    def test_pending_queue_lists_pending(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=False)
@@ -309,7 +331,7 @@ class TestModeration:
         assert len(queue["answers"]) == 1
         assert queue["answers"][0].id == a.id
 
-    def test_approved_not_in_pending_queue(self, store: SqliteStore):
+    def test_approved_not_in_pending_queue(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=True)
@@ -324,7 +346,7 @@ class TestModeration:
 
 
 class TestEditHistory:
-    def test_question_edit_creates_history(self, store: SqliteStore):
+    def test_question_edit_creates_history(self, store):
         q = _make_question()
         store.create_question(q, [])
         store.edit_question(q.id, "Revised body", "editor", "human")
@@ -333,7 +355,7 @@ class TestEditHistory:
         assert history[0].previous_body == q.body
         assert history[0].new_body == "Revised body"
 
-    def test_answer_edit_creates_history(self, store: SqliteStore):
+    def test_answer_edit_creates_history(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -344,7 +366,7 @@ class TestEditHistory:
         assert history[0].previous_body == a.body
         assert history[0].new_body == "Revised answer"
 
-    def test_multiple_edits_accumulate(self, store: SqliteStore):
+    def test_multiple_edits_accumulate(self, store):
         q = _make_question()
         store.create_question(q, [])
         store.edit_question(q.id, "Edit 1", "e1", "human")
@@ -359,33 +381,33 @@ class TestEditHistory:
 
 
 class TestTags:
-    def test_get_or_create_returns_tag(self, store: SqliteStore):
+    def test_get_or_create_returns_tag(self, store):
         tag = store.get_or_create_tag("webpack")
         assert tag.name == "webpack"
         assert tag.id.startswith("t_")
 
-    def test_get_or_create_idempotent(self, store: SqliteStore):
+    def test_get_or_create_idempotent(self, store):
         t1 = store.get_or_create_tag("webpack")
         t2 = store.get_or_create_tag("webpack")
         assert t1.id == t2.id
 
-    def test_list_tags_empty(self, store: SqliteStore):
+    def test_list_tags_empty(self, store):
         assert store.list_tags() == []
 
-    def test_list_tags_returns_all(self, store: SqliteStore):
+    def test_list_tags_returns_all(self, store):
         store.get_or_create_tag("webpack")
         store.get_or_create_tag("typescript")
         tags = store.list_tags()
         assert len(tags) == 2
 
-    def test_list_tags_filter(self, store: SqliteStore):
+    def test_list_tags_filter(self, store):
         store.get_or_create_tag("webpack")
         store.get_or_create_tag("typescript")
         tags = store.list_tags(q="web")
         assert len(tags) == 1
         assert tags[0].name == "webpack"
 
-    def test_merge_tags(self, store: SqliteStore):
+    def test_merge_tags(self, store):
         q = _make_question()
         store.create_question(q, ["webpack", "wp"])
         tags_before = {t.name: t for t in store.list_tags()}
@@ -395,7 +417,7 @@ class TestTags:
         assert "wp" not in names
         assert "webpack" in names
 
-    def test_tag_slugification(self, store: SqliteStore):
+    def test_tag_slugification(self, store):
         tag = store.get_or_create_tag("GitHub Actions")
         assert tag.name == "github-actions"
 
@@ -406,7 +428,7 @@ class TestTags:
 
 
 class TestSearch:
-    def test_search_returns_matching_question(self, store: SqliteStore):
+    def test_search_returns_matching_question(self, store):
         q = _make_question(title="webpack stream polyfill error")
         store.create_question(q, ["webpack"])
         a = _make_answer(q.id, supervised=True)
@@ -414,11 +436,11 @@ class TestSearch:
         results = store.search("webpack stream")
         assert len(results) >= 1
 
-    def test_search_no_results(self, store: SqliteStore):
+    def test_search_no_results(self, store):
         results = store.search("nonexistent query xyz")
         assert results == []
 
-    def test_search_respects_limit(self, store: SqliteStore):
+    def test_search_respects_limit(self, store):
         for i in range(5):
             q = _make_question(title=f"webpack question {i}")
             store.create_question(q, ["webpack"])
@@ -427,7 +449,7 @@ class TestSearch:
         results = store.search("webpack", limit=2)
         assert len(results) <= 2
 
-    def test_search_tag_filter_boosts(self, store: SqliteStore):
+    def test_search_tag_filter_boosts(self, store):
         q1 = _make_question(title="webpack bundler issue")
         store.create_question(q1, ["webpack"])
         a1 = _make_answer(q1.id, supervised=True)
@@ -440,7 +462,7 @@ class TestSearch:
         results = store.search("webpack", tags=["config"])
         assert len(results) >= 1
 
-    def test_search_bad_fts_query_returns_empty(self, store: SqliteStore):
+    def test_search_bad_fts_query_returns_empty(self, store):
         """FTS5 syntax errors should not crash, just return []."""
         results = store.search("AND OR NOT")
         assert results == []
@@ -452,14 +474,14 @@ class TestSearch:
 
 
 class TestFindSimilar:
-    def test_finds_similar(self, store: SqliteStore):
+    def test_finds_similar(self, store):
         q = _make_question(title="webpack stream polyfill")
         store.create_question(q, ["webpack"])
         results = store.find_similar_questions("webpack polyfill", ["webpack"])
         assert len(results) >= 1
         assert results[0]["question"].id == q.id
 
-    def test_no_similar_returns_empty(self, store: SqliteStore):
+    def test_no_similar_returns_empty(self, store):
         results = store.find_similar_questions("something totally different", [])
         assert results == []
 
@@ -470,12 +492,12 @@ class TestFindSimilar:
 
 
 class TestExportSince:
-    def test_export_empty(self, store: SqliteStore):
+    def test_export_empty(self, store):
         data = store.export_since()
         assert data["questions"] == []
         assert data["answers"] == []
 
-    def test_export_returns_all_content(self, store: SqliteStore):
+    def test_export_returns_all_content(self, store):
         q = _make_question()
         store.create_question(q, ["webpack"])
         a = _make_answer(q.id, supervised=True)
@@ -485,7 +507,7 @@ class TestExportSince:
         assert len(data["answers"]) == 1
         assert len(data["tags"]) == 1
 
-    def test_export_since_filters_by_date(self, store: SqliteStore):
+    def test_export_since_filters_by_date(self, store):
         q = _make_question()
         store.create_question(q, [])
         # Export with a future date should return nothing
@@ -494,7 +516,7 @@ class TestExportSince:
 
 
 class TestBulkUpsert:
-    def test_import_into_empty_store(self, store: SqliteStore):
+    def test_import_into_empty_store(self, store):
         """Bulk upsert into an empty store should insert everything."""
         q = _make_question()
         a = _make_answer(q.id)
@@ -513,7 +535,7 @@ class TestBulkUpsert:
         assert fetched is not None
         assert fetched.title == q.title
 
-    def test_upsert_is_idempotent(self, store: SqliteStore):
+    def test_upsert_is_idempotent(self, store):
         """Bulk upserting the same data twice should not error or duplicate."""
         q = _make_question()
         data = {
@@ -536,7 +558,7 @@ class TestBulkUpsert:
 
 
 class TestPinUnpin:
-    def test_pin_answer(self, store: SqliteStore):
+    def test_pin_answer(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=True)
@@ -545,7 +567,7 @@ class TestPinUnpin:
         assert result is not None
         assert result.pinned_answer_id == a.id
 
-    def test_unpin_answer(self, store: SqliteStore):
+    def test_unpin_answer(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=True)
@@ -555,10 +577,10 @@ class TestPinUnpin:
         assert result is not None
         assert result.pinned_answer_id is None
 
-    def test_pin_missing_question_returns_none(self, store: SqliteStore):
+    def test_pin_missing_question_returns_none(self, store):
         assert store.pin_answer("q_none", "a_none") is None
 
-    def test_unpin_missing_question_returns_none(self, store: SqliteStore):
+    def test_unpin_missing_question_returns_none(self, store):
         assert store.unpin_answer("q_none") is None
 
 
@@ -568,7 +590,7 @@ class TestPinUnpin:
 
 
 class TestGetStatus:
-    def test_empty_status(self, store: SqliteStore):
+    def test_empty_status(self, store):
         status = store.get_status()
         assert status["total_questions"] == 0
         assert status["total_answers"] == 0
@@ -577,7 +599,7 @@ class TestGetStatus:
         assert status["unanswered"] == 0
         assert status["pending"] == 0
 
-    def test_status_counts(self, store: SqliteStore):
+    def test_status_counts(self, store):
         q = _make_question()
         store.create_question(q, ["webpack"])
         a = _make_answer(q.id, supervised=True)
@@ -597,7 +619,7 @@ class TestGetStatus:
         assert status["total_votes"] == 1
         assert status["unanswered"] == 0
 
-    def test_unanswered_count(self, store: SqliteStore):
+    def test_unanswered_count(self, store):
         q = _make_question()
         store.create_question(q, [])
         status = store.get_status()
@@ -610,17 +632,17 @@ class TestGetStatus:
 
 
 class TestUserManagement:
-    def test_create_and_get_user(self, store: SqliteStore):
+    def test_create_and_get_user(self, store):
         store.create_user("alice", "hash123")
         user = store.get_user("alice")
         assert user is not None
         assert user["username"] == "alice"
         assert user["password_hash"] == "hash123"
 
-    def test_get_missing_user(self, store: SqliteStore):
+    def test_get_missing_user(self, store):
         assert store.get_user("nobody") is None
 
-    def test_duplicate_user_raises(self, store: SqliteStore):
+    def test_duplicate_user_raises(self, store):
         store.create_user("alice", "hash1")
         with pytest.raises(Exception):
             store.create_user("alice", "hash2")
@@ -632,7 +654,7 @@ class TestUserManagement:
 
 
 class TestGetQuestionThread:
-    def test_thread_includes_answers_and_comments(self, store: SqliteStore):
+    def test_thread_includes_answers_and_comments(self, store):
         q = _make_question()
         store.create_question(q, ["webpack"])
         a = _make_answer(q.id, supervised=True)
@@ -651,10 +673,10 @@ class TestGetQuestionThread:
         assert len(thread["answers"]) == 1
         assert len(thread["comments"]) == 1
 
-    def test_thread_missing_returns_none(self, store: SqliteStore):
+    def test_thread_missing_returns_none(self, store):
         assert store.get_question_thread("q_nonexistent") is None
 
-    def test_thread_only_approved_answers(self, store: SqliteStore):
+    def test_thread_only_approved_answers(self, store):
         q = _make_question()
         store.create_question(q, [])
         a_pending = _make_answer(q.id, supervised=False)
