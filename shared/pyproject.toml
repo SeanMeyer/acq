@@ -15,4 +15,4 @@ packages = ["acq_shared"]
 postgres = ["psycopg2-binary>=2.9"]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "psycopg2-binary>=2.9"]
+dev = ["pytest>=8.0", "psycopg2-binary>=2.9", "ruff>=0.15"]

@@ -105,9 +105,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login")
-def login(
-    request: LoginRequest, store: Store = Depends(get_store)
-) -> LoginResponse:
+def login(request: LoginRequest, store: Store = Depends(get_store)) -> LoginResponse:
     user = store.get_user(request.username)
     if user is None or not verify_password(request.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password")

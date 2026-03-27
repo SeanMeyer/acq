@@ -25,7 +25,9 @@ def _agent_headers() -> dict[str, str]:
     return {"X-API-Key": "agent-key"}
 
 
-def _login(client: TestClient, username: str = "reviewer", password: str = "pass123") -> str:
+def _login(
+    client: TestClient, username: str = "reviewer", password: str = "pass123"
+) -> str:
     from team_api.app import _get_store
     from team_api.auth import hash_password
 
@@ -48,12 +50,16 @@ def _create_question(client: TestClient, **overrides: Any) -> dict[str, Any]:
         "body": "I need a pool with max size.",
         "tags": ["databases"],
     }
-    resp = client.post("/questions", json={**defaults, **overrides}, headers=_agent_headers())
+    resp = client.post(
+        "/questions", json={**defaults, **overrides}, headers=_agent_headers()
+    )
     assert resp.status_code == 201
     return resp.json()["question"]
 
 
-def _create_answer(client: TestClient, question_id: str, **overrides: Any) -> dict[str, Any]:
+def _create_answer(
+    client: TestClient, question_id: str, **overrides: Any
+) -> dict[str, Any]:
     defaults = {"body": "Use max_size=10.", "supervised": False}
     resp = client.post(
         f"/questions/{question_id}/answers",
@@ -239,7 +245,9 @@ class TestEditHistory:
     def test_question_history(self, client: TestClient) -> None:
         token = _login(client)
         q = _create_question(client, body="original")
-        client.put(f"/questions/{q['id']}", json={"body": "v2"}, headers=_auth_header(token))
+        client.put(
+            f"/questions/{q['id']}", json={"body": "v2"}, headers=_auth_header(token)
+        )
         resp = client.get(f"/questions/{q['id']}/history", headers=_auth_header(token))
         assert resp.status_code == 200
         history = resp.json()
@@ -250,7 +258,9 @@ class TestEditHistory:
         token = _login(client)
         q = _create_question(client)
         a = _create_answer(client, q["id"], body="original answer")
-        client.put(f"/answers/{a['id']}", json={"body": "v2"}, headers=_auth_header(token))
+        client.put(
+            f"/answers/{a['id']}", json={"body": "v2"}, headers=_auth_header(token)
+        )
         resp = client.get(f"/answers/{a['id']}/history", headers=_auth_header(token))
         assert resp.status_code == 200
         history = resp.json()

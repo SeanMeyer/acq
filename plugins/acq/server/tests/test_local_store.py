@@ -70,9 +70,7 @@ class TestCreateQuestion:
         assert count == 2
 
     def test_stores_context_fields(self, store: LocalStore) -> None:
-        q = store.create_question(
-            "Q", "B", "agent-1", [], language="python", framework="django", pattern="web-api"
-        )
+        q = store.create_question("Q", "B", "agent-1", [], language="python", framework="django", pattern="web-api")
         assert q.context_language == "python"
         assert q.context_framework == "django"
         assert q.context_pattern == "web-api"
@@ -136,7 +134,7 @@ class TestCastVote:
     def test_duplicate_vote_detected(self, store: LocalStore) -> None:
         store.cast_vote("q_123", "question", "agent-1", "agent", 1)
         # SqliteStore detects duplicates and returns error dict instead of raising
-        v2 = store.cast_vote("q_123", "question", "agent-1", "agent", 1)
+        store.cast_vote("q_123", "question", "agent-1", "agent", 1)
         # The second call still returns a Vote model from the wrapper,
         # but the underlying SqliteStore returned an error dict.
         # Either way, only one vote should exist.

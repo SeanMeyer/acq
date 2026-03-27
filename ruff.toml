@@ -42,7 +42,16 @@ select = [
     "D",    # pydocstyle (docstrings)
 ]
 
-ignore = []
+ignore = [
+    "D100",  # Missing docstring in public module
+    "D101",  # Missing docstring in public class
+    "D102",  # Missing docstring in public method
+    "D103",  # Missing docstring in public function
+    "D105",  # Missing docstring in magic method
+    "D107",  # Missing docstring in __init__
+    "E501",  # Line too long — SQL strings routinely exceed 120 chars
+    "SIM105", # contextlib.suppress preference — existing pattern
+]
 
 unfixable = [
     "B",    # flake8-bugbear
@@ -51,9 +60,11 @@ unfixable = [
 
 [lint.per-file-ignores]
 "__init__.py" = ["F401", "D104"]
+"**/*_store.py" = ["B007"]  # SQL row destructuring uses unused columns
 "**/tests/**" = [
     "D",
     "N999",
+    "B017",  # pytest.raises(Exception) is fine in tests
 ]
 
 [lint.pydocstyle]

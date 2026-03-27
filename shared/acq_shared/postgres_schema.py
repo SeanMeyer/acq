@@ -6,7 +6,7 @@ and tsvector columns with GIN indexes for full-text search.
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _DDL = """
 CREATE SCHEMA IF NOT EXISTS dogpark;
@@ -102,12 +102,39 @@ def create_tables(conn) -> None:
     """
     cur = conn.cursor()
     cur.execute(_DDL)
+
     cur.execute("SELECT version FROM dogpark.schema_version")
     row = cur.fetchone()
-    if row is None:
+    current_version = row[0] if row else 0
+
+    if current_version == 0:
         cur.execute(
             "INSERT INTO dogpark.schema_version (version) VALUES (%s)",
             (SCHEMA_VERSION,),
         )
+    elif current_version < SCHEMA_VERSION:
+        cur.execute("UPDATE dogpark.schema_version SET version = %s", (SCHEMA_VERSION,))
+
+    # v1→v2: rebuild tsvectors to include tag names.
+    if current_version == 1:
+        _migrate_v1_to_v2(cur)
+
     conn.commit()
     cur.close()
+
+
+def _migrate_v1_to_v2(cur) -> None:
+    """Rebuild question tsvectors to include associated tag names."""
+    cur.execute("""
+        UPDATE dogpark.questions q SET search_vector = to_tsvector('english',
+            (q.data::json->>'title') || ' ' ||
+            (q.data::json->>'body') || ' ' ||
+            COALESCE(
+                (SELECT string_agg(t.name, ' ')
+                 FROM dogpark.tags t
+                 JOIN dogpark.question_tags qt ON t.id = qt.tag_id
+                 WHERE qt.question_id = q.id),
+                ''
+            )
+        )
+    """)

@@ -26,6 +26,7 @@ from .tags import router as tags_router
 # Request / response models
 # ------------------------------------------------------------------
 
+
 class CreateQuestionRequest(BaseModel):
     id: str | None = None
     title: str
@@ -101,12 +102,17 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         token_url = f"{vault_addr}/v1/identity/oidc/token/orgstore-{orgstore_cluster}"
 
         def _connect():
-            resp = requests.get(token_url, headers={"X-Vault-Request": "true"}, timeout=5)
+            resp = requests.get(
+                token_url, headers={"X-Vault-Request": "true"}, timeout=5
+            )
             resp.raise_for_status()
             jwt_token = resp.json()["data"]["token"]
             return psycopg2.connect(
-                host=db_host, dbname=db_name, user=db_user,
-                password=jwt_token, sslmode="require",
+                host=db_host,
+                dbname=db_name,
+                user=db_user,
+                password=jwt_token,
+                sslmode="require",
             )
 
         conn = _connect()
@@ -140,6 +146,7 @@ app.include_router(tags_router)
 # Health
 # ------------------------------------------------------------------
 
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -148,6 +155,7 @@ def health() -> dict[str, str]:
 # ------------------------------------------------------------------
 # Status (agent-facing, API key auth)
 # ------------------------------------------------------------------
+
 
 @app.get("/status")
 def status(
@@ -160,6 +168,7 @@ def status(
 # ------------------------------------------------------------------
 # Tags listing (agent-facing)
 # ------------------------------------------------------------------
+
 
 @app.get("/tags")
 def list_tags(
@@ -175,6 +184,7 @@ def list_tags(
 # Search (agent-facing)
 # ------------------------------------------------------------------
 
+
 @app.get("/search")
 def search(
     q: Annotated[str, Query()],
@@ -185,13 +195,16 @@ def search(
     _agent: str = Depends(get_agent_identity),
     store: Store = Depends(get_store),
 ) -> list[dict[str, Any]]:
-    results = store.search(q, tags=tags, language=language, framework=framework, limit=limit)
+    results = store.search(
+        q, tags=tags, language=language, framework=framework, limit=limit
+    )
     return [_serialise_thread(r) for r in results]
 
 
 # ------------------------------------------------------------------
 # Questions
 # ------------------------------------------------------------------
+
 
 @app.post("/questions", status_code=201)
 def create_question(
@@ -257,6 +270,7 @@ def create_answer(
 # Votes
 # ------------------------------------------------------------------
 
+
 @app.post("/vote")
 def cast_vote(
     request: VoteRequest,
@@ -283,6 +297,7 @@ def cast_vote(
 # Comments
 # ------------------------------------------------------------------
 
+
 @app.post("/comments", status_code=201)
 def create_comment(
     request: CommentRequest,
@@ -304,6 +319,7 @@ def create_comment(
 # Export
 # ------------------------------------------------------------------
 
+
 @app.get("/export")
 def export_data(
     since: str | None = None,
@@ -317,6 +333,7 @@ def export_data(
 # Reflect (stub)
 # ------------------------------------------------------------------
 
+
 @app.post("/reflect")
 def reflect(
     _agent: str = Depends(get_agent_identity),
@@ -327,6 +344,7 @@ def reflect(
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
 
 def _serialise_thread(thread: dict[str, Any]) -> dict[str, Any]:
     return {

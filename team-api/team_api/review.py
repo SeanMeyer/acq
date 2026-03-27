@@ -19,6 +19,7 @@ router = APIRouter(tags=["review"])
 # Pending queue
 # ------------------------------------------------------------------
 
+
 @router.get("/review/queue")
 def review_queue(
     _user: str = Depends(get_current_user),
@@ -28,13 +29,15 @@ def review_queue(
     items: list[dict[str, Any]] = []
     for answer in queue["answers"]:
         question = store.get_question(answer.question_id)
-        items.append({
-            "id": answer.id,
-            "type": "answer",
-            "content": answer.model_dump(mode="json"),
-            "question": question.model_dump(mode="json") if question else None,
-            "status": answer.status,
-        })
+        items.append(
+            {
+                "id": answer.id,
+                "type": "answer",
+                "content": answer.model_dump(mode="json"),
+                "question": question.model_dump(mode="json") if question else None,
+                "status": answer.status,
+            }
+        )
     for comment in queue["comments"]:
         # For comments on answers, find the parent question
         question = None
@@ -44,19 +47,22 @@ def review_queue(
                 question = store.get_question(parent_answer.question_id)
         elif comment.parent_type == "question":
             question = store.get_question(comment.parent_id)
-        items.append({
-            "id": comment.id,
-            "type": "comment",
-            "content": comment.model_dump(mode="json"),
-            "question": question.model_dump(mode="json") if question else None,
-            "status": comment.status,
-        })
+        items.append(
+            {
+                "id": comment.id,
+                "type": "comment",
+                "content": comment.model_dump(mode="json"),
+                "question": question.model_dump(mode="json") if question else None,
+                "status": comment.status,
+            }
+        )
     return {"items": items, "total": len(items)}
 
 
 # ------------------------------------------------------------------
 # Approve / reject
 # ------------------------------------------------------------------
+
 
 @router.post("/review/{content_id}/approve")
 def approve_content(
@@ -90,6 +96,7 @@ def reject_content(
 # Stats dashboard
 # ------------------------------------------------------------------
 
+
 @router.get("/review/stats")
 def review_stats(
     _user: str = Depends(get_current_user),
@@ -112,6 +119,7 @@ def review_stats(
 # ------------------------------------------------------------------
 # Edit question / answer
 # ------------------------------------------------------------------
+
 
 class EditBodyRequest(BaseModel):
     body: str
@@ -147,6 +155,7 @@ def edit_answer(
 # Pin / unpin answer
 # ------------------------------------------------------------------
 
+
 class PinRequest(BaseModel):
     answer_id: str
 
@@ -179,6 +188,7 @@ def unpin_answer(
 # ------------------------------------------------------------------
 # Edit history
 # ------------------------------------------------------------------
+
 
 @router.get("/questions/{question_id}/history")
 def question_history(

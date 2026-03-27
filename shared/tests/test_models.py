@@ -1,8 +1,11 @@
 import pytest
-from datetime import datetime, timezone
-
 from acq_shared.models import (
-    Question, Answer, Comment, Vote, Tag, QuestionTag, EditHistory,
+    Answer,
+    Comment,
+    EditHistory,
+    Question,
+    Tag,
+    Vote,
 )
 
 

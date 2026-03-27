@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime, timedelta
 
 import pytest
-from acq_shared.models import Answer, Comment, Question, Tag, Vote
+from acq_shared.models import Answer, Comment, Question, Vote
 from acq_shared.sqlite_store import SqliteStore
 
 
@@ -72,7 +71,9 @@ class TestCreateQuestion:
         assert retrieved.id == q.id
         assert retrieved.title == q.title
 
-    def test_create_inserts_tags(self, store: SqliteStore, conn: sqlite3.Connection) -> None:
+    def test_create_inserts_tags(
+        self, store: SqliteStore, conn: sqlite3.Connection
+    ) -> None:
         q = _make_question()
         store.create_question(q, ["python", "fastapi"])
         rows = conn.execute(
@@ -82,7 +83,9 @@ class TestCreateQuestion:
         names = {r[0] for r in rows}
         assert names == {"python", "fastapi"}
 
-    def test_create_indexes_in_fts(self, store: SqliteStore, conn: sqlite3.Connection) -> None:
+    def test_create_indexes_in_fts(
+        self, store: SqliteStore, conn: sqlite3.Connection
+    ) -> None:
         q = _make_question(title="unique fts title abc")
         store.create_question(q, [])
         rows = conn.execute(
@@ -106,7 +109,9 @@ class TestCreateAnswer:
         result = store.create_answer(a)
         assert result.status == "approved"
 
-    def test_answer_indexed_in_fts(self, store: SqliteStore, conn: sqlite3.Connection) -> None:
+    def test_answer_indexed_in_fts(
+        self, store: SqliteStore, conn: sqlite3.Connection
+    ) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, body="unique pool term zxqw")
@@ -359,7 +364,9 @@ class TestFindSimilarQuestions:
     def test_returns_similar_by_title(self, store: SqliteStore) -> None:
         q = _make_question(title="connection pool configuration best practices")
         store.create_question(q, ["databases"])
-        similar = store.find_similar_questions("connection pool configuration", ["databases"])
+        similar = store.find_similar_questions(
+            "connection pool configuration", ["databases"]
+        )
         assert len(similar) >= 1
         assert similar[0]["question"].id == q.id
 
@@ -374,7 +381,9 @@ class TestFindSimilarQuestions:
         for i in range(5):
             q = _make_question(title=f"connection pool question number {i}")
             store.create_question(q, ["databases"])
-        similar = store.find_similar_questions("connection pool question", ["databases"])
+        similar = store.find_similar_questions(
+            "connection pool question", ["databases"]
+        )
         assert len(similar) <= 3
 
 
@@ -401,7 +410,9 @@ class TestMergeTags:
         assert "python" in tags
         assert "py" not in tags
 
-    def test_merge_deletes_source_tag(self, store: SqliteStore, conn: sqlite3.Connection) -> None:
+    def test_merge_deletes_source_tag(
+        self, store: SqliteStore, conn: sqlite3.Connection
+    ) -> None:
         source = store.get_or_create_tag("py")
         target = store.get_or_create_tag("python")
         store.merge_tags(source.id, target.id)
@@ -461,7 +472,9 @@ class TestGetStatus:
         status = store.get_status()
         assert status["unanswered"] == 1
 
-    def test_pending_count_includes_answers_and_comments(self, store: SqliteStore) -> None:
+    def test_pending_count_includes_answers_and_comments(
+        self, store: SqliteStore
+    ) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)  # pending

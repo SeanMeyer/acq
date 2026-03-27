@@ -64,7 +64,7 @@ class LocalStore:
             self._closed = True
             self._conn.close()
 
-    def __enter__(self) -> "LocalStore":
+    def __enter__(self) -> LocalStore:
         return self
 
     def __exit__(
@@ -187,7 +187,11 @@ class LocalStore:
         with self._lock:
             self._check_open()
             return self._store.search(
-                query, tags=tags, language=language, framework=framework, limit=limit,
+                query,
+                tags=tags,
+                language=language,
+                framework=framework,
+                limit=limit,
             )
 
     def get_status(self) -> dict:
@@ -245,18 +249,14 @@ class LocalStore:
             self._check_open()
             with self._conn:
                 self._conn.execute("DELETE FROM questions WHERE id = ?", (question_id,))
-                self._conn.execute(
-                    "DELETE FROM search_index WHERE question_id = ?", (question_id,)
-                )
+                self._conn.execute("DELETE FROM search_index WHERE question_id = ?", (question_id,))
 
     def delete_answer(self, answer_id: str) -> None:
         with self._lock:
             self._check_open()
             with self._conn:
                 self._conn.execute("DELETE FROM answers WHERE id = ?", (answer_id,))
-                self._conn.execute(
-                    "DELETE FROM search_index WHERE entity_id = ?", (answer_id,)
-                )
+                self._conn.execute("DELETE FROM search_index WHERE entity_id = ?", (answer_id,))
 
     def delete_vote(self, vote_id: str) -> None:
         with self._lock:
@@ -274,7 +274,7 @@ class LocalStore:
     # Team sync
     # ------------------------------------------------------------------
 
-    async def drain_to_team(self, team_client: "TeamClient") -> int:
+    async def drain_to_team(self, team_client: TeamClient) -> int:
         """Push locally-created content to the team API.
 
         Only drains items in the pending_drain queue — content pulled from the
@@ -289,24 +289,26 @@ class LocalStore:
             return 0
 
         drained = 0
-        from acq_shared.models import Question, Answer, Vote, Comment
+        from acq_shared.models import Answer, Comment, Question
 
         for item in pending:
             eid, etype = item["entity_id"], item["entity_type"]
             try:
                 if etype == "question":
-                    row = self._conn.execute(
-                        "SELECT data FROM questions WHERE id = ?", (eid,)
-                    ).fetchone()
+                    row = self._conn.execute("SELECT data FROM questions WHERE id = ?", (eid,)).fetchone()
                     if not row:
                         self._store.clear_drain(eid)
                         continue
                     q = Question.model_validate_json(row[0])
                     tags = self._get_tag_names_for_question_unlocked(q.id)
                     result = await team_client.create_question(
-                        title=q.title, body=q.body, created_by=q.created_by,
-                        tags=tags, language=q.context_language,
-                        framework=q.context_framework, pattern=q.context_pattern,
+                        title=q.title,
+                        body=q.body,
+                        created_by=q.created_by,
+                        tags=tags,
+                        language=q.context_language,
+                        framework=q.context_framework,
+                        pattern=q.context_pattern,
                         force_create=True,
                     )
                     if result is not None:
@@ -314,16 +316,16 @@ class LocalStore:
                         drained += 1
 
                 elif etype == "answer":
-                    row = self._conn.execute(
-                        "SELECT data FROM answers WHERE id = ?", (eid,)
-                    ).fetchone()
+                    row = self._conn.execute("SELECT data FROM answers WHERE id = ?", (eid,)).fetchone()
                     if not row:
                         self._store.clear_drain(eid)
                         continue
                     a = Answer.model_validate_json(row[0])
                     result = await team_client.create_answer(
-                        question_id=a.question_id, body=a.body,
-                        created_by=a.created_by, supervised=a.supervised,
+                        question_id=a.question_id,
+                        body=a.body,
+                        created_by=a.created_by,
+                        supervised=a.supervised,
                     )
                     if result is not None:
                         self._store.clear_drain(eid)
@@ -337,23 +339,27 @@ class LocalStore:
                         self._store.clear_drain(eid)
                         continue
                     result = await team_client.cast_vote(
-                        target_id=row[0], target_type=row[1], value=row[3], voter_id=row[2],
+                        target_id=row[0],
+                        target_type=row[1],
+                        value=row[3],
+                        voter_id=row[2],
                     )
                     if result is not None:
                         self._store.clear_drain(eid)
                         drained += 1
 
                 elif etype == "comment":
-                    row = self._conn.execute(
-                        "SELECT data FROM comments WHERE id = ?", (eid,)
-                    ).fetchone()
+                    row = self._conn.execute("SELECT data FROM comments WHERE id = ?", (eid,)).fetchone()
                     if not row:
                         self._store.clear_drain(eid)
                         continue
                     c = Comment.model_validate_json(row[0])
                     result = await team_client.create_comment(
-                        parent_id=c.parent_id, parent_type=c.parent_type, body=c.body,
-                        created_by=c.created_by, supervised=c.supervised,
+                        parent_id=c.parent_id,
+                        parent_type=c.parent_type,
+                        body=c.body,
+                        created_by=c.created_by,
+                        supervised=c.supervised,
                     )
                     if result is not None:
                         self._store.clear_drain(eid)
@@ -364,7 +370,7 @@ class LocalStore:
 
         return drained
 
-    async def pull_from_team(self, team_client: "TeamClient", since: str | None = None) -> int:
+    async def pull_from_team(self, team_client: TeamClient, since: str | None = None) -> int:
         """Pull content from team API and upsert into local store.
 
         Returns the number of items upserted.

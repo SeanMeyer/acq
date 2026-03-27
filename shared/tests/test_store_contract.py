@@ -10,10 +10,8 @@ import os
 import sqlite3
 
 import pytest
-
 from acq_shared.models import Answer, Comment, Question, Tag, Vote
 from acq_shared.sqlite_store import SqliteStore
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -32,7 +30,6 @@ def store(request):
         if dsn is None:
             pytest.skip("ACQ_TEST_PG_DSN not set")
         import psycopg2
-
         from acq_shared.postgres_store import PostgresStore
 
         conn = psycopg2.connect(dsn)
@@ -461,6 +458,17 @@ class TestSearch:
         # Searching with tag=["config"] should still return results
         results = store.search("webpack", tags=["config"])
         assert len(results) >= 1
+
+    def test_search_finds_question_by_tag_keyword(self, store):
+        """A search for a tag name should find questions even if the tag
+        doesn't appear in the title or body."""
+        q = _make_question(title="Build fails on CI", body="The pipeline errors out.")
+        store.create_question(q, ["howler", "ci-pipeline"])
+        a = _make_answer(q.id, supervised=True)
+        store.create_answer(a)
+        results = store.search("howler")
+        assert len(results) >= 1
+        assert results[0]["question"].id == q.id
 
     def test_search_bad_fts_query_returns_empty(self, store):
         """FTS5 syntax errors should not crash, just return []."""
