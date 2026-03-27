@@ -1,6 +1,6 @@
 import type { ReviewQueueResponse, ReviewStats } from './types';
 
-const API_BASE = '/api';
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 
 function getToken(): string | null {
   return localStorage.getItem('acq_token');

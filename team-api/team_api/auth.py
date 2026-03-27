@@ -1,18 +1,25 @@
-"""Authentication: password hashing, JWT creation and validation, API key support."""
+"""Authentication: GitHub OAuth, JWT creation and validation, API key support."""
 
 import json
 import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 import bcrypt
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request
+import requests as http_requests
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from acq_shared.store import Store
 
 from .deps import get_store
+
+GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
+GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
+GITHUB_USER_URL = "https://api.github.com/user"
 
 
 def hash_password(password: str) -> str:
@@ -121,3 +128,88 @@ def me(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     return MeResponse(username=user["username"], created_at=user["created_at"])
+
+
+# ------------------------------------------------------------------
+# GitHub OAuth
+# ------------------------------------------------------------------
+
+
+def _github_client_id() -> str:
+    val = os.environ.get("GITHUB_CLIENT_ID", "")
+    if not val:
+        raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
+    return val
+
+
+def _github_client_secret() -> str:
+    val = os.environ.get("GITHUB_CLIENT_SECRET", "")
+    if not val:
+        raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
+    return val
+
+
+def _callback_uri(request: Request) -> str:
+    """Build the OAuth callback URI, respecting X-Forwarded-Proto from ISP."""
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    return f"{scheme}://{request.url.netloc}/auth/callback"
+
+
+@router.get("/github")
+def github_login(request: Request) -> RedirectResponse:
+    """Redirect to GitHub OAuth authorize page."""
+    params = urlencode(
+        {
+            "client_id": _github_client_id(),
+            "redirect_uri": _callback_uri(request),
+            "scope": "read:user",
+        }
+    )
+    return RedirectResponse(f"{GITHUB_AUTHORIZE_URL}?{params}")
+
+
+@router.get("/callback")
+def github_callback(
+    code: str = Query(...),
+    store: Store = Depends(get_store),
+) -> RedirectResponse:
+    """Exchange GitHub code for access token, create ACQ session JWT."""
+    # Exchange code for GitHub access token
+    resp = http_requests.post(
+        GITHUB_TOKEN_URL,
+        json={
+            "client_id": _github_client_id(),
+            "client_secret": _github_client_secret(),
+            "code": code,
+        },
+        headers={"Accept": "application/json"},
+        timeout=10,
+    )
+    data = resp.json()
+    github_token = data.get("access_token")
+    if not github_token:
+        raise HTTPException(
+            status_code=401, detail=data.get("error_description", "GitHub auth failed")
+        )
+
+    # Fetch GitHub user profile
+    user_resp = http_requests.get(
+        GITHUB_USER_URL,
+        headers={
+            "Authorization": f"Bearer {github_token}",
+            "Accept": "application/json",
+        },
+        timeout=10,
+    )
+    if user_resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Failed to fetch GitHub user")
+    gh_user = user_resp.json()
+    username = gh_user["login"]
+
+    # Ensure user exists in the store (auto-create on first login)
+    if store.get_user(username) is None:
+        store.create_user(username, password_hash="github-oauth")
+
+    # Issue ACQ JWT
+    token = create_token(username, secret=_get_jwt_secret())
+    return RedirectResponse(f"/login?token={token}")
