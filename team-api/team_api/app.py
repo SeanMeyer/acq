@@ -80,15 +80,16 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     if not jwt_secret:
         raise RuntimeError("ACQ_JWT_SECRET environment variable is required")
 
-    db_host = os.environ.get("DB_HOST")
-    if db_host:
-        # Production / Howler path — Postgres
-        import psycopg2
+    orgstore_cluster = os.environ.get("ORGSTORE_CLUSTER")
+    if orgstore_cluster:
+        # Production / Howler path — Postgres via OrgStore client (JWT auth via emissary)
         from acq_shared.postgres_store import PostgresStore
+        from orgstore_pg_client import OrgStorePostgresClient
 
-        db_name = os.environ.get("DB_NAME", "acq_test")
-        db_user = os.environ.get("DB_USER", "acq_test")
-        conn = psycopg2.connect(host=db_host, dbname=db_name, user=db_user)
+        db_name = os.environ.get("DB_NAME", "dev_db_acq")
+        db_user = os.environ.get("DB_USER", "dev_db_acq")
+        orgstore_client = OrgStorePostgresClient(orgstore_cluster, db_user, db_name)
+        conn = orgstore_client.engine.raw_connection()
         _store = PostgresStore(conn)
     else:
         # Local dev / test path — SQLite
