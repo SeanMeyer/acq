@@ -331,13 +331,13 @@ class LocalStore:
 
                 elif etype == "vote":
                     row = self._conn.execute(
-                        "SELECT target_id, voter_id, value FROM votes WHERE id = ?", (eid,)
+                        "SELECT target_id, target_type, voter_id, value FROM votes WHERE id = ?", (eid,)
                     ).fetchone()
                     if not row:
                         self._store.clear_drain(eid)
                         continue
                     result = await team_client.cast_vote(
-                        target_id=row[0], value=row[2], voter_id=row[1],
+                        target_id=row[0], target_type=row[1], value=row[3], voter_id=row[2],
                     )
                     if result is not None:
                         self._store.clear_drain(eid)
@@ -352,7 +352,7 @@ class LocalStore:
                         continue
                     c = Comment.model_validate_json(row[0])
                     result = await team_client.create_comment(
-                        parent_id=c.parent_id, body=c.body,
+                        parent_id=c.parent_id, parent_type=c.parent_type, body=c.body,
                         created_by=c.created_by, supervised=c.supervised,
                     )
                     if result is not None:
