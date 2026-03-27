@@ -1,4 +1,4 @@
-"""Tests for the ACQ team store (Q&A model)."""
+"""Tests for the ACQ team store (Q&A model) using SqliteStore."""
 
 from __future__ import annotations
 
@@ -7,8 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from acq_shared.models import Answer, Comment, Question, Tag, Vote
-from acq_shared.sqlite_schema import create_tables
-from team_api.store import TeamStore
+from acq_shared.sqlite_store import SqliteStore
 
 
 @pytest.fixture()
@@ -18,8 +17,8 @@ def conn() -> sqlite3.Connection:
 
 
 @pytest.fixture()
-def store(conn: sqlite3.Connection) -> TeamStore:
-    return TeamStore(conn)
+def store(conn: sqlite3.Connection) -> SqliteStore:
+    return SqliteStore(conn)
 
 
 def _make_question(**overrides) -> Question:
@@ -65,7 +64,7 @@ def _make_vote(target_id: str, target_type: str = "answer", **overrides) -> Vote
 
 
 class TestCreateQuestion:
-    def test_create_stores_question(self, store: TeamStore) -> None:
+    def test_create_stores_question(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, ["databases", "performance"])
         retrieved = store.get_question(q.id)
@@ -73,7 +72,7 @@ class TestCreateQuestion:
         assert retrieved.id == q.id
         assert retrieved.title == q.title
 
-    def test_create_inserts_tags(self, store: TeamStore, conn: sqlite3.Connection) -> None:
+    def test_create_inserts_tags(self, store: SqliteStore, conn: sqlite3.Connection) -> None:
         q = _make_question()
         store.create_question(q, ["python", "fastapi"])
         rows = conn.execute(
@@ -83,7 +82,7 @@ class TestCreateQuestion:
         names = {r[0] for r in rows}
         assert names == {"python", "fastapi"}
 
-    def test_create_indexes_in_fts(self, store: TeamStore, conn: sqlite3.Connection) -> None:
+    def test_create_indexes_in_fts(self, store: SqliteStore, conn: sqlite3.Connection) -> None:
         q = _make_question(title="unique fts title abc")
         store.create_question(q, [])
         rows = conn.execute(
@@ -93,21 +92,21 @@ class TestCreateQuestion:
 
 
 class TestCreateAnswer:
-    def test_answer_pending_by_default(self, store: TeamStore) -> None:
+    def test_answer_pending_by_default(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
         result = store.create_answer(a)
         assert result.status == "pending"
 
-    def test_supervised_answer_auto_approved(self, store: TeamStore) -> None:
+    def test_supervised_answer_auto_approved(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=True)
         result = store.create_answer(a)
         assert result.status == "approved"
 
-    def test_answer_indexed_in_fts(self, store: TeamStore, conn: sqlite3.Connection) -> None:
+    def test_answer_indexed_in_fts(self, store: SqliteStore, conn: sqlite3.Connection) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, body="unique pool term zxqw")
@@ -119,7 +118,7 @@ class TestCreateAnswer:
 
 
 class TestCreateComment:
-    def test_human_comment_auto_approved(self, store: TeamStore) -> None:
+    def test_human_comment_auto_approved(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -128,7 +127,7 @@ class TestCreateComment:
         result = store.create_comment(c)
         assert result.status == "approved"
 
-    def test_agent_comment_pending(self, store: TeamStore) -> None:
+    def test_agent_comment_pending(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -139,7 +138,7 @@ class TestCreateComment:
 
 
 class TestCastVote:
-    def test_cast_vote_returns_counts(self, store: TeamStore) -> None:
+    def test_cast_vote_returns_counts(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -148,7 +147,7 @@ class TestCastVote:
         assert result["agent_upvotes"] == 1
         assert result["agent_downvotes"] == 0
 
-    def test_duplicate_vote_rejected(self, store: TeamStore) -> None:
+    def test_duplicate_vote_rejected(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -157,14 +156,14 @@ class TestCastVote:
         result = store.cast_vote(_make_vote(a.id))
         assert result["error"] == "duplicate_vote"
 
-    def test_vote_on_question(self, store: TeamStore) -> None:
+    def test_vote_on_question(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         result = store.cast_vote(_make_vote(q.id, target_type="question"))
         assert "agent_upvotes" in result
         assert result["agent_upvotes"] == 1
 
-    def test_denormalized_counts_updated(self, store: TeamStore) -> None:
+    def test_denormalized_counts_updated(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -175,7 +174,7 @@ class TestCastVote:
         assert retrieved.agent_upvotes == 1
         assert retrieved.human_downvotes == 1
 
-    def test_vote_is_immutable(self, store: TeamStore) -> None:
+    def test_vote_is_immutable(self, store: SqliteStore) -> None:
         """Once a vote is cast, it cannot be changed (duplicate returns error)."""
         q = _make_question()
         store.create_question(q, [])
@@ -187,7 +186,7 @@ class TestCastVote:
 
 
 class TestSearch:
-    def test_returns_approved_answers_only(self, store: TeamStore) -> None:
+    def test_returns_approved_answers_only(self, store: SqliteStore) -> None:
         q = _make_question(title="connection pool configuration guide")
         store.create_question(q, [])
         pending_a = _make_answer(q.id, body="pending answer here")
@@ -200,7 +199,7 @@ class TestSearch:
         assert approved_a.id in answer_ids
         assert pending_a.id not in answer_ids
 
-    def test_max_3_answers_per_question(self, store: TeamStore) -> None:
+    def test_max_3_answers_per_question(self, store: SqliteStore) -> None:
         q = _make_question(title="max answers question test")
         store.create_question(q, [])
         for i in range(5):
@@ -209,7 +208,7 @@ class TestSearch:
         results = store.search("max answers question")
         assert len(results[0]["answers"]) <= 3
 
-    def test_pinned_answer_first(self, store: TeamStore) -> None:
+    def test_pinned_answer_first(self, store: SqliteStore) -> None:
         q = _make_question(title="pinned answer ordering check")
         store.create_question(q, [])
         a1 = _make_answer(q.id, body="first answer content", supervised=True)
@@ -220,7 +219,7 @@ class TestSearch:
         results = store.search("pinned answer ordering")
         assert results[0]["answers"][0]["answer"].id == a2.id
 
-    def test_comment_counts_exclude_pending(self, store: TeamStore) -> None:
+    def test_comment_counts_exclude_pending(self, store: SqliteStore) -> None:
         q = _make_question(title="comment count search query test")
         store.create_question(q, [])
         a = _make_answer(q.id, body="comment target answer", supervised=True)
@@ -237,7 +236,7 @@ class TestSearch:
 
 
 class TestGetQuestionThread:
-    def test_returns_question_with_ranked_answers(self, store: TeamStore) -> None:
+    def test_returns_question_with_ranked_answers(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a1 = _make_answer(q.id, supervised=True)
@@ -249,10 +248,10 @@ class TestGetQuestionThread:
         assert thread["question"].id == q.id
         assert len(thread["answers"]) == 2
 
-    def test_returns_none_for_missing_question(self, store: TeamStore) -> None:
+    def test_returns_none_for_missing_question(self, store: SqliteStore) -> None:
         assert store.get_question_thread("q_nonexistent") is None
 
-    def test_includes_approved_comments(self, store: TeamStore) -> None:
+    def test_includes_approved_comments(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=True)
@@ -265,7 +264,7 @@ class TestGetQuestionThread:
 
 
 class TestApproveRejectContent:
-    def test_approve_answer(self, store: TeamStore) -> None:
+    def test_approve_answer(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -273,7 +272,7 @@ class TestApproveRejectContent:
         assert store.approve_content(a.id) is True
         assert store.get_answer(a.id).status == "approved"
 
-    def test_reject_answer(self, store: TeamStore) -> None:
+    def test_reject_answer(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -281,7 +280,7 @@ class TestApproveRejectContent:
         assert store.reject_content(a.id) is True
         assert store.get_answer(a.id).status == "rejected"
 
-    def test_approve_already_approved_returns_false(self, store: TeamStore) -> None:
+    def test_approve_already_approved_returns_false(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -289,7 +288,7 @@ class TestApproveRejectContent:
         store.approve_content(a.id)
         assert store.approve_content(a.id) is False
 
-    def test_approve_comment(self, store: TeamStore) -> None:
+    def test_approve_comment(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -300,14 +299,14 @@ class TestApproveRejectContent:
 
 
 class TestEditQuestionAnswer:
-    def test_edit_question_updates_body(self, store: TeamStore) -> None:
+    def test_edit_question_updates_body(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         updated = store.edit_question(q.id, "new body content", "alice", "human")
         assert updated.body == "new body content"
         assert store.get_question(q.id).body == "new body content"
 
-    def test_edit_question_records_history(self, store: TeamStore) -> None:
+    def test_edit_question_records_history(self, store: SqliteStore) -> None:
         q = _make_question(body="original body")
         store.create_question(q, [])
         store.edit_question(q.id, "new body", "alice", "human")
@@ -316,7 +315,7 @@ class TestEditQuestionAnswer:
         assert history[0].previous_body == "original body"
         assert history[0].new_body == "new body"
 
-    def test_edit_answer_updates_body(self, store: TeamStore) -> None:
+    def test_edit_answer_updates_body(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -324,7 +323,7 @@ class TestEditQuestionAnswer:
         updated = store.edit_answer(a.id, "edited answer", "alice", "human")
         assert updated.body == "edited answer"
 
-    def test_edit_answer_records_history(self, store: TeamStore) -> None:
+    def test_edit_answer_records_history(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, body="original answer body")
@@ -336,7 +335,7 @@ class TestEditQuestionAnswer:
 
 
 class TestPendingQueue:
-    def test_returns_pending_answers_and_comments(self, store: TeamStore) -> None:
+    def test_returns_pending_answers_and_comments(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)
@@ -347,7 +346,7 @@ class TestPendingQueue:
         assert any(x.id == a.id for x in queue["answers"])
         assert any(x.id == c.id for x in queue["comments"])
 
-    def test_approved_items_excluded(self, store: TeamStore) -> None:
+    def test_approved_items_excluded(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=True)
@@ -357,21 +356,21 @@ class TestPendingQueue:
 
 
 class TestFindSimilarQuestions:
-    def test_returns_similar_by_title(self, store: TeamStore) -> None:
+    def test_returns_similar_by_title(self, store: SqliteStore) -> None:
         q = _make_question(title="connection pool configuration best practices")
         store.create_question(q, ["databases"])
         similar = store.find_similar_questions("connection pool configuration", ["databases"])
         assert len(similar) >= 1
         assert similar[0]["question"].id == q.id
 
-    def test_threshold_filters_low_similarity(self, store: TeamStore) -> None:
+    def test_threshold_filters_low_similarity(self, store: SqliteStore) -> None:
         q = _make_question(title="completely unrelated topic xyz")
         store.create_question(q, [])
         # Search for something very different — should not match above threshold.
         similar = store.find_similar_questions("python decorators explained", [])
         assert not any(r["question"].id == q.id for r in similar)
 
-    def test_returns_top_3(self, store: TeamStore) -> None:
+    def test_returns_top_3(self, store: SqliteStore) -> None:
         for i in range(5):
             q = _make_question(title=f"connection pool question number {i}")
             store.create_question(q, ["databases"])
@@ -380,19 +379,19 @@ class TestFindSimilarQuestions:
 
 
 class TestGetOrCreateTag:
-    def test_creates_new_tag(self, store: TeamStore) -> None:
+    def test_creates_new_tag(self, store: SqliteStore) -> None:
         tag = store.get_or_create_tag("python")
         assert tag.name == "python"
         assert tag.id.startswith("t_")
 
-    def test_returns_existing_tag(self, store: TeamStore) -> None:
+    def test_returns_existing_tag(self, store: SqliteStore) -> None:
         t1 = store.get_or_create_tag("python")
         t2 = store.get_or_create_tag("python")
         assert t1.id == t2.id
 
 
 class TestMergeTags:
-    def test_merge_repoints_question_tags(self, store: TeamStore) -> None:
+    def test_merge_repoints_question_tags(self, store: SqliteStore) -> None:
         q = _make_question()
         source = store.get_or_create_tag("py")
         target = store.get_or_create_tag("python")
@@ -402,7 +401,7 @@ class TestMergeTags:
         assert "python" in tags
         assert "py" not in tags
 
-    def test_merge_deletes_source_tag(self, store: TeamStore, conn: sqlite3.Connection) -> None:
+    def test_merge_deletes_source_tag(self, store: SqliteStore, conn: sqlite3.Connection) -> None:
         source = store.get_or_create_tag("py")
         target = store.get_or_create_tag("python")
         store.merge_tags(source.id, target.id)
@@ -411,7 +410,7 @@ class TestMergeTags:
 
 
 class TestPinAnswer:
-    def test_pin_sets_pinned_answer_id(self, store: TeamStore) -> None:
+    def test_pin_sets_pinned_answer_id(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=True)
@@ -419,7 +418,7 @@ class TestPinAnswer:
         updated = store.pin_answer(q.id, a.id)
         assert updated.pinned_answer_id == a.id
 
-    def test_unpin_clears_pinned_answer_id(self, store: TeamStore) -> None:
+    def test_unpin_clears_pinned_answer_id(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=True)
@@ -430,7 +429,7 @@ class TestPinAnswer:
 
 
 class TestGetStatus:
-    def test_status_empty_store(self, store: TeamStore) -> None:
+    def test_status_empty_store(self, store: SqliteStore) -> None:
         status = store.get_status()
         assert status["total_questions"] == 0
         assert status["total_answers"] == 0
@@ -439,7 +438,7 @@ class TestGetStatus:
         assert status["unanswered"] == 0
         assert status["pending"] == 0
 
-    def test_status_counts(self, store: TeamStore) -> None:
+    def test_status_counts(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, ["python"])
         a = _make_answer(q.id, supervised=True)
@@ -452,7 +451,7 @@ class TestGetStatus:
         assert status["total_votes"] == 1
         assert status["unanswered"] == 0
 
-    def test_unanswered_counts_correctly(self, store: TeamStore) -> None:
+    def test_unanswered_counts_correctly(self, store: SqliteStore) -> None:
         q1 = _make_question()
         q2 = _make_question(title="Unanswered question here")
         store.create_question(q1, [])
@@ -462,7 +461,7 @@ class TestGetStatus:
         status = store.get_status()
         assert status["unanswered"] == 1
 
-    def test_pending_count_includes_answers_and_comments(self, store: TeamStore) -> None:
+    def test_pending_count_includes_answers_and_comments(self, store: SqliteStore) -> None:
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id)  # pending
@@ -474,17 +473,17 @@ class TestGetStatus:
 
 
 class TestUserManagement:
-    def test_create_and_get_user(self, store: TeamStore) -> None:
+    def test_create_and_get_user(self, store: SqliteStore) -> None:
         store.create_user("alice", "hashed_pw")
         user = store.get_user("alice")
         assert user is not None
         assert user["username"] == "alice"
         assert user["password_hash"] == "hashed_pw"
 
-    def test_get_nonexistent_user(self, store: TeamStore) -> None:
+    def test_get_nonexistent_user(self, store: SqliteStore) -> None:
         assert store.get_user("nobody") is None
 
-    def test_duplicate_user_raises(self, store: TeamStore) -> None:
+    def test_duplicate_user_raises(self, store: SqliteStore) -> None:
         store.create_user("alice", "hash1")
         with pytest.raises(sqlite3.IntegrityError):
             store.create_user("alice", "hash2")

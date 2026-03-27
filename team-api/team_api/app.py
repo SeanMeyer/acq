@@ -14,11 +14,11 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 from acq_shared.models import Answer, Comment, Question, Vote
+from acq_shared.store import Store
 
 from .auth import get_agent_identity, router as auth_router
 from .deps import get_store
 from .review import router as review_router
-from .store import TeamStore
 from .tags import router as tags_router
 
 
@@ -27,6 +27,7 @@ from .tags import router as tags_router
 # ------------------------------------------------------------------
 
 class CreateQuestionRequest(BaseModel):
+    id: str | None = None
     title: str
     body: str
     tags: list[str] = []
@@ -42,6 +43,7 @@ class CreateQuestionResponse(BaseModel):
 
 
 class CreateAnswerRequest(BaseModel):
+    id: str | None = None
     body: str
     supervised: bool = False
 
@@ -62,10 +64,10 @@ class CommentRequest(BaseModel):
 # Lifespan / store
 # ------------------------------------------------------------------
 
-_store: TeamStore | None = None
+_store: Store | None = None
 
 
-def _get_store() -> TeamStore:
+def _get_store() -> Store:
     if _store is None:
         raise RuntimeError("Store not initialised")
     return _store
@@ -77,13 +79,29 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     jwt_secret = os.environ.get("ACQ_JWT_SECRET")
     if not jwt_secret:
         raise RuntimeError("ACQ_JWT_SECRET environment variable is required")
-    db_path = Path(os.environ.get("ACQ_DB_PATH", "/data/team.db"))
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    _store = TeamStore(conn)
+
+    db_host = os.environ.get("DB_HOST")
+    if db_host:
+        # Production / Howler path — Postgres
+        import psycopg2
+        from acq_shared.postgres_store import PostgresStore
+
+        db_name = os.environ.get("DB_NAME", "acq_test")
+        db_user = os.environ.get("DB_USER", "acq_test")
+        conn = psycopg2.connect(host=db_host, dbname=db_name, user=db_user)
+        _store = PostgresStore(conn)
+    else:
+        # Local dev / test path — SQLite
+        from acq_shared.sqlite_store import SqliteStore
+
+        db_path = Path(os.environ.get("ACQ_DB_PATH", "/data/team.db"))
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        _store = SqliteStore(conn)
+
     app_instance.state.store = _store
     yield
     _store.close()
@@ -111,7 +129,7 @@ def health() -> dict[str, str]:
 @app.get("/status")
 def status(
     _agent: str = Depends(get_agent_identity),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     return store.get_status()
 
@@ -124,7 +142,7 @@ def status(
 def list_tags(
     q: Annotated[str | None, Query()] = None,
     _agent: str = Depends(get_agent_identity),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> list[dict[str, Any]]:
     tags = store.list_tags(q=q)
     return [t.model_dump() for t in tags]
@@ -142,7 +160,7 @@ def search(
     framework: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(gt=0)] = 10,
     _agent: str = Depends(get_agent_identity),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> list[dict[str, Any]]:
     results = store.search(q, tags=tags, language=language, framework=framework, limit=limit)
     return [_serialise_thread(r) for r in results]
@@ -156,7 +174,7 @@ def search(
 def create_question(
     request: CreateQuestionRequest,
     agent: str = Depends(get_agent_identity),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> CreateQuestionResponse:
     # Check for duplicates first (unless force_create)
     if not request.force_create:
@@ -172,15 +190,18 @@ def create_question(
                     for s in similar
                 ],
             )
-    q = Question(
-        title=request.title,
-        body=request.body,
-        created_by=agent,
-        created_by_type="agent",
-        context_language=request.context_language,
-        context_framework=request.context_framework,
-        context_pattern=request.context_pattern,
-    )
+    kwargs: dict[str, Any] = {
+        "title": request.title,
+        "body": request.body,
+        "created_by": agent,
+        "created_by_type": "agent",
+        "context_language": request.context_language,
+        "context_framework": request.context_framework,
+        "context_pattern": request.context_pattern,
+    }
+    if request.id is not None:
+        kwargs["id"] = request.id
+    q = Question(**kwargs)
     store.create_question(q, request.tags)
     return CreateQuestionResponse(question=q.model_dump(mode="json"))
 
@@ -190,18 +211,21 @@ def create_answer(
     question_id: str,
     request: CreateAnswerRequest,
     agent: str = Depends(get_agent_identity),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     q = store.get_question(question_id)
     if q is None:
         raise HTTPException(status_code=404, detail="Question not found")
-    a = Answer(
-        question_id=question_id,
-        body=request.body,
-        created_by=agent,
-        created_by_type="agent",
-        supervised=request.supervised,
-    )
+    kwargs: dict[str, Any] = {
+        "question_id": question_id,
+        "body": request.body,
+        "created_by": agent,
+        "created_by_type": "agent",
+        "supervised": request.supervised,
+    }
+    if request.id is not None:
+        kwargs["id"] = request.id
+    a = Answer(**kwargs)
     result = store.create_answer(a)
     return result.model_dump(mode="json")
 
@@ -214,7 +238,7 @@ def create_answer(
 def cast_vote(
     request: VoteRequest,
     agent: str = Depends(get_agent_identity),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     vote = Vote(
         target_id=request.target_id,
@@ -240,7 +264,7 @@ def cast_vote(
 def create_comment(
     request: CommentRequest,
     agent: str = Depends(get_agent_identity),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     c = Comment(
         parent_id=request.parent_id,
@@ -251,6 +275,19 @@ def create_comment(
     )
     result = store.create_comment(c)
     return result.model_dump(mode="json")
+
+
+# ------------------------------------------------------------------
+# Export
+# ------------------------------------------------------------------
+
+@app.get("/export")
+def export_data(
+    since: str | None = None,
+    _agent: str = Depends(get_agent_identity),
+    store: Store = Depends(get_store),
+) -> dict:
+    return store.export_since(since=since)
 
 
 # ------------------------------------------------------------------

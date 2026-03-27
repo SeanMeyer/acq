@@ -7,9 +7,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from acq_shared.store import Store
+
 from .auth import get_current_user
 from .deps import get_store
-from .store import TeamStore
 
 router = APIRouter(tags=["tags"])
 
@@ -23,7 +24,7 @@ class MergeTagsRequest(BaseModel):
 def merge_tags(
     request: MergeTagsRequest,
     _user: str = Depends(get_current_user),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     tags = store.list_tags()
     tag_ids = {t.id for t in tags}

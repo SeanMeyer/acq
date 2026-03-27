@@ -10,8 +10,9 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from acq_shared.store import Store
+
 from .deps import get_store
-from .store import TeamStore
 
 
 def hash_password(password: str) -> str:
@@ -60,7 +61,7 @@ def _get_jwt_secret() -> str:
 
 
 def _get_api_keys() -> dict[str, str]:
-    """Return the API key → agent_name mapping from ACQ_API_KEYS env var.
+    """Return the API key -> agent_name mapping from ACQ_API_KEYS env var.
 
     ACQ_API_KEYS is a JSON string like {"key1": "agent-name-1"}.
     Returns an empty dict if unset.
@@ -105,7 +106,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/login")
 def login(
-    request: LoginRequest, store: TeamStore = Depends(get_store)
+    request: LoginRequest, store: Store = Depends(get_store)
 ) -> LoginResponse:
     user = store.get_user(request.username)
     if user is None or not verify_password(request.password, user["password_hash"]):
@@ -116,7 +117,7 @@ def login(
 
 @router.get("/me")
 def me(
-    username: str = Depends(get_current_user), store: TeamStore = Depends(get_store)
+    username: str = Depends(get_current_user), store: Store = Depends(get_store)
 ) -> MeResponse:
     user = store.get_user(username)
     if user is None:

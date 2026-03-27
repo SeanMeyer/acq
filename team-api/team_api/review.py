@@ -7,9 +7,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from acq_shared.store import Store
+
 from .auth import get_current_user
 from .deps import get_store
-from .store import TeamStore
 
 router = APIRouter(tags=["review"])
 
@@ -21,7 +22,7 @@ router = APIRouter(tags=["review"])
 @router.get("/review/queue")
 def review_queue(
     _user: str = Depends(get_current_user),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     queue = store.pending_queue()
     items: list[dict[str, Any]] = []
@@ -61,7 +62,7 @@ def review_queue(
 def approve_content(
     content_id: str,
     _user: str = Depends(get_current_user),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, str]:
     result = store.approve_content(content_id)
     if result is None:
@@ -75,7 +76,7 @@ def approve_content(
 def reject_content(
     content_id: str,
     _user: str = Depends(get_current_user),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, str]:
     result = store.reject_content(content_id)
     if result is None:
@@ -92,7 +93,7 @@ def reject_content(
 @router.get("/review/stats")
 def review_stats(
     _user: str = Depends(get_current_user),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     status = store.get_status()
     tag_rows = store.list_tags()
@@ -121,7 +122,7 @@ def edit_question(
     question_id: str,
     request: EditBodyRequest,
     user: str = Depends(get_current_user),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     result = store.edit_question(question_id, request.body, user, "human")
     if result is None:
@@ -134,7 +135,7 @@ def edit_answer(
     answer_id: str,
     request: EditBodyRequest,
     user: str = Depends(get_current_user),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     result = store.edit_answer(answer_id, request.body, user, "human")
     if result is None:
@@ -155,7 +156,7 @@ def pin_answer(
     question_id: str,
     request: PinRequest,
     _user: str = Depends(get_current_user),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     result = store.pin_answer(question_id, request.answer_id)
     if result is None:
@@ -167,7 +168,7 @@ def pin_answer(
 def unpin_answer(
     question_id: str,
     _user: str = Depends(get_current_user),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     result = store.unpin_answer(question_id)
     if result is None:
@@ -183,7 +184,7 @@ def unpin_answer(
 def question_history(
     question_id: str,
     _user: str = Depends(get_current_user),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> list[dict[str, Any]]:
     return [h.model_dump(mode="json") for h in store.get_question_history(question_id)]
 
@@ -192,6 +193,6 @@ def question_history(
 def answer_history(
     answer_id: str,
     _user: str = Depends(get_current_user),
-    store: TeamStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> list[dict[str, Any]]:
     return [h.model_dump(mode="json") for h in store.get_answer_history(answer_id)]

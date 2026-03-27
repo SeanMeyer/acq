@@ -2,9 +2,9 @@
 
 from fastapi import Request
 
-from .store import TeamStore
+from acq_shared.store import Store
 
 
-def get_store(request: Request) -> TeamStore:
-    """FastAPI dependency: returns the TeamStore from app.state."""
+def get_store(request: Request) -> Store:
+    """FastAPI dependency: returns the Store from app.state."""
     return request.app.state.store
