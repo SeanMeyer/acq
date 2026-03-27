@@ -380,10 +380,12 @@ async def vote(
     voter_id = _get_agent_name()
     store = _get_store()
     team_client = _get_team_client()
+    target_type = "answer" if target_id.startswith("a_") else "question"
 
     if team_client is not None:
         result = await team_client.cast_vote(
             target_id=target_id,
+            target_type=target_type,
             value=value,
             voter_id=voter_id,
         )
@@ -398,7 +400,7 @@ async def vote(
                 try:
                     v = Vote(
                         target_id=target_id,
-                        target_type="question",
+                        target_type=target_type,
                         voter_id=voter_id,
                         voter_type="agent",
                         value=value,
@@ -411,7 +413,7 @@ async def vote(
     # Fallback: local only (mark for drain)
     v = Vote(
         target_id=target_id,
-        target_type="question",
+        target_type=target_type,
         voter_id=voter_id,
         voter_type="agent",
         value=value,

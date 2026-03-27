@@ -34,11 +34,11 @@ setup:
 
 .PHONY: install-claude
 install-claude:
-	claude plugin install --path plugins/acq
+	claude plugin install acq@acq
 
 .PHONY: uninstall-claude
 uninstall-claude:
-	claude plugin uninstall acq
+	claude plugin uninstall acq@acq
 
 .PHONY: install-opencode
 install-opencode:

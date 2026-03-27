@@ -171,7 +171,7 @@ class TestCastVote:
     ) -> None:
         data = {"upvotes": 5, "downvotes": 1}
         monkeypatch.setattr(client._client, "post", _async_returning(_mock_response(200, data)))
-        result = await client.cast_vote("q_1", 1, "agent-1")
+        result = await client.cast_vote("q_1", "question", 1, "agent-1")
         assert result is not None
         assert result["upvotes"] == 5
 
@@ -179,7 +179,7 @@ class TestCastVote:
         self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(client._client, "post", _raise_connect_error)
-        assert await client.cast_vote("q_1", 1, "a") is None
+        assert await client.cast_vote("q_1", "question", 1, "a") is None
 
     async def test_returns_structured_error_on_409(
         self, client: TeamClient, monkeypatch: pytest.MonkeyPatch
@@ -189,7 +189,7 @@ class TestCastVote:
             "post",
             _async_returning(_mock_response(409, {"detail": "Already voted"})),
         )
-        result = await client.cast_vote("q_1", 1, "a")
+        result = await client.cast_vote("q_1", "question", 1, "a")
         assert result is not None
         assert result["status_code"] == 409
 
@@ -201,7 +201,7 @@ class TestCastVote:
             "post",
             _async_returning(_mock_response(429, {"detail": "Rate limited"})),
         )
-        result = await client.cast_vote("q_1", 1, "a")
+        result = await client.cast_vote("q_1", "question", 1, "a")
         assert result is not None
         assert result["status_code"] == 429
 

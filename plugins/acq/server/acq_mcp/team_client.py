@@ -153,10 +153,11 @@ class TeamClient:
     async def cast_vote(
         self,
         target_id: str,
+        target_type: str,
         value: int,
         voter_id: str,
     ) -> dict | None:
-        payload = {"value": value, "voter_id": voter_id}
+        payload = {"target_id": target_id, "target_type": target_type, "value": value}
         try:
             resp = await self._client.post("/vote", json=payload)
             resp.raise_for_status()
