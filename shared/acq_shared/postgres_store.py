@@ -108,6 +108,13 @@ class PostgresStore:
         return tag
 
     def merge_tags(self, source_id: str, target_id: str) -> None:
+        # Collect affected questions before the merge so we can refresh tsvectors.
+        cur = self._execute(
+            "SELECT question_id FROM dogpark.question_tags WHERE tag_id = %s OR tag_id = %s",
+            (source_id, target_id),
+        )
+        affected_qids = {r[0] for r in cur.fetchall()}
+
         self._execute(
             """
             UPDATE dogpark.question_tags SET tag_id = %s
@@ -129,6 +136,11 @@ class PostgresStore:
         self._execute(
             "UPDATE dogpark.tags SET usage_count = %s WHERE id = %s", (row[0], target_id)
         )
+
+        # Refresh tsvectors for affected questions.
+        for qid in affected_qids:
+            self._refresh_question_tsvector(qid)
+
         self._conn.commit()
 
     def list_tags(self, q: str | None = None) -> list[Tag]:
@@ -159,11 +171,6 @@ class PostgresStore:
                 question.updated_at.isoformat(),
             ),
         )
-        # Update tsvector
-        self._execute(
-            "UPDATE dogpark.questions SET search_vector = to_tsvector('english', %s || ' ' || %s) WHERE id = %s",
-            (question.title, question.body, question.id),
-        )
         tags = [self.get_or_create_tag(name) for name in tag_names]
         for tag in tags:
             self._execute(
@@ -173,6 +180,12 @@ class PostgresStore:
             self._execute(
                 "UPDATE dogpark.tags SET usage_count = usage_count + 1 WHERE id = %s", (tag.id,)
             )
+        # Update tsvector with title + body + tag names.
+        tag_text = " ".join(t.name for t in tags)
+        self._execute(
+            "UPDATE dogpark.questions SET search_vector = to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
+            (question.title, question.body, tag_text, question.id),
+        )
         self._conn.commit()
         return question
 
@@ -218,10 +231,11 @@ class PostgresStore:
             "UPDATE dogpark.questions SET data = %s, updated_at = %s WHERE id = %s",
             (updated.model_dump_json(), now.isoformat(), question_id),
         )
-        # Refresh tsvector
+        # Refresh tsvector with title + body + tag names.
+        tag_text = " ".join(sorted(self._get_question_tag_names(question_id)))
         self._execute(
-            "UPDATE dogpark.questions SET search_vector = to_tsvector('english', %s || ' ' || %s) WHERE id = %s",
-            (updated.title, updated.body, question_id),
+            "UPDATE dogpark.questions SET search_vector = to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
+            (updated.title, updated.body, tag_text, question_id),
         )
         self._conn.commit()
         return updated
@@ -558,8 +572,10 @@ class PostgresStore:
             a_comments = [Comment.model_validate_json(r[0]) for r in a_comment_rows]
             answer_threads.append({"answer": answer, "comments": a_comments})
 
+        tag_names = sorted(self._get_question_tag_names(question_id))
         return {
             "question": q,
+            "tags": tag_names,
             "comments": q_comments,
             "answers": answer_threads,
         }
@@ -747,6 +763,17 @@ class PostgresStore:
         rows = cur.fetchall()
         return {r[0] for r in rows}
 
+    def _refresh_question_tsvector(self, question_id: str) -> None:
+        """Rebuild the tsvector for a single question with current tag names."""
+        q = self.get_question(question_id)
+        if q is None:
+            return
+        tag_text = " ".join(sorted(self._get_question_tag_names(question_id)))
+        self._execute(
+            "UPDATE dogpark.questions SET search_vector = to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
+            (q.title, q.body, tag_text, question_id),
+        )
+
     def get_status(self) -> dict[str, Any]:
         total_questions = self._execute("SELECT COUNT(*) FROM dogpark.questions").fetchone()[0]
         total_answers = self._execute("SELECT COUNT(*) FROM dogpark.answers WHERE status = 'approved'").fetchone()[0]
@@ -837,6 +864,14 @@ class PostgresStore:
     def bulk_upsert(self, data: dict) -> int:
         count = 0
 
+        # Build tag-name lookup so we can include tags in tsvectors.
+        tag_names_by_id = {t["id"]: t["name"] for t in data.get("tags", [])}
+        q_tag_map: dict[str, list[str]] = {}
+        for qt in data.get("question_tags", []):
+            name = tag_names_by_id.get(qt["tag_id"], "")
+            if name:
+                q_tag_map.setdefault(qt["question_id"], []).append(name)
+
         for q_data in data.get("questions", []):
             q = Question.model_validate(q_data)
             self._execute(
@@ -854,9 +889,10 @@ class PostgresStore:
                     q.updated_at.isoformat(),
                 ),
             )
+            tag_text = " ".join(q_tag_map.get(q.id, []))
             self._execute(
-                "UPDATE dogpark.questions SET search_vector = to_tsvector('english', %s || ' ' || %s) WHERE id = %s",
-                (q.title, q.body, q.id),
+                "UPDATE dogpark.questions SET search_vector = to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
+                (q.title, q.body, tag_text, q.id),
             )
             count += 1
 

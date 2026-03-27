@@ -82,6 +82,13 @@ class SqliteStore:
 
     def merge_tags(self, source_id: str, target_id: str) -> None:
         """Repoint all question_tags rows from source to target, delete source."""
+        # Collect affected questions before the merge so we can refresh their FTS entries.
+        affected_rows = self._conn.execute(
+            "SELECT question_id FROM question_tags WHERE tag_id = ? OR tag_id = ?",
+            (source_id, target_id),
+        ).fetchall()
+        affected_qids = {r[0] for r in affected_rows}
+
         self._conn.execute(
             """
             UPDATE question_tags SET tag_id = ?
@@ -102,6 +109,11 @@ class SqliteStore:
         self._conn.execute(
             "UPDATE tags SET usage_count = ? WHERE id = ?", (row[0], target_id)
         )
+
+        # Refresh FTS entries for affected questions so the tags column stays current.
+        for qid in affected_qids:
+            self._refresh_question_fts(qid)
+
         self._conn.commit()
 
     def list_tags(self, q: str | None = None) -> list[Tag]:
@@ -140,9 +152,10 @@ class SqliteStore:
             self._conn.execute(
                 "UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?", (tag.id,)
             )
+        tag_text = " ".join(t.name for t in tags)
         self._conn.execute(
-            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body) VALUES (?, ?, ?, ?, ?)",
-            (question.id, "question", question.id, question.title, question.body),
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+            (question.id, "question", question.id, question.title, question.body, tag_text),
         )
         self._conn.commit()
         return question
@@ -192,9 +205,10 @@ class SqliteStore:
             "DELETE FROM search_index WHERE entity_id = ? AND entity_type = 'question'",
             (question_id,),
         )
+        tag_text = " ".join(sorted(self._get_question_tag_names(question_id)))
         self._conn.execute(
-            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body) VALUES (?, ?, ?, ?, ?)",
-            (question_id, "question", question_id, updated.title, updated.body),
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+            (question_id, "question", question_id, updated.title, updated.body, tag_text),
         )
         self._conn.commit()
         return updated
@@ -249,8 +263,8 @@ class SqliteStore:
             ),
         )
         self._conn.execute(
-            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body) VALUES (?, ?, ?, ?, ?)",
-            (answer.id, "answer", answer.question_id, "", answer.body),
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+            (answer.id, "answer", answer.question_id, "", answer.body, ""),
         )
         self._conn.commit()
         return answer
@@ -301,8 +315,8 @@ class SqliteStore:
             (answer_id,),
         )
         self._conn.execute(
-            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body) VALUES (?, ?, ?, ?, ?)",
-            (answer_id, "answer", updated.question_id, "", updated.body),
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+            (answer_id, "answer", updated.question_id, "", updated.body, ""),
         )
         self._conn.commit()
         return updated
@@ -518,8 +532,10 @@ class SqliteStore:
             a_comments = [Comment.model_validate_json(r[0]) for r in a_comment_rows]
             answer_threads.append({"answer": answer, "comments": a_comments})
 
+        tag_names = sorted(self._get_question_tag_names(question_id))
         return {
             "question": q,
+            "tags": tag_names,
             "comments": q_comments,
             "answers": answer_threads,
         }
@@ -668,6 +684,21 @@ class SqliteStore:
         ).fetchall()
         return {r[0] for r in rows}
 
+    def _refresh_question_fts(self, question_id: str) -> None:
+        """Rebuild the FTS entry for a single question with current tag names."""
+        q = self.get_question(question_id)
+        if q is None:
+            return
+        self._conn.execute(
+            "DELETE FROM search_index WHERE entity_id = ? AND entity_type = 'question'",
+            (question_id,),
+        )
+        tag_text = " ".join(sorted(self._get_question_tag_names(question_id)))
+        self._conn.execute(
+            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+            (question_id, "question", question_id, q.title, q.body, tag_text),
+        )
+
     def get_status(self) -> dict[str, Any]:
         total_questions = self._conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
         total_answers = self._conn.execute("SELECT COUNT(*) FROM answers WHERE status = 'approved'").fetchone()[0]
@@ -760,6 +791,14 @@ class SqliteStore:
         """Import data dict (from export_since). Uses INSERT OR REPLACE. Returns count."""
         count = 0
 
+        # Build tag-name lookup so we can populate FTS tags column.
+        tag_names_by_id = {t["id"]: t["name"] for t in data.get("tags", [])}
+        q_tag_map: dict[str, list[str]] = {}
+        for qt in data.get("question_tags", []):
+            name = tag_names_by_id.get(qt["tag_id"], "")
+            if name:
+                q_tag_map.setdefault(qt["question_id"], []).append(name)
+
         for q_data in data.get("questions", []):
             q = Question.model_validate(q_data)
             self._conn.execute(
@@ -777,9 +816,10 @@ class SqliteStore:
                 "DELETE FROM search_index WHERE entity_id = ? AND entity_type = 'question'",
                 (q.id,),
             )
+            tag_text = " ".join(q_tag_map.get(q.id, []))
             self._conn.execute(
-                "INSERT INTO search_index (entity_id, entity_type, question_id, title, body) VALUES (?, ?, ?, ?, ?)",
-                (q.id, "question", q.id, q.title, q.body),
+                "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+                (q.id, "question", q.id, q.title, q.body, tag_text),
             )
             count += 1
 
@@ -801,8 +841,8 @@ class SqliteStore:
                 (a.id,),
             )
             self._conn.execute(
-                "INSERT INTO search_index (entity_id, entity_type, question_id, title, body) VALUES (?, ?, ?, ?, ?)",
-                (a.id, "answer", a.question_id, "", a.body),
+                "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags) VALUES (?, ?, ?, ?, ?, ?)",
+                (a.id, "answer", a.question_id, "", a.body, ""),
             )
             count += 1
 

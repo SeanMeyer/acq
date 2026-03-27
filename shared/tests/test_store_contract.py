@@ -462,6 +462,17 @@ class TestSearch:
         results = store.search("webpack", tags=["config"])
         assert len(results) >= 1
 
+    def test_search_finds_question_by_tag_keyword(self, store):
+        """A search for a tag name should find questions even if the tag
+        doesn't appear in the title or body."""
+        q = _make_question(title="Build fails on CI", body="The pipeline errors out.")
+        store.create_question(q, ["howler", "ci-pipeline"])
+        a = _make_answer(q.id, supervised=True)
+        store.create_answer(a)
+        results = store.search("howler")
+        assert len(results) >= 1
+        assert results[0]["question"].id == q.id
+
     def test_search_bad_fts_query_returns_empty(self, store):
         """FTS5 syntax errors should not crash, just return []."""
         results = store.search("AND OR NOT")

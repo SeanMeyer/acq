@@ -49,12 +49,19 @@ def text_relevance_score(
     language_match: bool = False,
     framework_match: bool = False,
 ) -> float:
-    """Combine FTS rank (normalized 0-1) with tag and context signals."""
-    return (
+    """Combine FTS rank (normalized 0-1) with optional context signals.
+
+    Tags are now indexed in FTS, so the FTS rank already reflects tag
+    relevance.  The context signals (explicit tag Jaccard, language,
+    framework) act as a *bonus* on top — they never diminish the FTS
+    score.
+    """
+    context_bonus = (
         0.7 * tag_jaccard
         + 0.15 * (1.0 if language_match else 0.0)
         + 0.15 * (1.0 if framework_match else 0.0)
-    ) * 0.5 + fts_rank * 0.5
+    )
+    return fts_rank + 0.3 * context_bonus
 
 
 def search_score(
