@@ -16,7 +16,6 @@ dependencies = [
     "psycopg2-binary>=2.9",
     "orgstore-pg-client @ https://binaries.ddbuild.io/dd-source/python/orgstore_pg_client-0.5.23-py2.py3-none-any.whl",
     "orgstore-pg-db-ops @ https://binaries.ddbuild.io/dd-source/python/orgstore_pg_db_ops-0.0.87237230-py3-none-any.whl",
-    "orgstore-pg-test-container @ https://binaries.ddbuild.io/dd-source/python/orgstore_pg_test_container-0.0.87237230-py3-none-any.whl",
     "dd-internal-authentication @ https://binaries.ddbuild.io/dd-source/python/dd_internal_authentication-0.0.63496837-py3-none-any.whl",
     "acq-shared",
 ]
@@ -43,6 +42,15 @@ tests = [
 
 [tool.uv.sources]
 acq-shared = { path = "../shared", editable = true }
+
+[tool.uv]
+# orgstore-pg-client depends on psycopg2 (source) but we use psycopg2-binary
+# to avoid needing gcc in the Docker image.
+override-dependencies = [
+    "psycopg2-binary>=2.9",
+    # orgstore-pg-client bundles test deps as hard deps — override to skip in prod
+    "orgstore-pg-test-container @ https://binaries.ddbuild.io/dd-source/python/orgstore_pg_test_container-0.0.87237230-py3-none-any.whl",
+]
 
 [tool.hatch.metadata]
 allow-direct-references = true

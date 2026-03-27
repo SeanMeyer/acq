@@ -8,6 +8,12 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
+[manifest]
+overrides = [
+    { name = "orgstore-pg-test-container", url = "https://binaries.ddbuild.io/dd-source/python/orgstore_pg_test_container-0.0.87237230-py3-none-any.whl" },
+    { name = "psycopg2-binary", specifier = ">=2.9" },
+]
+
 [[package]]
 name = "acq-shared"
 version = "0.1.0"
@@ -40,7 +46,6 @@ dependencies = [
     { name = "fastapi" },
     { name = "orgstore-pg-client" },
     { name = "orgstore-pg-db-ops" },
-    { name = "orgstore-pg-test-container" },
     { name = "psycopg2-binary" },
     { name = "pydantic" },
     { name = "pyjwt" },
@@ -73,7 +78,6 @@ requires-dist = [
     { name = "fastapi" },
     { name = "orgstore-pg-client", url = "https://binaries.ddbuild.io/dd-source/python/orgstore_pg_client-0.5.23-py2.py3-none-any.whl" },
     { name = "orgstore-pg-db-ops", url = "https://binaries.ddbuild.io/dd-source/python/orgstore_pg_db_ops-0.0.87237230-py3-none-any.whl" },
-    { name = "orgstore-pg-test-container", url = "https://binaries.ddbuild.io/dd-source/python/orgstore_pg_test_container-0.0.87237230-py3-none-any.whl" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyjwt", specifier = ">=2.0" },
