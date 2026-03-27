@@ -518,8 +518,10 @@ class SqliteStore:
             a_comments = [Comment.model_validate_json(r[0]) for r in a_comment_rows]
             answer_threads.append({"answer": answer, "comments": a_comments})
 
+        tag_names = sorted(self._get_question_tag_names(question_id))
         return {
             "question": q,
+            "tags": tag_names,
             "comments": q_comments,
             "answers": answer_threads,
         }

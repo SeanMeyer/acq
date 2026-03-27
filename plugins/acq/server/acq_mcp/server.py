@@ -176,7 +176,7 @@ def _serialize_results(results: list) -> list[dict]:
             "body": q_dict.get("body", ""),
             "status": q_dict.get("status", ""),
             "created_by": q_dict.get("created_by", ""),
-            "tags": [],
+            "tags": thread.get("tags", []),
             "context_language": q_dict.get("context_language"),
             "context_framework": q_dict.get("context_framework"),
             "top_answer": top_answer,
