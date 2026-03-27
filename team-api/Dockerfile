@@ -26,6 +26,6 @@ USER app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-EXPOSE 8742
+EXPOSE 8000
 
 CMD ["envdir", "/etc/datadog/secrets", "/app/team-api/.venv/bin/acq-team-api"]

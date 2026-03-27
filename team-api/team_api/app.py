@@ -320,4 +320,5 @@ def _serialise_thread(thread: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
-    uvicorn.run(app, host="0.0.0.0", port=8742)
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
