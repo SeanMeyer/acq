@@ -101,11 +101,11 @@ class TestSearchScore:
 
     def test_language_framework_bonus(self):
         score_no_match = text_relevance_score(
-            fts5_rank=0.5, tag_jaccard=0.5,
+            fts_rank=0.5, tag_jaccard=0.5,
             language_match=False, framework_match=False,
         )
         score_with_match = text_relevance_score(
-            fts5_rank=0.5, tag_jaccard=0.5,
+            fts_rank=0.5, tag_jaccard=0.5,
             language_match=True, framework_match=True,
         )
         assert score_with_match > score_no_match

@@ -585,7 +585,7 @@ class SqliteStore:
             )
 
             text_rel = text_relevance_score(
-                fts5_rank=normalized_rank,
+                fts_rank=normalized_rank,
                 tag_jaccard=jaccard,
                 language_match=language_match,
                 framework_match=framework_match,

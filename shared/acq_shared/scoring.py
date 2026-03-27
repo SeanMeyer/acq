@@ -44,17 +44,17 @@ def search_content_score(
 
 def text_relevance_score(
     *,
-    fts5_rank: float,
+    fts_rank: float,
     tag_jaccard: float,
     language_match: bool = False,
     framework_match: bool = False,
 ) -> float:
-    """Combine FTS5 rank (normalized 0-1) with tag and context signals."""
+    """Combine FTS rank (normalized 0-1) with tag and context signals."""
     return (
         0.7 * tag_jaccard
         + 0.15 * (1.0 if language_match else 0.0)
         + 0.15 * (1.0 if framework_match else 0.0)
-    ) * 0.5 + fts5_rank * 0.5
+    ) * 0.5 + fts_rank * 0.5
 
 
 def search_score(
