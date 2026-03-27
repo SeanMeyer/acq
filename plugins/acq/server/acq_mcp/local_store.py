@@ -1,8 +1,11 @@
 """Local SQLite Q&A store for acq.
 
-Stores questions, answers, votes, and comments locally as a fallback buffer
-when the team API is unreachable. Content is drained to the team API on
-server startup when a connection is available.
+Thin wrapper around :class:`acq_shared.sqlite_store.SqliteStore` that adds
+team-API drain/pull methods. All storage operations are delegated to the
+underlying SqliteStore instance.
+
+Content is drained to the team API on server startup when a connection is
+available, and new content is pulled from the team API periodically.
 """
 
 from __future__ import annotations
@@ -14,8 +17,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING
 
-from acq_shared.models import Answer, Comment, Question, Tag, Vote
-from acq_shared.sqlite_schema import create_tables
+from acq_shared.sqlite_store import SqliteStore
 
 if TYPE_CHECKING:
     from .team_client import TeamClient
@@ -26,7 +28,7 @@ DEFAULT_DB_PATH = Path.home() / ".acq" / "local.db"
 
 
 class LocalStore:
-    """SQLite-backed local Q&A store.
+    """SQLite-backed local Q&A store wrapping :class:`SqliteStore`.
 
     Holds a single persistent connection for the lifetime of the instance.
     Thread-safe: a lock serialises all connection access so the store
@@ -40,11 +42,16 @@ class LocalStore:
         self._closed = False
         # check_same_thread=False allows use from asyncio.to_thread() executor threads.
         self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-        create_tables(self._conn)
+        self._store = SqliteStore(self._conn)
 
     @property
     def db_path(self) -> Path:
         return self._db_path
+
+    @property
+    def store(self) -> SqliteStore:
+        """The underlying SqliteStore — used by server.py for direct access."""
+        return self._store
 
     def _check_open(self) -> None:
         if self._closed:
@@ -68,6 +75,10 @@ class LocalStore:
     ) -> None:
         self.close()
 
+    # ------------------------------------------------------------------
+    # Convenience delegates (used by drain and legacy callers)
+    # ------------------------------------------------------------------
+
     def create_question(
         self,
         title: str,
@@ -77,7 +88,10 @@ class LocalStore:
         language: str | None = None,
         framework: str | None = None,
         pattern: str | None = None,
-    ) -> Question:
+    ):
+        """Create a question (legacy convenience wrapper for drain)."""
+        from acq_shared.models import Question
+
         q = Question(
             title=title,
             body=body,
@@ -89,46 +103,7 @@ class LocalStore:
         )
         with self._lock:
             self._check_open()
-            with self._conn:
-                self._conn.execute(
-                    "INSERT INTO questions (id, data, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                    (
-                        q.id,
-                        q.model_dump_json(),
-                        q.status,
-                        q.created_at.isoformat(),
-                        q.updated_at.isoformat(),
-                    ),
-                )
-                for tag_name in tags:
-                    normalized = tag_name.strip().lower()
-                    if not normalized:
-                        continue
-                    # Upsert tag, incrementing usage_count.
-                    row = self._conn.execute(
-                        "SELECT id FROM tags WHERE name = ?", (normalized,)
-                    ).fetchone()
-                    if row:
-                        tag_id = row[0]
-                        self._conn.execute(
-                            "UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?",
-                            (tag_id,),
-                        )
-                    else:
-                        tag = Tag(name=normalized)
-                        tag_id = tag.id
-                        self._conn.execute(
-                            "INSERT INTO tags (id, name, usage_count) VALUES (?, ?, ?)",
-                            (tag_id, normalized, 1),
-                        )
-                    self._conn.execute(
-                        "INSERT OR IGNORE INTO question_tags (question_id, tag_id) VALUES (?, ?)",
-                        (q.id, tag_id),
-                    )
-                self._conn.execute(
-                    "INSERT INTO search_index (entity_id, entity_type, question_id, title, body) VALUES (?, ?, ?, ?, ?)",
-                    (q.id, "question", q.id, title, body),
-                )
+            self._store.create_question(q, tags)
         return q
 
     def create_answer(
@@ -137,7 +112,10 @@ class LocalStore:
         body: str,
         created_by: str,
         supervised: bool = False,
-    ) -> Answer:
+    ):
+        """Create an answer (legacy convenience wrapper for drain)."""
+        from acq_shared.models import Answer
+
         a = Answer(
             question_id=question_id,
             body=body,
@@ -147,22 +125,7 @@ class LocalStore:
         )
         with self._lock:
             self._check_open()
-            with self._conn:
-                self._conn.execute(
-                    "INSERT INTO answers (id, question_id, data, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        a.id,
-                        a.question_id,
-                        a.model_dump_json(),
-                        a.status,
-                        a.created_at.isoformat(),
-                        a.updated_at.isoformat(),
-                    ),
-                )
-                self._conn.execute(
-                    "INSERT INTO search_index (entity_id, entity_type, question_id, title, body) VALUES (?, ?, ?, ?, ?)",
-                    (a.id, "answer", question_id, "", body),
-                )
+            self._store.create_answer(a)
         return a
 
     def cast_vote(
@@ -172,7 +135,10 @@ class LocalStore:
         voter_id: str,
         voter_type: str,
         value: int,
-    ) -> Vote:
+    ):
+        """Cast a vote (legacy convenience wrapper for drain)."""
+        from acq_shared.models import Vote
+
         v = Vote(
             target_id=target_id,
             target_type=target_type,  # type: ignore[arg-type]
@@ -182,19 +148,7 @@ class LocalStore:
         )
         with self._lock:
             self._check_open()
-            with self._conn:
-                self._conn.execute(
-                    "INSERT INTO votes (id, target_id, target_type, voter_id, voter_type, value, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        v.id,
-                        v.target_id,
-                        v.target_type,
-                        v.voter_id,
-                        v.voter_type,
-                        v.value,
-                        v.created_at.isoformat(),
-                    ),
-                )
+            self._store.cast_vote(v)
         return v
 
     def create_comment(
@@ -204,7 +158,10 @@ class LocalStore:
         body: str,
         created_by: str,
         supervised: bool = False,
-    ) -> Comment:
+    ):
+        """Create a comment (legacy convenience wrapper for drain)."""
+        from acq_shared.models import Comment
+
         c = Comment(
             parent_id=parent_id,
             parent_type=parent_type,  # type: ignore[arg-type]
@@ -215,18 +172,7 @@ class LocalStore:
         )
         with self._lock:
             self._check_open()
-            with self._conn:
-                self._conn.execute(
-                    "INSERT INTO comments (id, parent_id, parent_type, data, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        c.id,
-                        c.parent_id,
-                        c.parent_type,
-                        c.model_dump_json(),
-                        c.status,
-                        c.created_at.isoformat(),
-                    ),
-                )
+            self._store.create_comment(c)
         return c
 
     def search(
@@ -237,89 +183,37 @@ class LocalStore:
         framework: str | None = None,
         limit: int = 5,
     ) -> list[dict]:
-        """FTS5 search on local store. Returns question dicts with top answers."""
-        results: list[dict] = []
+        """FTS5 search on local store. Delegates to SqliteStore."""
         with self._lock:
             self._check_open()
-            if query.strip():
-                # FTS5 MATCH defaults to AND — too strict when users
-                # search with different vocabulary than the author.
-                # Split into OR so any matching word surfaces results.
-                words = query.strip().split()
-                fts_query = " OR ".join(w for w in words if w)
-                try:
-                    rows = self._conn.execute(
-                        """
-                        SELECT DISTINCT question_id
-                        FROM search_index
-                        WHERE search_index MATCH ?
-                        ORDER BY rank
-                        LIMIT ?
-                        """,
-                        (fts_query, limit * 2),
-                    ).fetchall()
-                    question_ids = [r[0] for r in rows]
-                except sqlite3.OperationalError:
-                    question_ids = []
-            else:
-                question_ids = []
-
-            seen: set[str] = set()
-            for qid in question_ids:
-                if qid in seen:
-                    continue
-                seen.add(qid)
-                row = self._conn.execute(
-                    "SELECT data FROM questions WHERE id = ?", (qid,)
-                ).fetchone()
-                if not row:
-                    continue
-                q = Question.model_validate_json(row[0])
-                if language and q.context_language and q.context_language != language:
-                    continue
-                if framework and q.context_framework and q.context_framework != framework:
-                    continue
-                answers = self._get_answers_for_question(qid)
-                results.append(_question_to_result(q, answers))
-                if len(results) >= limit:
-                    break
-
-        return results
-
-    def _get_answers_for_question(self, question_id: str) -> list[Answer]:
-        rows = self._conn.execute(
-            "SELECT data FROM answers WHERE question_id = ? ORDER BY created_at",
-            (question_id,),
-        ).fetchall()
-        return [Answer.model_validate_json(r[0]) for r in rows]
+            return self._store.search(
+                query, tags=tags, language=language, framework=framework, limit=limit,
+            )
 
     def get_status(self) -> dict:
         with self._lock:
             self._check_open()
-            q_count = self._conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
-            a_count = self._conn.execute("SELECT COUNT(*) FROM answers").fetchone()[0]
-            tag_count = self._conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
-            vote_count = self._conn.execute("SELECT COUNT(*) FROM votes").fetchone()[0]
-        return {
-            "questions": q_count,
-            "answers": a_count,
-            "tags": tag_count,
-            "votes": vote_count,
-        }
+            return self._store.get_status()
 
-    def all_questions(self) -> list[Question]:
+    def all_questions(self):
+        from acq_shared.models import Question
+
         with self._lock:
             self._check_open()
             rows = self._conn.execute("SELECT data FROM questions").fetchall()
         return [Question.model_validate_json(r[0]) for r in rows]
 
-    def all_answers(self) -> list[Answer]:
+    def all_answers(self):
+        from acq_shared.models import Answer
+
         with self._lock:
             self._check_open()
             rows = self._conn.execute("SELECT data FROM answers").fetchall()
         return [Answer.model_validate_json(r[0]) for r in rows]
 
-    def all_votes(self) -> list[Vote]:
+    def all_votes(self):
+        from acq_shared.models import Vote
+
         with self._lock:
             self._check_open()
             rows = self._conn.execute(
@@ -338,7 +232,9 @@ class LocalStore:
             for r in rows
         ]
 
-    def all_comments(self) -> list[Comment]:
+    def all_comments(self):
+        from acq_shared.models import Comment
+
         with self._lock:
             self._check_open()
             rows = self._conn.execute("SELECT data FROM comments").fetchall()
@@ -373,6 +269,10 @@ class LocalStore:
             self._check_open()
             with self._conn:
                 self._conn.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
+
+    # ------------------------------------------------------------------
+    # Team sync
+    # ------------------------------------------------------------------
 
     async def drain_to_team(self, team_client: "TeamClient") -> int:
         """POST all local content to the team API, deleting on success.
@@ -444,6 +344,18 @@ class LocalStore:
 
         return drained
 
+    async def pull_from_team(self, team_client: "TeamClient", since: str | None = None) -> int:
+        """Pull content from team API and upsert into local store.
+
+        Returns the number of items upserted.
+        """
+        data = await team_client.export_since(since=since)
+        if not data:
+            return 0
+        with self._lock:
+            self._check_open()
+            return self._store.bulk_upsert(data)
+
     def _get_tag_names_for_question_unlocked(self, question_id: str) -> list[str]:
         """Read tag names without acquiring the lock (caller must hold it or be safe)."""
         rows = self._conn.execute(
@@ -455,25 +367,3 @@ class LocalStore:
             (question_id,),
         ).fetchall()
         return [r[0] for r in rows]
-
-
-def _question_to_result(q: Question, answers: list[Answer]) -> dict:
-    approved = [a for a in answers if a.status == "approved"]
-    top_answer = approved[0] if approved else (answers[0] if answers else None)
-    return {
-        "id": q.id,
-        "title": q.title,
-        "body": q.body,
-        "status": q.status,
-        "created_by": q.created_by,
-        "tags": [],
-        "context_language": q.context_language,
-        "context_framework": q.context_framework,
-        "top_answer": top_answer.model_dump(mode="json") if top_answer else None,
-        "answer_count": len(answers),
-        "vote_score": (
-            q.agent_upvotes
-            - q.agent_downvotes
-            + 5 * (q.human_upvotes - q.human_downvotes)
-        ),
-    }

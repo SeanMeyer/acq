@@ -158,7 +158,7 @@ class TeamClient:
     ) -> dict | None:
         payload = {"value": value, "voter_id": voter_id}
         try:
-            resp = await self._client.post(f"/votes/{target_id}", json=payload)
+            resp = await self._client.post("/vote", json=payload)
             resp.raise_for_status()
             return resp.json()
         except _TRANSPORT_ERRORS:
@@ -184,7 +184,7 @@ class TeamClient:
             "supervised": supervised,
         }
         try:
-            resp = await self._client.post(f"/comments/{parent_id}", json=payload)
+            resp = await self._client.post("/comments", json=payload)
             resp.raise_for_status()
             return resp.json()
         except _TRANSPORT_ERRORS:
@@ -195,6 +195,21 @@ class TeamClient:
             return {"error": exc.response.text, "status_code": exc.response.status_code}
         except Exception:
             logger.warning("Team API create_comment failed", exc_info=True)
+            return None
+
+    async def export_since(self, since: str | None = None) -> dict | None:
+        params = {}
+        if since:
+            params["since"] = since
+        try:
+            resp = await self._client.get("/export", params=params)
+            resp.raise_for_status()
+            return resp.json()
+        except _TRANSPORT_ERRORS:
+            logger.warning("Team API export unreachable", exc_info=True)
+            return None
+        except Exception:
+            logger.warning("Team API export failed", exc_info=True)
             return None
 
     async def reflect(self, session_context: str) -> dict | None:

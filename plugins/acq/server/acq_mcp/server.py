@@ -3,7 +3,10 @@
 Exposes seven tools via the Model Context Protocol:
 search, ask, answer, vote, comment, reflect, status.
 
-Tries the team API first, degrades gracefully to local store when unreachable.
+Reads (search, status) are local-only for zero latency.
+Writes (ask, answer, vote, comment) try the team API first (write-through
+to local on success), falling back to local-only on failure.
+Sync: drain local buffer on startup, pull from team, then hourly incremental pull.
 """
 
 from __future__ import annotations
@@ -13,9 +16,12 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+
+from acq_shared.models import Answer, Comment, Question, Vote
 
 from .local_store import LocalStore
 from .team_client import TeamClient
@@ -90,12 +96,46 @@ async def _do_drain() -> None:
     logger.info("Drained %d local items to team API at startup.", drained)
 
 
+async def _do_pull() -> None:
+    """Full pull from team API on session start."""
+    team_client = _get_team_client()
+    if team_client is None:
+        return
+    if not await team_client.health():
+        return
+    store = _get_store()
+    count = await store.pull_from_team(team_client, since=None)
+    logger.info("Pulled %d items from team API.", count)
+
+
+async def _periodic_pull() -> None:
+    """Hourly incremental pull."""
+    last_sync: str | None = None
+    while True:
+        await asyncio.sleep(3600)
+        team_client = _get_team_client()
+        if team_client is None:
+            continue
+        store = _get_store()
+        count = await store.pull_from_team(team_client, since=last_sync)
+        if count > 0:
+            logger.info("Hourly sync: pulled %d new items.", count)
+        last_sync = datetime.now(UTC).isoformat()
+
+
 @asynccontextmanager
 async def _lifespan(_server: FastMCP) -> AsyncIterator[None]:
     await _do_drain()
+    await _do_pull()
+    sync_task = asyncio.create_task(_periodic_pull())
     try:
         yield
     finally:
+        sync_task.cancel()
+        try:
+            await sync_task
+        except asyncio.CancelledError:
+            pass
         await _close_team_client()
         _close_store()
 
@@ -118,6 +158,33 @@ mcp = FastMCP(
 )
 
 
+def _serialize_results(results: list) -> list[dict]:
+    """Serialize SqliteStore search results (list of thread dicts) to plain dicts."""
+    serialized = []
+    for thread in results:
+        q = thread["question"]
+        q_dict = q.model_dump(mode="json") if hasattr(q, "model_dump") else q
+        answers = thread.get("answers", [])
+        top_answer = None
+        if answers:
+            first = answers[0]
+            a = first.get("answer", first) if isinstance(first, dict) else first
+            top_answer = a.model_dump(mode="json") if hasattr(a, "model_dump") else a
+        serialized.append({
+            "id": q_dict.get("id", ""),
+            "title": q_dict.get("title", ""),
+            "body": q_dict.get("body", ""),
+            "status": q_dict.get("status", ""),
+            "created_by": q_dict.get("created_by", ""),
+            "tags": [],
+            "context_language": q_dict.get("context_language"),
+            "context_framework": q_dict.get("context_framework"),
+            "top_answer": top_answer,
+            "answer_count": len(answers),
+        })
+    return serialized
+
+
 @mcp.tool(name="search")
 async def search(
     query: str,
@@ -128,8 +195,8 @@ async def search(
 ) -> dict:
     """Search for questions and answers in the knowledge commons.
 
-    Tries team API first, falls back to local store. Results are merged
-    and deduplicated by question ID.
+    Queries the local store only — zero network latency. The local store
+    is kept up to date via background sync from the team API.
 
     Args:
         query: Free-text search query.
@@ -140,44 +207,18 @@ async def search(
 
     Returns:
         Dict with ``results`` (ranked list of questions with top answers)
-        and ``source`` ("team", "local", or "both").
+        and ``source`` ("local").
     """
     store = _get_store()
-    team_client = _get_team_client()
-
-    team_results: list[dict] | None = None
-
-    if team_client is not None:
-        team_results = await team_client.search(
-            query=query, tags=tags, language=language, framework=framework, limit=limit
-        )
-
-    local_results = await asyncio.to_thread(
-        store.search,
+    results = await asyncio.to_thread(
+        store.store.search,
         query,
         tags=tags,
         language=language,
         framework=framework,
         limit=limit,
     )
-
-    if team_results is not None and local_results:
-        source = "both"
-    elif team_results is not None:
-        source = "team"
-    else:
-        source = "local"
-
-    # Merge and deduplicate by question ID.
-    seen_ids: set[str] = set()
-    merged: list[dict] = []
-    for item in (team_results or []) + local_results:
-        qid = item.get("id", "")
-        if qid not in seen_ids:
-            seen_ids.add(qid)
-            merged.append(item)
-
-    return {"results": merged[:limit], "source": source}
+    return {"results": _serialize_results(results), "source": "local"}
 
 
 @mcp.tool(name="ask")
@@ -215,6 +256,7 @@ async def ask(
     if not tags:
         return {"error": "At least one tag is required."}
 
+    store = _get_store()
     team_client = _get_team_client()
 
     if team_client is not None:
@@ -232,27 +274,33 @@ async def ask(
             similar = result.get("similar_questions", [])
             if similar and not force_create:
                 return {"action": "similar_found", "similar_questions": similar}
-            question = result.get("question", {})
+            # Write-through to local
+            q_data = result.get("question", {})
+            if isinstance(q_data, dict) and q_data.get("id"):
+                try:
+                    q = Question.model_validate(q_data)
+                    await asyncio.to_thread(store.store.create_question, q, tags)
+                except Exception:
+                    logger.warning("Write-through to local failed", exc_info=True)
             return {
                 "action": "created",
-                "question_id": question.get("id") if isinstance(question, dict) else None,
+                "question_id": q_data.get("id") if isinstance(q_data, dict) else None,
                 "similar_questions": similar,
                 "source": "team",
             }
 
-    # Fall back to local store.
-    store = _get_store()
-    q = await asyncio.to_thread(
-        store.create_question,
-        title,
-        body,
-        _get_agent_name(),
-        tags,
-        language,
-        framework,
-        pattern,
+    # Fallback: local only
+    q = Question(
+        title=title,
+        body=body,
+        created_by=_get_agent_name(),
+        created_by_type="agent",
+        context_language=language,
+        context_framework=framework,
+        context_pattern=pattern,
     )
-    return {"action": "created", "question_id": q.id, "similar_questions": [], "source": "local"}
+    result = await asyncio.to_thread(store.store.create_question, q, tags)
+    return {"action": "created", "question_id": result.id, "similar_questions": [], "source": "local"}
 
 
 @mcp.tool(name="answer")
@@ -275,6 +323,7 @@ async def answer(
     if not body:
         return {"error": "body must be non-blank."}
 
+    store = _get_store()
     team_client = _get_team_client()
 
     if team_client is not None:
@@ -285,17 +334,26 @@ async def answer(
             supervised=supervised,
         )
         if result is not None and "error" not in result:
-            return {"answer_id": result.get("id"), "status": result.get("status", "pending")}
+            # Write-through to local
+            a_id = result.get("id")
+            if a_id:
+                try:
+                    a = Answer.model_validate(result)
+                    await asyncio.to_thread(store.store.create_answer, a)
+                except Exception:
+                    logger.warning("Write-through answer to local failed", exc_info=True)
+            return {"answer_id": result.get("id"), "status": result.get("status", "pending"), "source": "team"}
 
-    store = _get_store()
-    a = await asyncio.to_thread(
-        store.create_answer,
-        question_id,
-        body,
-        _get_agent_name(),
-        supervised,
+    # Fallback: local only
+    a = Answer(
+        question_id=question_id,
+        body=body,
+        created_by=_get_agent_name(),
+        created_by_type="agent",
+        supervised=supervised,
     )
-    return {"answer_id": a.id, "status": a.status, "source": "local"}
+    result_a = await asyncio.to_thread(store.store.create_answer, a)
+    return {"answer_id": result_a.id, "status": result_a.status, "source": "local"}
 
 
 @mcp.tool(name="vote")
@@ -318,6 +376,7 @@ async def vote(
         return {"error": "value must be +1 or -1."}
 
     voter_id = _get_agent_name()
+    store = _get_store()
     team_client = _get_team_client()
 
     if team_client is not None:
@@ -333,17 +392,29 @@ async def vote(
             if status_code == 429:
                 return {"error": "Vote rate limit exceeded. Try again later."}
             if "error" not in result:
+                # Write-through to local
+                try:
+                    v = Vote(
+                        target_id=target_id,
+                        target_type="question",
+                        voter_id=voter_id,
+                        voter_type="agent",
+                        value=value,
+                    )
+                    await asyncio.to_thread(store.store.cast_vote, v)
+                except Exception:
+                    logger.warning("Write-through vote to local failed", exc_info=True)
                 return result
 
-    store = _get_store()
-    v = await asyncio.to_thread(
-        store.cast_vote,
-        target_id,
-        "question",
-        voter_id,
-        "agent",
-        value,
+    # Fallback: local only
+    v = Vote(
+        target_id=target_id,
+        target_type="question",
+        voter_id=voter_id,
+        voter_type="agent",
+        value=value,
     )
+    await asyncio.to_thread(store.store.cast_vote, v)
     return {"vote_id": v.id, "source": "local"}
 
 
@@ -367,6 +438,7 @@ async def comment(
     if not body:
         return {"error": "body must be non-blank."}
 
+    store = _get_store()
     team_client = _get_team_client()
 
     if team_client is not None:
@@ -377,18 +449,27 @@ async def comment(
             supervised=supervised,
         )
         if result is not None and "error" not in result:
-            return {"comment_id": result.get("id"), "status": result.get("status", "pending")}
+            # Write-through to local
+            c_id = result.get("id")
+            if c_id:
+                try:
+                    c = Comment.model_validate(result)
+                    await asyncio.to_thread(store.store.create_comment, c)
+                except Exception:
+                    logger.warning("Write-through comment to local failed", exc_info=True)
+            return {"comment_id": result.get("id"), "status": result.get("status", "pending"), "source": "team"}
 
-    store = _get_store()
-    c = await asyncio.to_thread(
-        store.create_comment,
-        parent_id,
-        "question",
-        body,
-        _get_agent_name(),
-        supervised,
+    # Fallback: local only
+    c = Comment(
+        parent_id=parent_id,
+        parent_type="question",
+        body=body,
+        created_by=_get_agent_name(),
+        created_by_type="agent",
+        supervised=supervised,
     )
-    return {"comment_id": c.id, "status": c.status, "source": "local"}
+    result_c = await asyncio.to_thread(store.store.create_comment, c)
+    return {"comment_id": result_c.id, "status": result_c.status, "source": "local"}
 
 
 @mcp.tool(name="reflect")

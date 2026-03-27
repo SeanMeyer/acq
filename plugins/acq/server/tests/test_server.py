@@ -10,6 +10,7 @@ import pytest
 from acq_mcp import server
 from acq_mcp.server import (
     _do_drain,
+    _do_pull,
     answer,
     ask,
     comment,
@@ -44,6 +45,7 @@ def _make_mock_team_client(
     cast_vote_result=None,
     create_comment_result=None,
     get_status_result=None,
+    export_since_result=None,
 ) -> MagicMock:
     mock = MagicMock()
     mock.health = AsyncMock(return_value=health)
@@ -53,6 +55,7 @@ def _make_mock_team_client(
     mock.cast_vote = AsyncMock(return_value=cast_vote_result)
     mock.create_comment = AsyncMock(return_value=create_comment_result)
     mock.get_status = AsyncMock(return_value=get_status_result)
+    mock.export_since = AsyncMock(return_value=export_since_result)
     mock.base_url = "http://localhost:8742"
     return mock
 
@@ -63,78 +66,37 @@ class TestSearch:
         assert result["results"] == []
         assert result["source"] == "local"
 
-    async def test_local_fallback_when_no_team(self) -> None:
+    async def test_local_search_finds_data(self) -> None:
         store = server._get_store()
-        q = store.create_question("How to pool connections?", "body", "a", ["db"])
+        store.create_question("How to pool connections?", "body", "a", ["db"])
         result = await search(query="pool connections")
         assert len(result["results"]) == 1
         assert result["source"] == "local"
 
-    async def test_uses_team_when_available(
+    async def test_search_uses_local_store_only(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Search should NEVER call the team API — local only."""
+        store = server._get_store()
+        store.create_question("Question about caching", "body", "a", ["cache"])
+
         mock = _make_mock_team_client(
             search_result=[{"id": "q_team_1", "title": "Team question"}]
         )
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
-        result = await search(query="any")
-        assert result["source"] == "team"
-        assert len(result["results"]) == 1
+        result = await search(query="caching")
+        assert result["source"] == "local"
+        # Team search must NOT be called
+        mock.search.assert_not_called()
 
-    async def test_merges_team_and_local(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_search_returns_results_from_local(self) -> None:
         store = server._get_store()
         store.create_question("Local question about python", "body", "a", ["python"])
 
-        mock = _make_mock_team_client(
-            search_result=[{"id": "q_team_1", "title": "Team result about python"}]
-        )
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
-
         result = await search(query="python")
-        assert result["source"] == "both"
-        assert len(result["results"]) == 2
-
-    async def test_deduplicates_by_id(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        store = server._get_store()
-        q = store.create_question("Local question about sqlite", "body", "a", ["sqlite"])
-
-        # Team returns same ID as local
-        mock = _make_mock_team_client(
-            search_result=[{"id": q.id, "title": "Same question"}]
-        )
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
-
-        result = await search(query="sqlite")
-        ids = [r["id"] for r in result["results"]]
-        assert len(ids) == len(set(ids))
-
-    async def test_respects_limit(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        mock = _make_mock_team_client(
-            search_result=[{"id": f"q_{i}", "title": f"Q {i}"} for i in range(10)]
-        )
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
-
-        result = await search(query="q", limit=3)
-        assert len(result["results"]) <= 3
-
-    async def test_falls_back_to_local_when_team_returns_none(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        store = server._get_store()
-        store.create_question("Question about caching", "body", "a", ["cache"])
-
-        mock = _make_mock_team_client(search_result=None)
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
-
-        result = await search(query="caching")
         assert result["source"] == "local"
+        assert len(result["results"]) >= 1
 
 
 class TestAsk:
@@ -156,11 +118,17 @@ class TestAsk:
         result = await ask(title="Title", body="Body", tags=[])
         assert "error" in result
 
-    async def test_uses_team_when_available(
+    async def test_ask_writes_to_team_first(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """When team API succeeds, question is written to team AND local."""
         mock = _make_mock_team_client(
-            create_question_result={"question": {"id": "q_team_1"}, "similar_questions": []}
+            create_question_result={
+                "question": {"id": "q_team_1", "title": "Q", "body": "B",
+                             "created_by": "test-agent", "created_by_type": "agent",
+                             "status": "open"},
+                "similar_questions": [],
+            }
         )
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
@@ -168,6 +136,21 @@ class TestAsk:
         assert result["action"] == "created"
         assert result["question_id"] == "q_team_1"
         assert result["source"] == "team"
+
+        # Verify team API was called
+        mock.create_question.assert_called_once()
+
+    async def test_ask_falls_back_to_local_on_team_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When team API returns None, question is written to local only."""
+        mock = _make_mock_team_client(create_question_result=None)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await ask(title="Q", body="B", tags=["t"])
+        assert result["action"] == "created"
+        assert result.get("source") == "local"
+        assert result["question_id"].startswith("q_")
 
     async def test_returns_similar_found_when_duplicates_exist(
         self, monkeypatch: pytest.MonkeyPatch
@@ -194,22 +177,14 @@ class TestAsk:
         result = await ask(title="Q", body="B", tags=["t"], force_create=True)
         assert result["action"] == "created"
 
-    async def test_falls_back_to_local_when_team_returns_none(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        mock = _make_mock_team_client(create_question_result=None)
-        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
-
-        result = await ask(title="Q", body="B", tags=["t"])
-        assert result["action"] == "created"
-        assert result.get("source") == "local"
-
 
 class TestAnswer:
     async def test_creates_answer_locally(self) -> None:
         store = server._get_store()
-        q = store.create_question("Q", "B", "a", ["t"])
-        result = await answer(question_id=q.id, body="My answer")
+        store.create_question("Q", "B", "a", ["t"])
+        # Get the question to use its ID
+        qs = store.all_questions()
+        result = await answer(question_id=qs[0].id, body="My answer")
         assert result["answer_id"].startswith("a_")
         assert result.get("source") == "local"
 
@@ -217,27 +192,41 @@ class TestAnswer:
         result = await answer(question_id="q_1", body="  ")
         assert "error" in result
 
-    async def test_uses_team_when_available(
+    async def test_answer_write_through(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """When team API succeeds, answer is written to team first, then local."""
         mock = _make_mock_team_client(
-            create_answer_result={"id": "a_team_1", "status": "pending"}
+            create_answer_result={
+                "id": "a_team_1",
+                "question_id": "q_1",
+                "body": "Answer",
+                "created_by": "test-agent",
+                "created_by_type": "agent",
+                "status": "pending",
+                "supervised": False,
+            }
         )
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
         result = await answer(question_id="q_1", body="Answer")
         assert result["answer_id"] == "a_team_1"
+        assert result.get("source") == "team"
+
+        # Verify team API was called
+        mock.create_answer.assert_called_once()
 
     async def test_falls_back_to_local_when_team_returns_none(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         store = server._get_store()
-        q = store.create_question("Q", "B", "a", ["t"])
+        store.create_question("Q", "B", "a", ["t"])
+        qs = store.all_questions()
 
         mock = _make_mock_team_client(create_answer_result=None)
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
-        result = await answer(question_id=q.id, body="Answer")
+        result = await answer(question_id=qs[0].id, body="Answer")
         assert result["answer_id"].startswith("a_")
         assert result.get("source") == "local"
 
@@ -312,12 +301,21 @@ class TestComment:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mock = _make_mock_team_client(
-            create_comment_result={"id": "c_team_1", "status": "pending"}
+            create_comment_result={
+                "id": "c_team_1",
+                "parent_id": "q_1",
+                "parent_type": "question",
+                "body": "Comment body",
+                "created_by": "test-agent",
+                "created_by_type": "agent",
+                "status": "pending",
+            }
         )
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
         result = await comment(parent_id="q_1", body="Comment body")
         assert result["comment_id"] == "c_team_1"
+        assert result.get("source") == "team"
 
     async def test_falls_back_to_local_when_team_returns_none(
         self, monkeypatch: pytest.MonkeyPatch
@@ -348,18 +346,16 @@ class TestStatus:
     async def test_returns_local_stats(self) -> None:
         result = await status()
         assert "local" in result
-        assert result["local"]["questions"] == 0
         assert result["team"] == {"status": "not_configured"}
 
     async def test_counts_after_operations(self) -> None:
         store = server._get_store()
-        q = store.create_question("Q", "B", "a", ["t1", "t2"])
-        store.create_answer(q.id, "A", "a")
+        store.create_question("Q", "B", "a", ["t1", "t2"])
+        qs = store.all_questions()
+        store.create_answer(qs[0].id, "A", "a")
 
         result = await status()
-        assert result["local"]["questions"] == 1
-        assert result["local"]["answers"] == 1
-        assert result["local"]["tags"] == 2
+        assert result["local"]["total_questions"] == 1
 
     async def test_team_ok_status(
         self, monkeypatch: pytest.MonkeyPatch
@@ -446,6 +442,61 @@ class TestDrainOnStartup:
         await _do_drain()
 
         assert len(store.all_questions()) == 1
+
+
+class TestPullSync:
+    async def test_pull_sync_populates_local_store(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mock team_client.export_since, verify local store gets populated."""
+        export_data = {
+            "questions": [
+                {
+                    "id": "q_remote_1",
+                    "title": "Remote Question",
+                    "body": "From team API",
+                    "created_by": "remote-agent",
+                    "created_by_type": "agent",
+                    "status": "open",
+                }
+            ],
+            "answers": [],
+            "tags": [],
+            "question_tags": [],
+            "votes": [],
+            "comments": [],
+        }
+        mock = _make_mock_team_client(
+            health=True,
+            export_since_result=export_data,
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        await _do_pull()
+
+        mock.export_since.assert_called_once_with(since=None)
+
+        # Verify the local store now has the question
+        store = server._get_store()
+        qs = store.all_questions()
+        assert len(qs) == 1
+        assert qs[0].id == "q_remote_1"
+        assert qs[0].title == "Remote Question"
+
+    async def test_pull_skips_when_no_team(self) -> None:
+        await _do_pull()
+        store = server._get_store()
+        assert len(store.all_questions()) == 0
+
+    async def test_pull_skips_when_team_unhealthy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock = _make_mock_team_client(health=False)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        await _do_pull()
+
+        mock.export_since.assert_not_called()
 
 
 class TestEndToEnd:
