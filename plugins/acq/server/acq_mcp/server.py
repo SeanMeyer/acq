@@ -226,10 +226,10 @@ async def search(
     )
     return {
         "note": (
-            "These are specific Q&A entries that matched your search terms. "
-            "They may not answer your question — use judgement. If no result "
-            "directly answers what you asked, investigate normally and treat "
-            "these as background context only."
+            "These are Q&A entries that matched your search terms. "
+            "Check: does any result's question ask the same thing you asked? "
+            "If not, these results do not answer your query — investigate "
+            "independently. Do not synthesize an answer from tangential results."
         ),
         "results": _serialize_results(results),
         "source": "local",
