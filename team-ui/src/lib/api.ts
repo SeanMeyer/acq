@@ -41,35 +41,35 @@ export const api = {
     if (params.limit) qs.set('limit', String(params.limit));
     if (params.offset) qs.set('offset', String(params.offset));
     const query = qs.toString();
-    return request<QuestionListResponse>(`/questions${query ? `?${query}` : ''}`);
+    return request<QuestionListResponse>(`/api/questions${query ? `?${query}` : ''}`);
   },
 
   searchQuestions: (q: string) =>
-    request<SearchResponse>(`/questions/search?q=${encodeURIComponent(q)}`),
+    request<SearchResponse>(`/api/questions/search?q=${encodeURIComponent(q)}`),
 
   questionThread: (id: string) =>
-    request<QuestionThread>(`/questions/${id}/thread`),
+    request<QuestionThread>(`/api/questions/${id}/thread`),
 
   vote: (targetId: string, targetType: 'question' | 'answer', value: 1 | -1) =>
-    request<Record<string, number>>('/questions/vote', {
+    request<Record<string, number>>('/api/questions/vote', {
       method: 'POST',
       body: JSON.stringify({ target_id: targetId, target_type: targetType, value }),
     }),
 
   createQuestion: (title: string, body: string, tags: string[] = []) =>
-    request<{ question: Record<string, unknown> }>('/questions/new', {
+    request<{ question: Record<string, unknown> }>('/api/questions/new', {
       method: 'POST',
       body: JSON.stringify({ title, body, tags }),
     }),
 
   createAnswer: (questionId: string, body: string) =>
-    request<{ answer: Record<string, unknown> }>(`/questions/${questionId}/answer`, {
+    request<{ answer: Record<string, unknown> }>(`/api/questions/${questionId}/answer`, {
       method: 'POST',
       body: JSON.stringify({ body }),
     }),
 
   listTags: () =>
-    request<{ name: string; usage_count: number }[]>('/questions/tags'),
+    request<{ name: string; usage_count: number }[]>('/api/questions/tags'),
 
   login: (username: string, password: string) =>
     request<{ token: string; username: string }>('/auth/login', {

@@ -71,12 +71,12 @@ def _create_answer(client: TestClient, question_id: str, **overrides: Any) -> di
 
 class TestListQuestions:
     def test_requires_auth(self, client: TestClient) -> None:
-        resp = client.get("/questions")
+        resp = client.get("/api/questions")
         assert resp.status_code == 401
 
     def test_list_empty(self, client: TestClient) -> None:
         token = _login(client)
-        resp = client.get("/questions", headers=_auth_header(token))
+        resp = client.get("/api/questions", headers=_auth_header(token))
         assert resp.status_code == 200
         data = resp.json()
         assert data["items"] == []
@@ -86,7 +86,7 @@ class TestListQuestions:
         token = _login(client)
         _create_question(client, title="Question 1")
         _create_question(client, title="Question 2")
-        resp = client.get("/questions", headers=_auth_header(token))
+        resp = client.get("/api/questions", headers=_auth_header(token))
         assert resp.status_code == 200
         data = resp.json()
         assert data["total"] == 2
@@ -95,7 +95,7 @@ class TestListQuestions:
     def test_list_includes_tags(self, client: TestClient) -> None:
         token = _login(client)
         _create_question(client, tags=["python", "django"])
-        resp = client.get("/questions", headers=_auth_header(token))
+        resp = client.get("/api/questions", headers=_auth_header(token))
         data = resp.json()
         tag_names = {t["name"] for t in data["items"][0]["tags"]}
         assert tag_names == {"python", "django"}
@@ -104,16 +104,16 @@ class TestListQuestions:
         token = _login(client)
         _create_question(client, title="Open Q")
         # All questions start as "open" by default
-        resp = client.get("/questions?status=open", headers=_auth_header(token))
+        resp = client.get("/api/questions?status=open", headers=_auth_header(token))
         assert resp.json()["total"] == 1
-        resp = client.get("/questions?status=resolved", headers=_auth_header(token))
+        resp = client.get("/api/questions?status=resolved", headers=_auth_header(token))
         assert resp.json()["total"] == 0
 
     def test_filter_by_tag(self, client: TestClient) -> None:
         token = _login(client)
         _create_question(client, title="Python Q", tags=["python"])
         _create_question(client, title="Go Q", tags=["go"])
-        resp = client.get("/questions?tag=python", headers=_auth_header(token))
+        resp = client.get("/api/questions?tag=python", headers=_auth_header(token))
         data = resp.json()
         assert data["total"] == 1
         assert data["items"][0]["question"]["title"] == "Python Q"
@@ -122,11 +122,11 @@ class TestListQuestions:
         token = _login(client)
         for i in range(5):
             _create_question(client, title=f"Q{i}", tags=[f"tag{i}"])
-        resp = client.get("/questions?limit=2&offset=0", headers=_auth_header(token))
+        resp = client.get("/api/questions?limit=2&offset=0", headers=_auth_header(token))
         data = resp.json()
         assert data["total"] == 5
         assert len(data["items"]) == 2
-        resp2 = client.get("/questions?limit=2&offset=2", headers=_auth_header(token))
+        resp2 = client.get("/api/questions?limit=2&offset=2", headers=_auth_header(token))
         data2 = resp2.json()
         assert data2["total"] == 5
         assert len(data2["items"]) == 2
@@ -142,26 +142,26 @@ class TestListQuestions:
 
 class TestSearchQuestions:
     def test_requires_auth(self, client: TestClient) -> None:
-        resp = client.get("/questions/search?q=pool")
+        resp = client.get("/api/questions/search?q=pool")
         assert resp.status_code == 401
 
     def test_missing_query_returns_400(self, client: TestClient) -> None:
         token = _login(client)
-        resp = client.get("/questions/search", headers=_auth_header(token))
+        resp = client.get("/api/questions/search", headers=_auth_header(token))
         assert resp.status_code == 400
         assert "Search query required" in resp.json()["detail"]
 
     def test_search_returns_results(self, client: TestClient) -> None:
         token = _login(client)
         _create_question(client, title="Connection pooling", body="How to configure pool size")
-        resp = client.get("/questions/search?q=pooling", headers=_auth_header(token))
+        resp = client.get("/api/questions/search?q=pooling", headers=_auth_header(token))
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["results"]) > 0
 
     def test_search_no_results(self, client: TestClient) -> None:
         token = _login(client)
-        resp = client.get("/questions/search?q=nonexistent_xyz", headers=_auth_header(token))
+        resp = client.get("/api/questions/search?q=nonexistent_xyz", headers=_auth_header(token))
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["results"]) == 0
@@ -174,19 +174,19 @@ class TestSearchQuestions:
 
 class TestQuestionThread:
     def test_requires_auth(self, client: TestClient) -> None:
-        resp = client.get("/questions/fake-id/thread")
+        resp = client.get("/api/questions/fake-id/thread")
         assert resp.status_code == 401
 
     def test_not_found(self, client: TestClient) -> None:
         token = _login(client)
-        resp = client.get("/questions/nonexistent/thread", headers=_auth_header(token))
+        resp = client.get("/api/questions/nonexistent/thread", headers=_auth_header(token))
         assert resp.status_code == 404
 
     def test_returns_thread(self, client: TestClient) -> None:
         token = _login(client)
         q = _create_question(client, tags=["databases"])
         _create_answer(client, q["id"], supervised=True)
-        resp = client.get(f"/questions/{q['id']}/thread", headers=_auth_header(token))
+        resp = client.get(f"/api/questions/{q['id']}/thread", headers=_auth_header(token))
         assert resp.status_code == 200
         data = resp.json()
         assert data["question"]["id"] == q["id"]
@@ -198,7 +198,7 @@ class TestQuestionThread:
         q = _create_question(client)
         _create_answer(client, q["id"], supervised=False)  # pending
         _create_answer(client, q["id"], supervised=True)  # approved
-        resp = client.get(f"/questions/{q['id']}/thread", headers=_auth_header(token))
+        resp = client.get(f"/api/questions/{q['id']}/thread", headers=_auth_header(token))
         data = resp.json()
         assert len(data["answers"]) == 2
         statuses = [a["answer"]["status"] for a in data["answers"]]

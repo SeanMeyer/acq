@@ -13,7 +13,7 @@ from acq_shared.store import Store
 from .auth import get_current_user
 from .deps import get_store
 
-router = APIRouter(tags=["questions"])
+router = APIRouter(prefix="/api", tags=["questions"])
 
 
 # ------------------------------------------------------------------
