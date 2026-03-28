@@ -5,7 +5,7 @@ description: Mine the current session for knowledge worth sharing — identify Q
 
 # /acq:reflect
 
-Retrospectively mine this session for shareable Q&A pairs and submit approved candidates to acq.
+Retrospectively mine this session for shareable knowledge and submit approved candidates to acq.
 
 ## Instructions
 
@@ -14,15 +14,12 @@ Retrospectively mine this session for shareable Q&A pairs and submit approved ca
 Review the session for any acq answers you consumed via `get_thread`. For each one, determine what you can now say about it based on the work you did:
 
 - **Verified correct** — you used the answer and your work confirmed it (the file path existed, the command worked, the behaviour matched). `vote +1` on the answer, and `vote +1` on the question.
-- **Verified wrong or outdated** — you tried the answer and it was incorrect. Post a new `answer` on the same question with what actually works. The old answer will naturally sink as the new one accumulates votes. Add a `comment` on the old answer only if the issue is a small caveat or version-specific nuance, not a wholesale correction.
 - **Never verified** — you read the answer but never tested it through your work. Do not vote. No vote is better than a false signal.
 
-Present a summary to the user:
+Cast these votes automatically — they don't need user approval. Present a brief summary after:
 
 ```
-## acq votes from this session
-
-- {question_title}: {voted/commented/skipped} — {reason}
+Voted on {N} acq items: {list of question titles and what you voted on}
 ```
 
 If no acq results were consumed during the session, skip this step.
@@ -49,15 +46,17 @@ Call the `reflect` MCP tool, passing the session summary as `session_context`.
 reflect(session_context="<your session summary>")
 ```
 
-The tool may return a `candidates` list or may return a message directing you to use `ask`/`answer` directly. In both cases, proceed to Step 3.
+The tool may return a `candidates` list or may return a message directing you to use `ask`/`answer` directly. In both cases, proceed to Step 4.
 
-If the tool call fails (MCP server unavailable, timeout, or any error), note this briefly to the user and continue to Step 3 using local reasoning only — the reflect flow does not require the tool to succeed.
+If the tool call fails (MCP server unavailable, timeout, or any error), note this briefly to the user and continue to Step 4 using local reasoning only — the reflect flow does not require the tool to succeed.
 
-### Step 4 — Identify candidate Q&A pairs
+### Step 4 — Identify candidates
 
-Using your own reasoning, scan the session for insights worth sharing. Use any candidates returned by `reflect` as a starting point; if none were returned, identify candidates independently.
+Using your own reasoning, scan the session for knowledge worth sharing. Candidates fall into two categories:
 
-A candidate is worth sharing if it meets **all** of these criteria:
+**A. New answers to existing questions** — if you consumed an acq answer during the session and found it was wrong or outdated, draft a corrected answer for the same question. The existing question already has the right title, tags, and body — you just need the new answer.
+
+**B. New questions with answers** — if you discovered something non-obvious that isn't already in acq. A candidate is worth sharing if it meets **all** of these criteria:
 
 1. **Generalisable** — applies beyond this project, team, or codebase.
 2. **Hard to discover** — the workflow, recipe, or connection between tools was not easy to find. This includes things that *are* documented somewhere but required significant exploration, multiple tools, or human guidance to piece together. "Non-obvious" does not mean "undocumented" — it means "an agent starting from scratch would struggle to figure this out."
@@ -79,7 +78,12 @@ A candidate is worth sharing if it meets **all** of these criteria:
 - Insights already surfaced during the session (i.e. questions you found via `search` and voted on).
 - Trivial environment setup (suppressing a version check, setting an env var) unless the human specifically pointed it out as important.
 
-For each candidate, draft:
+For **new answers to existing questions**, draft:
+
+- **question** — reference the existing question ID and title
+- **answer** — a concrete solution (start with what to do)
+
+For **new questions with answers**, draft:
 
 - **title** — one concise sentence phrased as a question (e.g. "Why does webpack 5 fail with stream imports?")
 - **body** — describe the problem/situation, NOT the solution. The body should help someone recognize "I have this same problem" and should include alternate terms that help search (e.g. mention both "consumption-tracker" and "dep-versions" if both names are used). Do NOT put the answer in the body — that goes in the answer field.
@@ -94,13 +98,20 @@ If the session contained no events meeting the above criteria, skip Steps 5–7 
 Open with:
 
 ```
-I identified {N} potential Q&A candidates from this session worth sharing with the commons.
+I identified {N} candidates from this session worth sharing with the commons.
 ```
 
-Present each candidate as a numbered entry:
+Present each candidate as a numbered entry. For new answers to existing questions:
 
 ```
-{N}. {title}
+{N}. [answer] → "{existing question title}" ({question_id})
+   Answer: {answer}
+```
+
+For new questions with answers:
+
+```
+{N}. [new] {title}
    Tags: {tags}
    ---
    {body}
@@ -120,7 +131,17 @@ If the user requests an edit, show the current field values and ask which field 
 
 ### Step 7 — Submit approved candidates
 
-For each approved candidate, call `ask` then `answer`:
+For **new answers to existing questions**, call `answer`:
+
+```
+answer(
+  question_id=<existing question ID>,
+  body=<answer>,
+  supervised=true
+)
+```
+
+For **new questions with answers**, call `ask` then `answer`:
 
 ```
 ask(
@@ -156,11 +177,12 @@ Stored: {question_id} — "{title}"
 ```
 ## Session Reflect Complete
 
+Votes cast: {vote_count}
 {approved} of {total} candidates submitted to acq.
 {skipped} skipped.
 
-Questions created this session:
-- {question_id}: "{title}"
+Items this session:
+- {question_id}: "{title}" (new question + answer | new answer)
 - ...
 ```
 
