@@ -566,7 +566,7 @@ class PostgresStore:
         words = query.strip().split()
         if not words:
             return []
-        tsquery_str = " | ".join(w for w in words if w)
+        tsquery_str = " | ".join(w.replace("-", " & ") if "-" in w else w for w in words if w)
 
         try:
             # Search questions
@@ -677,7 +677,7 @@ class PostgresStore:
         words = title.strip().split()
         if not words:
             return []
-        tsquery_str = " | ".join(w for w in words if w)
+        tsquery_str = " | ".join(w.replace("-", " & ") if "-" in w else w for w in words if w)
 
         try:
             cur = self._execute(
