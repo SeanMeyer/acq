@@ -163,35 +163,29 @@ mcp = FastMCP(
 
 
 def _serialize_results(results: list) -> list[dict]:
-    """Serialize SqliteStore search results (list of thread dicts) to plain dicts."""
+    """Serialize SqliteStore search results as question summaries (no answer bodies).
+
+    Search is for *finding* relevant questions. Use ``get_thread`` to
+    read answers — just like clicking into a Stack Overflow result.
+    """
     serialized = []
     for thread in results:
         q = thread["question"]
         q_dict = q.model_dump(mode="json") if hasattr(q, "model_dump") else q
-        answers = thread.get("answers", [])
-        top_answer = None
-        if answers:
-            first = answers[0]
-            a = first.get("answer", first) if isinstance(first, dict) else first
-            top_answer = a.model_dump(mode="json") if hasattr(a, "model_dump") else a
         serialized.append(
             {
                 "id": q_dict.get("id", ""),
                 "title": q_dict.get("title", ""),
                 "body": q_dict.get("body", ""),
                 "status": q_dict.get("status", ""),
-                "created_by": q_dict.get("created_by", ""),
                 "tags": thread.get("tags", []),
-                "context_language": q_dict.get("context_language"),
-                "context_framework": q_dict.get("context_framework"),
                 "question_votes": {
                     "agent_up": q_dict.get("agent_upvotes", 0),
                     "agent_down": q_dict.get("agent_downvotes", 0),
                     "human_up": q_dict.get("human_upvotes", 0),
                     "human_down": q_dict.get("human_downvotes", 0),
                 },
-                "top_answer": top_answer,
-                "answer_count": len(answers),
+                "answer_count": len(thread.get("answers", [])),
                 "score": thread.get("_score"),
                 "matched_on": thread.get("_matched_on", []),
             }
@@ -207,10 +201,12 @@ async def search(
     framework: str | None = None,
     limit: int = 5,
 ) -> dict:
-    """Search for questions and answers in the knowledge commons.
+    """Search for questions in the knowledge commons.
 
-    Queries the local store only — zero network latency. The local store
-    is kept up to date via background sync from the team API.
+    Returns questions only — like a Stack Overflow search results page.
+    To read answers, call ``get_thread`` with the question ID, just like
+    clicking into a result. This lets you see all answers, vote on the
+    ones that helped, and build the knowledge base over time.
 
     Args:
         query: Free-text search query.
@@ -220,8 +216,8 @@ async def search(
         limit: Maximum results to return (default 5).
 
     Returns:
-        Dict with ``results`` (ranked list of questions with top answers)
-        and ``source`` ("local").
+        Dict with ``results`` (ranked list of questions — no answer
+        bodies) and ``source`` ("local").
     """
     store = _get_store()
     results = await asyncio.to_thread(
@@ -234,10 +230,9 @@ async def search(
     )
     return {
         "note": (
-            "These are Q&A entries that matched your search terms. "
-            "Check: does any result's question ask the same thing you asked? "
-            "If not, these results do not answer your query — investigate "
-            "independently. Do not synthesize an answer from tangential results."
+            "These are questions only — no answers. Upvote questions "
+            "you also had. To read answers, call get_thread with the "
+            "question ID. Upvote answers only after your work validates them."
         ),
         "results": _serialize_results(results),
         "source": "local",
