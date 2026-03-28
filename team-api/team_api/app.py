@@ -20,6 +20,7 @@ from acq_shared.store import Store
 
 from .auth import get_agent_identity, router as auth_router
 from .deps import get_store
+from .questions import router as questions_router
 from .review import router as review_router
 from .tags import router as tags_router
 
@@ -140,6 +141,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="ACQ Team API", version="0.1.0", lifespan=lifespan)
 app.include_router(auth_router)
+app.include_router(questions_router)
 app.include_router(review_router)
 app.include_router(tags_router)
 

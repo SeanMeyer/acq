@@ -63,6 +63,40 @@ export interface EditHistoryEntry {
 	edited_at: string;
 }
 
+export interface QuestionListItem {
+	question: Question;
+	tags: { name: string }[];
+	answer_count: number;
+}
+
+export interface QuestionListResponse {
+	items: QuestionListItem[];
+	total: number;
+}
+
+export interface AnswerThread {
+	answer: Answer;
+	comments: Comment[];
+}
+
+export interface QuestionThread {
+	question: Question;
+	tags: { name: string }[];
+	comments: Comment[];
+	answers: AnswerThread[];
+	user_votes: Record<string, number>;
+}
+
+export interface SearchResult {
+	question: Question;
+	comments: Comment[];
+	answers: AnswerThread[];
+}
+
+export interface SearchResponse {
+	results: SearchResult[];
+}
+
 export interface ReviewItem {
 	id: string;
 	type: 'answer' | 'comment';

@@ -10,6 +10,7 @@
 
   let pendingCount = $state(0);
   let refreshInterval: ReturnType<typeof setInterval> | null = null;
+  let searchQuery = $state('');
 
   const isLoginPage = $derived($page.url.pathname === '/login');
 
@@ -63,6 +64,7 @@
         <div class="flex items-center gap-1">
           <a
             href="/review"
+            data-sveltekit-preload-data="hover"
             class="relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
               {$page.url.pathname.startsWith('/review')
                 ? 'bg-indigo-50 text-indigo-700'
@@ -76,7 +78,18 @@
             {/if}
           </a>
           <a
+            href="/questions"
+            data-sveltekit-preload-data="hover"
+            class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
+              {$page.url.pathname.startsWith('/questions')
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}"
+          >
+            Questions
+          </a>
+          <a
             href="/dashboard"
+            data-sveltekit-preload-data="hover"
             class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
               {$page.url.pathname.startsWith('/dashboard')
                 ? 'bg-indigo-50 text-indigo-700'
@@ -86,7 +99,20 @@
           </a>
         </div>
 
-        <!-- User section -->
+        <!-- Search + User section -->
+        <div class="flex items-center gap-3">
+          <form
+            onsubmit={(e) => { e.preventDefault(); if (searchQuery.trim()) { goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`); searchQuery = ''; } }}
+            class="hidden sm:block"
+          >
+            <input
+              type="text"
+              bind:value={searchQuery}
+              placeholder="Search..."
+              class="w-36 px-2.5 py-1 text-sm bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:w-48 transition-all"
+            />
+          </form>
+        </div>
         <div class="flex items-center gap-3">
           {#if $auth.username}
             <span class="text-sm text-gray-500 hidden sm:block">{$auth.username}</span>

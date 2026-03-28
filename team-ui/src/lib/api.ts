@@ -1,4 +1,4 @@
-import type { ReviewQueueResponse, ReviewStats } from './types';
+import type { QuestionListResponse, QuestionThread, ReviewQueueResponse, ReviewStats, SearchResponse } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
@@ -34,6 +34,43 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  listQuestions: (params: { status?: string; tag?: string; limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set('status', params.status);
+    if (params.tag) qs.set('tag', params.tag);
+    if (params.limit) qs.set('limit', String(params.limit));
+    if (params.offset) qs.set('offset', String(params.offset));
+    const query = qs.toString();
+    return request<QuestionListResponse>(`/questions${query ? `?${query}` : ''}`);
+  },
+
+  searchQuestions: (q: string) =>
+    request<SearchResponse>(`/questions/search?q=${encodeURIComponent(q)}`),
+
+  questionThread: (id: string) =>
+    request<QuestionThread>(`/questions/${id}/thread`),
+
+  vote: (targetId: string, targetType: 'question' | 'answer', value: 1 | -1) =>
+    request<Record<string, number>>('/questions/vote', {
+      method: 'POST',
+      body: JSON.stringify({ target_id: targetId, target_type: targetType, value }),
+    }),
+
+  createQuestion: (title: string, body: string, tags: string[] = []) =>
+    request<{ question: Record<string, unknown> }>('/questions/new', {
+      method: 'POST',
+      body: JSON.stringify({ title, body, tags }),
+    }),
+
+  createAnswer: (questionId: string, body: string) =>
+    request<{ answer: Record<string, unknown> }>(`/questions/${questionId}/answer`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+
+  listTags: () =>
+    request<{ name: string; usage_count: number }[]>('/questions/tags'),
+
   login: (username: string, password: string) =>
     request<{ token: string; username: string }>('/auth/login', {
       method: 'POST',

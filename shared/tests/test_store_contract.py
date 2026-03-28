@@ -753,7 +753,7 @@ class TestGetQuestionThread:
     def test_thread_missing_returns_none(self, store):
         assert store.get_question_thread("q_nonexistent") is None
 
-    def test_thread_only_approved_answers(self, store):
+    def test_thread_default_excludes_pending(self, store):
         q = _make_question()
         store.create_question(q, [])
         a_pending = _make_answer(q.id, supervised=False)
@@ -763,3 +763,105 @@ class TestGetQuestionThread:
         thread = store.get_question_thread(q.id)
         assert len(thread["answers"]) == 1
         assert thread["answers"][0]["answer"].id == a_approved.id
+
+    def test_thread_include_pending(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        a_pending = _make_answer(q.id, supervised=False)
+        store.create_answer(a_pending)
+        a_approved = _make_answer(q.id, supervised=True)
+        store.create_answer(a_approved)
+        thread = store.get_question_thread(q.id, include_pending=True)
+        assert len(thread["answers"]) == 2
+        # Approved answers come first, then pending
+        assert thread["answers"][0]["answer"].id == a_approved.id
+        assert thread["answers"][0]["answer"].status == "approved"
+        assert thread["answers"][1]["answer"].id == a_pending.id
+        assert thread["answers"][1]["answer"].status == "pending"
+
+    def test_thread_excludes_rejected_answers(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id, supervised=False)
+        store.create_answer(a)
+        store.reject_content(a.id)
+        thread = store.get_question_thread(q.id, include_pending=True)
+        assert len(thread["answers"]) == 0
+
+
+# ===================================================================
+# List Questions
+# ===================================================================
+
+
+class TestListQuestions:
+    def test_list_all(self, store):
+        q1 = _make_question(title="First question")
+        q2 = _make_question(title="Second question")
+        store.create_question(q1, ["python"])
+        store.create_question(q2, ["go"])
+        items, total = store.list_questions()
+        assert total == 2
+        assert len(items) == 2
+        # Ordered by created_at DESC — q2 was created second
+        assert items[0]["question"]["id"] == q2.id
+        assert items[1]["question"]["id"] == q1.id
+
+    def test_list_includes_tags(self, store):
+        q = _make_question()
+        store.create_question(q, ["python", "django"])
+        items, total = store.list_questions()
+        assert total == 1
+        tag_names = {t["name"] for t in items[0]["tags"]}
+        assert tag_names == {"python", "django"}
+
+    def test_filter_by_status(self, store):
+        q_open = _make_question(title="Open question", status="open")
+        q_resolved = _make_question(title="Resolved question", status="resolved")
+        store.create_question(q_open, [])
+        store.create_question(q_resolved, [])
+        items, total = store.list_questions(status="open")
+        assert total == 1
+        assert items[0]["question"]["id"] == q_open.id
+
+    def test_filter_by_tag(self, store):
+        q1 = _make_question(title="Python question")
+        q2 = _make_question(title="Go question")
+        store.create_question(q1, ["python"])
+        store.create_question(q2, ["go"])
+        items, total = store.list_questions(tag="python")
+        assert total == 1
+        assert items[0]["question"]["id"] == q1.id
+
+    def test_pagination(self, store):
+        questions = []
+        for i in range(5):
+            q = _make_question(title=f"Question {i}")
+            store.create_question(q, [])
+            questions.append(q)
+        items, total = store.list_questions(limit=2, offset=0)
+        assert total == 5
+        assert len(items) == 2
+        items2, total2 = store.list_questions(limit=2, offset=2)
+        assert total2 == 5
+        assert len(items2) == 2
+        # No overlap
+        ids1 = {i["question"]["id"] for i in items}
+        ids2 = {i["question"]["id"] for i in items2}
+        assert ids1.isdisjoint(ids2)
+
+    def test_empty_results(self, store):
+        items, total = store.list_questions()
+        assert total == 0
+        assert items == []
+
+    def test_filter_by_status_and_tag(self, store):
+        q1 = _make_question(title="Open Python", status="open")
+        q2 = _make_question(title="Resolved Python", status="resolved")
+        q3 = _make_question(title="Open Go", status="open")
+        store.create_question(q1, ["python"])
+        store.create_question(q2, ["python"])
+        store.create_question(q3, ["go"])
+        items, total = store.list_questions(status="open", tag="python")
+        assert total == 1
+        assert items[0]["question"]["id"] == q1.id

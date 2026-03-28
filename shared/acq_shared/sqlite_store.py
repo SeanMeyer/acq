@@ -234,6 +234,48 @@ class SqliteStore:
         ).fetchall()
         return [_row_to_edit_history(r) for r in rows]
 
+    def list_questions(
+        self,
+        status: str | None = None,
+        tag: str | None = None,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> tuple[list[dict], int]:
+        where_clauses: list[str] = []
+        params: list[str | int] = []
+        join = ""
+
+        if status is not None:
+            where_clauses.append("q.status = ?")
+            params.append(status)
+        if tag is not None:
+            join = " JOIN question_tags qt ON q.id = qt.question_id JOIN tags t ON qt.tag_id = t.id"
+            where_clauses.append("t.name = ?")
+            params.append(tag)
+
+        where = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        total = self._conn.execute(
+            f"SELECT COUNT(DISTINCT q.id) FROM questions q{join}{where}", params
+        ).fetchone()[0]
+
+        rows = self._conn.execute(
+            f"SELECT DISTINCT q.data FROM questions q{join}{where} ORDER BY q.created_at DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
+
+        results: list[dict] = []
+        for (data_json,) in rows:
+            q = Question.model_validate_json(data_json)
+            tag_names = self._get_question_tag_names(q.id)
+            tags = [{"name": n} for n in sorted(tag_names)]
+            answer_count = self._conn.execute(
+                "SELECT COUNT(*) FROM answers WHERE question_id = ? AND status IN ('approved', 'pending')",
+                (q.id,),
+            ).fetchone()[0]
+            results.append({"question": q.model_dump(mode="json"), "tags": tags, "answer_count": answer_count})
+        return results, total
+
     # ------------------------------------------------------------------
     # Answers
     # ------------------------------------------------------------------
@@ -417,6 +459,32 @@ class SqliteStore:
                 )
         return counts
 
+    def delete_vote(self, target_id: str, voter_id: str, voter_type: str) -> bool:
+        row = self._conn.execute(
+            "SELECT target_type FROM votes WHERE target_id = ? AND voter_id = ? AND voter_type = ?",
+            (target_id, voter_id, voter_type),
+        ).fetchone()
+        if row is None:
+            return False
+        target_type = row[0]
+        self._conn.execute(
+            "DELETE FROM votes WHERE target_id = ? AND voter_id = ? AND voter_type = ?",
+            (target_id, voter_id, voter_type),
+        )
+        self._recalculate_vote_counts(target_id, target_type)
+        self._conn.commit()
+        return True
+
+    def get_user_votes(self, voter_id: str, voter_type: str, target_ids: list[str]) -> dict[str, int]:
+        if not target_ids:
+            return {}
+        placeholders = ",".join("?" for _ in target_ids)
+        rows = self._conn.execute(
+            f"SELECT target_id, value FROM votes WHERE voter_id = ? AND voter_type = ? AND target_id IN ({placeholders})",
+            [voter_id, voter_type, *target_ids],
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
     # ------------------------------------------------------------------
     # Moderation
     # ------------------------------------------------------------------
@@ -485,17 +553,29 @@ class SqliteStore:
             "comments": [Comment.model_validate_json(r[0]) for r in comment_rows],
         }
 
-    def get_question_thread(self, question_id: str) -> dict[str, Any] | None:
+    def get_question_thread(self, question_id: str, include_pending: bool = False) -> dict[str, Any] | None:
         q = self.get_question(question_id)
         if q is None:
             return None
 
-        answer_rows = self._conn.execute(
-            "SELECT data FROM answers WHERE question_id = ? AND status = 'approved'",
-            (question_id,),
-        ).fetchall()
-        answers = [Answer.model_validate_json(r[0]) for r in answer_rows]
-        ranked = rank_answers(answers, q.pinned_answer_id)
+        if include_pending:
+            answer_rows = self._conn.execute(
+                "SELECT data FROM answers WHERE question_id = ? AND status IN ('approved', 'pending')",
+                (question_id,),
+            ).fetchall()
+            all_answers = [Answer.model_validate_json(r[0]) for r in answer_rows]
+            approved = [a for a in all_answers if a.status == "approved"]
+            pending = [a for a in all_answers if a.status == "pending"]
+            ranked = rank_answers(approved, q.pinned_answer_id) + pending
+        else:
+            answer_rows = self._conn.execute(
+                "SELECT data FROM answers WHERE question_id = ? AND status = 'approved'",
+                (question_id,),
+            ).fetchall()
+            ranked = rank_answers(
+                [Answer.model_validate_json(r[0]) for r in answer_rows],
+                q.pinned_answer_id,
+            )
 
         comment_rows = self._conn.execute(
             "SELECT data FROM comments WHERE parent_id = ? AND parent_type = 'question' AND status = 'approved'",
@@ -512,10 +592,11 @@ class SqliteStore:
             a_comments = [Comment.model_validate_json(r[0]) for r in a_comment_rows]
             answer_threads.append({"answer": answer, "comments": a_comments})
 
-        tag_names = sorted(self._get_question_tag_names(question_id))
+        tag_names = self._get_question_tag_names(question_id)
+
         return {
             "question": q,
-            "tags": tag_names,
+            "tags": [{"name": n} for n in sorted(tag_names)],
             "comments": q_comments,
             "answers": answer_threads,
         }
