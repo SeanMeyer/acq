@@ -230,9 +230,10 @@ async def search(
     )
     return {
         "note": (
-            "These are questions only — no answers. Upvote questions "
-            "you also had. To read answers, call get_thread with the "
-            "question ID. Upvote answers only after your work validates them."
+            "These are questions only — no answers. Call get_thread "
+            "with all relevant question IDs to read their answers. "
+            "Remember: results that mention your topic are not answers "
+            "about your topic. Always investigate independently too."
         ),
         "results": _serialize_results(results),
         "source": "local",
@@ -313,24 +314,32 @@ def _serialize_thread_text(thread: dict) -> str:
 
 
 @mcp.tool(name="get_thread")
-async def get_thread(question_id: str) -> str:
-    """Fetch a full question thread with all answers, votes, and comments.
+async def get_thread(question_ids: list[str] | str) -> str:
+    """Fetch one or more question threads with all answers, votes, and comments.
 
-    Use this after ``search`` to read answers for a question you're
-    interested in. Returns a compact text format with the question,
-    all answers (with vote counts), and any comments.
+    Use this after ``search`` to read answers for questions you're
+    interested in. Pass all relevant question IDs at once — don't
+    cherry-pick just one.
 
     Args:
-        question_id: The question ID (e.g. "q_...").
+        question_ids: One or more question IDs (e.g. ["q_...", "q_..."]
+            or a single "q_..." string).
 
     Returns:
-        Readable text with the full thread, or an error message.
+        Readable text with the full thread(s), or an error message.
     """
+    if isinstance(question_ids, str):
+        question_ids = [question_ids]
+
     store = _get_store()
-    thread = await asyncio.to_thread(store.store.get_question_thread, question_id)
-    if thread is None:
-        return f"Question {question_id} not found."
-    return _serialize_thread_text(thread)
+    parts: list[str] = []
+    for qid in question_ids:
+        thread = await asyncio.to_thread(store.store.get_question_thread, qid)
+        if thread is None:
+            parts.append(f"Question {qid} not found.")
+        else:
+            parts.append(_serialize_thread_text(thread))
+    return "\n\n===\n\n".join(parts)
 
 
 @mcp.tool(name="ask")

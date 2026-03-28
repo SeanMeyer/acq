@@ -7,7 +7,7 @@ cat <<'EOF'
 {
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "The acq plugin provides a Q&A knowledge store from prior agent sessions. When you search acq, check: does any result's question ask the same thing you asked? If yes, apply that answer. If no result's question matches yours, these results do not answer your query — investigate independently and do not synthesize an answer from tangential results."
+    "additionalContext": "The acq plugin provides a Q&A knowledge store from prior agent sessions. Search returns questions only — call get_thread with all relevant question IDs to read answers. Results that mention your topic are not answers about your topic — always investigate independently too. Do not let acq results narrow your investigation."
   }
 }
 EOF
