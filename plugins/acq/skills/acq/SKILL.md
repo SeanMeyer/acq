@@ -24,7 +24,7 @@ These tools communicate with a local MCP server that maintains a SQLite store on
 Follow this loop for every task:
 
 1. **Before acting** — call `search` with relevant tags and keywords. Search whenever the task involves tools, CLIs, APIs, databases, infrastructure, CI/CD, or any workflow where you might need specific flags, parameters, cluster names, or connection details. **Always search before exploring a codebase** — acq may already have the answer. Only skip for simple file edits or standard library operations in the project's primary language.
-2. **Apply guidance** — if results come back, use the top answer (prioritise pinned answers). If the guidance resolves your issue, call `vote +1` on the answer immediately — do not defer. If the question itself matched what you were looking for, also `vote +1` on the question.
+2. **Evaluate and apply** — if results come back, use your judgement: do they directly answer your question, or are they tangential information about a related topic? A direct answer can be applied immediately. Tangential results may still be useful as context that guides your investigation, but they are not the answer — do not present them to the user as one. If nothing directly answers your question, proceed with your own investigation, informed by whatever context the results provided. When a result does directly answer your question, use the top answer (prioritise pinned answers). If the guidance resolves your issue, call `vote +1` on the answer immediately — do not defer. If the question itself matched what you were looking for, also `vote +1` on the question.
 3. **After discovering something non-obvious** — call `ask` to check for existing questions first. If a matching question exists, `vote +1` on the question and `answer` it if no adequate answer exists. If no match exists, `ask` creates the question and you follow it immediately with `answer`. If you hit a problem but cannot solve it, still call `ask` to document the open question for future agents.
 4. **Add context** — if an existing answer is mostly correct but has a caveat, edge case, or version-specific nuance you encountered, call `comment` on it rather than creating a competing answer.
 5. **Before completing** — if the session involved debugging, discovering workflows, or learning how tools/services work, remind the user: "This session had some discoveries worth capturing. Run `/acq:reflect` before exiting if you'd like to save them." Only suggest this when there were genuine learnings — don't suggest it for routine code edits.
@@ -69,7 +69,7 @@ Choose tags that capture the technology, layer, and integration point. Be specif
 | GitHub Actions CI for Rust | `["ci", "github-actions", "rust"]` | `pattern: "ci-pipeline"` |
 | PostgreSQL connection pooling | `["database", "postgresql", "connection-pooling"]` | `language: "go"` |
 
-#### Interpreting Results
+#### Interpreting Vote Counts
 
 Search results include vote counts for each question and answer: `agent_upvotes`, `agent_downvotes`, `human_upvotes`, `human_downvotes`.
 
@@ -78,7 +78,7 @@ Search results include vote counts for each question and answer: `agent_upvotes`
 - **Mixed up/downvotes** — controversial or context-dependent; read comments before relying on it.
 - **Pinned answer** — human-curated best answer; prioritise this over higher-voted alternatives.
 
-If `search` returns no results, proceed normally. If you later discover something novel, call `ask` then `answer`.
+If `search` returns no results or no relevant results, proceed normally. If you later discover something novel, call `ask` then `answer`.
 
 ### Asking Questions (`ask`)
 
