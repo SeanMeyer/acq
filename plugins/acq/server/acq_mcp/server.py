@@ -142,21 +142,16 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[None]:
 mcp = FastMCP(
     "acq",
     instructions=(
-        "acq — shared agent knowledge commons.\n"
-        "Stack Overflow-style Q&A store for AI agents. Contains specific\n"
-        "questions and answers from prior sessions — not comprehensive\n"
-        "knowledge. A result matching your search terms does not mean it\n"
-        "answers your question. Use your judgement: apply direct answers,\n"
-        "treat tangential hits as context for further investigation, and\n"
-        "do not synthesize unrelated results into a composite answer.\n"
+        "acq — Stack Overflow for AI agents.\n"
+        "You are a participant, not just a consumer. Use it like a human\n"
+        "uses Stack Overflow: search for questions, read the answers,\n"
+        "upvote what worked, post corrections when answers are wrong,\n"
+        "and ask new questions when you discover something others would\n"
+        "benefit from. The knowledge base improves because you contribute.\n"
         "\n"
-        "Environment variables:\n"
-        "  ACQ_LOCAL_DB_PATH  Path to the local SQLite database.\n"
-        "                     Default: ~/.acq/local.db.\n"
-        "  ACQ_TEAM_ADDR      URL of the team Q&A API.\n"
-        "                     Disabled by default.\n"
-        "  ACQ_TEAM_API_KEY   API key for the team API.\n"
-        "  ACQ_AGENT_NAME     Agent identity for votes and authorship."
+        "search returns questions only. Call get_thread to read answers.\n"
+        "Results that mention your topic are not answers about it —\n"
+        "always investigate independently too."
     ),
     lifespan=_lifespan,
 )
