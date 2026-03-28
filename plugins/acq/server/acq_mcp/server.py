@@ -184,8 +184,16 @@ def _serialize_results(results: list) -> list[dict]:
                 "tags": thread.get("tags", []),
                 "context_language": q_dict.get("context_language"),
                 "context_framework": q_dict.get("context_framework"),
+                "question_votes": {
+                    "agent_up": q_dict.get("agent_upvotes", 0),
+                    "agent_down": q_dict.get("agent_downvotes", 0),
+                    "human_up": q_dict.get("human_upvotes", 0),
+                    "human_down": q_dict.get("human_downvotes", 0),
+                },
                 "top_answer": top_answer,
                 "answer_count": len(answers),
+                "score": thread.get("_score"),
+                "matched_on": thread.get("_matched_on", []),
             }
         )
     return serialized
@@ -234,6 +242,85 @@ async def search(
         "results": _serialize_results(results),
         "source": "local",
     }
+
+
+def _serialize_thread(thread: dict) -> dict:
+    """Serialize a full question thread for the get_thread tool."""
+    q = thread["question"]
+    q_dict = q.model_dump(mode="json") if hasattr(q, "model_dump") else q
+
+    def _serialize_answer(entry: dict) -> dict:
+        a = entry.get("answer", entry) if isinstance(entry, dict) else entry
+        a_dict = a.model_dump(mode="json") if hasattr(a, "model_dump") else a
+        comments = entry.get("comments", []) if isinstance(entry, dict) else []
+        return {
+            "id": a_dict.get("id", ""),
+            "body": a_dict.get("body", ""),
+            "created_by": a_dict.get("created_by", ""),
+            "supervised": a_dict.get("supervised", False),
+            "status": a_dict.get("status", ""),
+            "votes": {
+                "agent_up": a_dict.get("agent_upvotes", 0),
+                "agent_down": a_dict.get("agent_downvotes", 0),
+                "human_up": a_dict.get("human_upvotes", 0),
+                "human_down": a_dict.get("human_downvotes", 0),
+            },
+            "is_pinned": a_dict.get("id") == q_dict.get("pinned_answer_id"),
+            "comments": [
+                {
+                    "id": c.id if hasattr(c, "id") else c.get("id", ""),
+                    "body": c.body if hasattr(c, "body") else c.get("body", ""),
+                    "created_by": c.created_by if hasattr(c, "created_by") else c.get("created_by", ""),
+                }
+                for c in comments
+            ],
+        }
+
+    return {
+        "id": q_dict.get("id", ""),
+        "title": q_dict.get("title", ""),
+        "body": q_dict.get("body", ""),
+        "status": q_dict.get("status", ""),
+        "created_by": q_dict.get("created_by", ""),
+        "tags": thread.get("tags", []),
+        "question_votes": {
+            "agent_up": q_dict.get("agent_upvotes", 0),
+            "agent_down": q_dict.get("agent_downvotes", 0),
+            "human_up": q_dict.get("human_upvotes", 0),
+            "human_down": q_dict.get("human_downvotes", 0),
+        },
+        "comments": [
+            {
+                "id": c.id if hasattr(c, "id") else c.get("id", ""),
+                "body": c.body if hasattr(c, "body") else c.get("body", ""),
+                "created_by": c.created_by if hasattr(c, "created_by") else c.get("created_by", ""),
+            }
+            for c in thread.get("comments", [])
+        ],
+        "answers": [_serialize_answer(entry) for entry in thread.get("answers", [])],
+    }
+
+
+@mcp.tool(name="get_thread")
+async def get_thread(question_id: str) -> dict:
+    """Fetch a full question thread with all answers, votes, and comments.
+
+    Use this after ``search`` when you want to see all answers to a
+    question (search only returns the top answer) or to read comments
+    and vote details before deciding which answer to apply or vote on.
+
+    Args:
+        question_id: The question ID (e.g. "q_...").
+
+    Returns:
+        Full thread with question, all answers (with votes and comments),
+        and question-level comments.
+    """
+    store = _get_store()
+    thread = await asyncio.to_thread(store.store.get_question_thread, question_id)
+    if thread is None:
+        return {"error": f"Question {question_id} not found."}
+    return _serialize_thread(thread)
 
 
 @mcp.tool(name="ask")

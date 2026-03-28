@@ -678,13 +678,16 @@ class PostgresStore:
             self._conn.rollback()
             return []
 
-        # Collect best rank per question
+        # Collect best rank per question and track match sources.
         best_rank_per_question: dict[str, float] = {}
+        matched_sources: dict[str, set[str]] = {}
         for qid, rank in q_rows:
+            matched_sources.setdefault(qid, set()).add("question")
             current = best_rank_per_question.get(qid)
             if current is None or rank > current:
                 best_rank_per_question[qid] = rank
         for qid, rank in a_rows:
+            matched_sources.setdefault(qid, set()).add("answer")
             current = best_rank_per_question.get(qid)
             if current is None or rank > current:
                 best_rank_per_question[qid] = rank
@@ -742,17 +745,23 @@ class PostgresStore:
                 best_answer=best_answer,
             )
 
-            scored.append((final_score, question_id))
+            matched_on: list[str] = list(matched_sources.get(question_id, set()))
+            if jaccard > 0:
+                matched_on.append("tags")
+
+            scored.append((final_score, question_id, matched_on))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         scored = scored[:limit]
 
         results = []
-        for _, question_id in scored:
+        for score, question_id, matched_on in scored:
             thread = self.get_question_thread(question_id)
             if thread is None:
                 continue
             thread["answers"] = thread["answers"][:3]
+            thread["_score"] = round(score, 3)
+            thread["_matched_on"] = matched_on
             results.append(thread)
 
         return results
