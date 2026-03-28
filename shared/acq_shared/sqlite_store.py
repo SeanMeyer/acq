@@ -532,7 +532,7 @@ class SqliteStore:
         query_tags = set(tags or [])
 
         words = query.strip().split()
-        fts_query = " OR ".join(w for w in words if w)
+        fts_query = " OR ".join(f'"{w}"' for w in words if w)
         try:
             fts_rows = self._conn.execute(
                 "SELECT entity_id, entity_type, question_id, rank FROM search_index WHERE search_index MATCH ? ORDER BY rank",

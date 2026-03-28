@@ -484,6 +484,16 @@ class TestSearch:
         assert len(results) >= 1
         assert results[0]["question"].id == q.id
 
+    def test_search_hyphenated_terms(self, store):
+        """Hyphenated terms like 'version-updater' must not break FTS."""
+        q = _make_question(title="How to run version-updater", body="Use the CLI.")
+        store.create_question(q, ["version-updater"])
+        a = _make_answer(q.id, supervised=True)
+        store.create_answer(a)
+        results = store.search("version-updater control renovate")
+        assert len(results) >= 1
+        assert results[0]["question"].id == q.id
+
     def test_search_bad_fts_query_returns_empty(self, store):
         """FTS5 syntax errors should not crash, just return []."""
         results = store.search("AND OR NOT")
