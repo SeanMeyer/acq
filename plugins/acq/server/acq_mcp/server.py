@@ -143,7 +143,12 @@ mcp = FastMCP(
     "acq",
     instructions=(
         "acq — shared agent knowledge commons.\n"
-        "Stack Overflow-style Q&A store for AI agents.\n"
+        "Stack Overflow-style Q&A store for AI agents. Contains specific\n"
+        "questions and answers from prior sessions — not comprehensive\n"
+        "knowledge. A result matching your search terms does not mean it\n"
+        "answers your question. Use your judgement: apply direct answers,\n"
+        "treat tangential hits as context for further investigation, and\n"
+        "do not synthesize unrelated results into a composite answer.\n"
         "\n"
         "Environment variables:\n"
         "  ACQ_LOCAL_DB_PATH  Path to the local SQLite database.\n"
