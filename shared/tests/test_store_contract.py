@@ -511,14 +511,24 @@ class TestSearch:
         a_voted = _make_answer(q_voted.id, supervised=True)
         store.create_answer(a_voted)
         # Give the voted question some upvotes
-        store.cast_vote(Vote(
-            target_id=q_voted.id, target_type="question",
-            voter_id="agent-1", voter_type="agent", value=1,
-        ))
-        store.cast_vote(Vote(
-            target_id=a_voted.id, target_type="answer",
-            voter_id="agent-1", voter_type="agent", value=1,
-        ))
+        store.cast_vote(
+            Vote(
+                target_id=q_voted.id,
+                target_type="question",
+                voter_id="agent-1",
+                voter_type="agent",
+                value=1,
+            )
+        )
+        store.cast_vote(
+            Vote(
+                target_id=a_voted.id,
+                target_type="answer",
+                voter_id="agent-1",
+                voter_type="agent",
+                value=1,
+            )
+        )
 
         results = store.search("webpack polyfill stream")
         assert len(results) >= 2

@@ -162,33 +162,53 @@ class TestSearchScore:
 
     def test_voted_ranks_above_unvoted(self):
         q_unvoted = Question(
-            title="T", body="B", created_by="x", created_by_type="agent",
+            title="T",
+            body="B",
+            created_by="x",
+            created_by_type="agent",
         )
         q_voted = Question(
-            title="T", body="B", created_by="x", created_by_type="agent",
+            title="T",
+            body="B",
+            created_by="x",
+            created_by_type="agent",
             agent_upvotes=5,
         )
         score_unvoted = search_score(
-            text_relevance=0.9, question=q_unvoted, best_answer=None,
+            text_relevance=0.9,
+            question=q_unvoted,
+            best_answer=None,
         )
         score_voted = search_score(
-            text_relevance=0.9, question=q_voted, best_answer=None,
+            text_relevance=0.9,
+            question=q_voted,
+            best_answer=None,
         )
         assert score_voted > score_unvoted
 
     def test_high_text_relevance_beats_moderate_votes(self):
         q_relevant = Question(
-            title="T", body="B", created_by="x", created_by_type="agent",
+            title="T",
+            body="B",
+            created_by="x",
+            created_by_type="agent",
         )
         q_voted = Question(
-            title="T", body="B", created_by="x", created_by_type="agent",
+            title="T",
+            body="B",
+            created_by="x",
+            created_by_type="agent",
             agent_upvotes=5,
         )
         score_relevant = search_score(
-            text_relevance=0.9, question=q_relevant, best_answer=None,
+            text_relevance=0.9,
+            question=q_relevant,
+            best_answer=None,
         )
         score_voted = search_score(
-            text_relevance=0.2, question=q_voted, best_answer=None,
+            text_relevance=0.2,
+            question=q_voted,
+            best_answer=None,
         )
         assert score_relevant > score_voted
 

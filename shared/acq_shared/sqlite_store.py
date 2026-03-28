@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from acq_shared.models import Answer, Comment, EditHistory, Question, Tag, Vote
-from acq_shared.scoring import rank_answers, search_content_score, search_score, text_relevance_score
+from acq_shared.scoring import rank_answers, search_score, text_relevance_score
 from acq_shared.sqlite_schema import create_tables
 
 
@@ -594,7 +594,9 @@ class SqliteStore:
             best_answer = ranked_answers[0] if ranked_answers else None
 
             final_score = search_score(
-                text_relevance=text_rel, question=q, best_answer=best_answer,
+                text_relevance=text_rel,
+                question=q,
+                best_answer=best_answer,
             )
 
             scored.append((final_score, question_id))
