@@ -14,7 +14,7 @@ Retrospectively mine this session for shareable Q&A pairs and submit approved ca
 Review the session for any acq answers you consumed via `get_thread`. For each one, determine what you can now say about it based on the work you did:
 
 - **Verified correct** — you used the answer and your work confirmed it (the file path existed, the command worked, the behaviour matched). `vote +1` on the answer, and `vote +1` on the question.
-- **Verified wrong or outdated** — you tried the answer and it was incorrect. Add a `comment` on the answer explaining what's actually correct now.
+- **Verified wrong or outdated** — you tried the answer and it was incorrect. Post a new `answer` on the same question with what actually works. The old answer will naturally sink as the new one accumulates votes. Add a `comment` on the old answer only if the issue is a small caveat or version-specific nuance, not a wholesale correction.
 - **Never verified** — you read the answer but never tested it through your work. Do not vote. No vote is better than a false signal.
 
 Present a summary to the user:
