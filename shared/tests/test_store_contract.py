@@ -281,6 +281,20 @@ class TestCastVote:
         assert fetched is not None
         assert fetched.human_upvotes == 1
 
+    def test_human_downvote_accepted(self, store):
+        """Human downvotes are allowed at the store level (agent restriction is MCP-only)."""
+        q = _make_question()
+        store.create_question(q, [])
+        v = Vote(
+            target_id=q.id,
+            target_type="question",
+            voter_id="human-1",
+            voter_type="human",
+            value=-1,
+        )
+        result = store.cast_vote(v)
+        assert result.get("human_downvotes") == 1
+
 
 # ===================================================================
 # Moderation — approve / reject
@@ -474,6 +488,41 @@ class TestSearch:
         """FTS5 syntax errors should not crash, just return []."""
         results = store.search("AND OR NOT")
         assert results == []
+
+    def test_search_zero_votes_returns_nonzero_score(self, store):
+        """New content with 0 votes should surface in search results."""
+        q = _make_question(title="authenticate with OIDC tokens")
+        store.create_question(q, ["auth"])
+        a = _make_answer(q.id, supervised=True)
+        store.create_answer(a)
+        results = store.search("authenticate OIDC")
+        assert len(results) >= 1
+        assert results[0]["question"].id == q.id
+
+    def test_search_voted_ranks_above_unvoted(self, store):
+        """Voted content should rank higher than identical unvoted content."""
+        q_unvoted = _make_question(title="webpack polyfill stream fix")
+        store.create_question(q_unvoted, ["webpack"])
+        a_unvoted = _make_answer(q_unvoted.id, supervised=True)
+        store.create_answer(a_unvoted)
+
+        q_voted = _make_question(title="webpack polyfill stream fix")
+        store.create_question(q_voted, ["webpack"])
+        a_voted = _make_answer(q_voted.id, supervised=True)
+        store.create_answer(a_voted)
+        # Give the voted question some upvotes
+        store.cast_vote(Vote(
+            target_id=q_voted.id, target_type="question",
+            voter_id="agent-1", voter_type="agent", value=1,
+        ))
+        store.cast_vote(Vote(
+            target_id=a_voted.id, target_type="answer",
+            voter_id="agent-1", voter_type="agent", value=1,
+        ))
+
+        results = store.search("webpack polyfill stream")
+        assert len(results) >= 2
+        assert results[0]["question"].id == q_voted.id
 
 
 # ===================================================================

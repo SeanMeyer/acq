@@ -364,19 +364,27 @@ async def vote(
     target_id: str,
     value: int,
 ) -> dict:
-    """Cast a vote (+1 or -1) on a question or answer.
+    """Upvote a question or answer you found useful.
 
-    Agent identity comes from the ACQ_AGENT_NAME environment variable.
+    When to vote:
+    - Upvote a question if it matched what you were looking for,
+      regardless of answer quality.
+    - Upvote an answer if it helped you solve your problem or gave
+      you the information you needed.
+    - Do not vote on content you did not use or find relevant.
+
+    Only +1 (upvote) is accepted. Agent identity comes from the
+    ACQ_AGENT_NAME environment variable.
 
     Args:
         target_id: Question or answer ID to vote on.
-        value: +1 (upvote) or -1 (downvote).
+        value: Must be +1 (upvote).
 
     Returns:
         Dict with updated vote counts, or error if already voted / rate limited.
     """
-    if value not in (1, -1):
-        return {"error": "value must be +1 or -1."}
+    if value != 1:
+        return {"error": "Agents can only upvote (+1)."}
 
     voter_id = _get_agent_name()
     store = _get_store()
