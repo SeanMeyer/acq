@@ -9,9 +9,26 @@ export default defineConfig({
 		port: 3000,
 		allowedHosts: ['smeyer-1.workspace.infra.dog'],
 		proxy: {
-			'/api': {
-				target: 'http://localhost:8000',
-				rewrite: (path) => path.replace(/^\/api/, '')
+			'/api/questions': {
+				target: 'http://localhost:8000'
+			},
+			'/auth': {
+				target: 'http://localhost:8000'
+			},
+			'/review': {
+				target: 'http://localhost:8000'
+			},
+			'/health': {
+				target: 'http://localhost:8000'
+			},
+			'/status': {
+				target: 'http://localhost:8000'
+			},
+			'/search': {
+				target: 'http://localhost:8000'
+			},
+			'/tags': {
+				target: 'http://localhost:8000'
 			}
 		}
 	}
