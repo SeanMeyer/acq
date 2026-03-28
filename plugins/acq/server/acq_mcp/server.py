@@ -261,8 +261,8 @@ def _format_votes(d: dict) -> str:
     return result
 
 
-def _serialize_thread_text(thread: dict) -> str:
-    """Serialize a question thread as compact readable text."""
+def _serialize_thread_compact(thread: dict) -> dict:
+    """Serialize a question thread as a compact dict for get_thread."""
     q = thread["question"]
     q_dict = q.model_dump(mode="json") if hasattr(q, "model_dump") else q
     pinned_id = q_dict.get("pinned_answer_id")
@@ -270,46 +270,53 @@ def _serialize_thread_text(thread: dict) -> str:
     tags_raw = thread.get("tags", [])
     tag_names = [t["name"] if isinstance(t, dict) else t for t in tags_raw]
 
-    lines = [
-        f"# {q_dict.get('title', '')}",
-        f"id: {q_dict.get('id', '')} | status: {q_dict.get('status', '')} | {_format_votes(q_dict)}",
-        f"tags: {', '.join(tag_names)}",
-        "",
-        q_dict.get("body", ""),
-    ]
-
     q_comments = thread.get("comments", [])
-    if q_comments:
-        lines.append("")
-        for c in q_comments:
-            body = c.body if hasattr(c, "body") else c.get("body", "")
-            by = c.created_by if hasattr(c, "created_by") else c.get("created_by", "")
-            lines.append(f"  > {by}: {body}")
+    comment_strs = []
+    for c in q_comments:
+        body = c.body if hasattr(c, "body") else c.get("body", "")
+        by = c.created_by if hasattr(c, "created_by") else c.get("created_by", "")
+        comment_strs.append(f"{by}: {body}")
 
-    answers = thread.get("answers", [])
-    lines.append(f"\n--- {len(answers)} answer(s) ---")
-
-    for entry in answers:
+    answers_out = []
+    for entry in thread.get("answers", []):
         a = entry.get("answer", entry) if isinstance(entry, dict) else entry
         a_dict = a.model_dump(mode="json") if hasattr(a, "model_dump") else a
         is_pinned = a_dict.get("id") == pinned_id
-        pinned_tag = " [pinned]" if is_pinned else ""
-
-        lines.append("")
-        lines.append(f"## Answer {a_dict.get('id', '')}{pinned_tag} | {_format_votes(a_dict)}")
-        lines.append(a_dict.get("body", ""))
 
         a_comments = entry.get("comments", []) if isinstance(entry, dict) else []
+        a_comment_strs = []
         for c in a_comments:
             body = c.body if hasattr(c, "body") else c.get("body", "")
             by = c.created_by if hasattr(c, "created_by") else c.get("created_by", "")
-            lines.append(f"  > {by}: {body}")
+            a_comment_strs.append(f"{by}: {body}")
 
-    return "\n".join(lines)
+        answer_out: dict = {
+            "id": a_dict.get("id", ""),
+            "votes": _format_votes(a_dict),
+            "body": a_dict.get("body", ""),
+        }
+        if is_pinned:
+            answer_out["pinned"] = True
+        if a_comment_strs:
+            answer_out["comments"] = a_comment_strs
+        answers_out.append(answer_out)
+
+    result: dict = {
+        "id": q_dict.get("id", ""),
+        "title": q_dict.get("title", ""),
+        "tags": ", ".join(tag_names),
+        "votes": _format_votes(q_dict),
+        "status": q_dict.get("status", ""),
+        "body": q_dict.get("body", ""),
+        "answers": answers_out,
+    }
+    if comment_strs:
+        result["comments"] = comment_strs
+    return result
 
 
 @mcp.tool(name="get_thread")
-async def get_thread(question_ids: list[str] | str) -> str:
+async def get_thread(question_ids: list[str] | str) -> dict:
     """Fetch one or more question threads with all answers, votes, and comments.
 
     Use this after ``search`` to read answers for questions you're
@@ -321,20 +328,25 @@ async def get_thread(question_ids: list[str] | str) -> str:
             or a single "q_..." string).
 
     Returns:
-        Readable text with the full thread(s), or an error message.
+        Dict with ``threads`` list. Each thread has the question,
+        all answers (with vote counts), and any comments.
     """
     if isinstance(question_ids, str):
         question_ids = [question_ids]
 
     store = _get_store()
-    parts: list[str] = []
+    threads: list[dict] = []
+    errors: list[str] = []
     for qid in question_ids:
         thread = await asyncio.to_thread(store.store.get_question_thread, qid)
         if thread is None:
-            parts.append(f"Question {qid} not found.")
+            errors.append(f"Question {qid} not found.")
         else:
-            parts.append(_serialize_thread_text(thread))
-    return "\n\n===\n\n".join(parts)
+            threads.append(_serialize_thread_compact(thread))
+    result: dict = {"threads": threads}
+    if errors:
+        result["errors"] = errors
+    return result
 
 
 @mcp.tool(name="ask")
