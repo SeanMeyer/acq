@@ -224,7 +224,16 @@ async def search(
         framework=framework,
         limit=limit,
     )
-    return {"results": _serialize_results(results), "source": "local"}
+    return {
+        "note": (
+            "These are specific Q&A entries that matched your search terms. "
+            "They may not answer your question — use judgement. If no result "
+            "directly answers what you asked, investigate normally and treat "
+            "these as background context only."
+        ),
+        "results": _serialize_results(results),
+        "source": "local",
+    }
 
 
 @mcp.tool(name="ask")
