@@ -260,6 +260,48 @@ class PostgresStore:
         rows = cur.fetchall()
         return [_row_to_edit_history(r) for r in rows]
 
+    def list_questions(
+        self,
+        status: str | None = None,
+        tag: str | None = None,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> tuple[list[dict], int]:
+        where_clauses: list[str] = []
+        params: list[str | int] = []
+        join = ""
+
+        if status is not None:
+            where_clauses.append("q.status = %s")
+            params.append(status)
+        if tag is not None:
+            join = " JOIN dogpark.question_tags qt ON q.id = qt.question_id JOIN dogpark.tags t ON qt.tag_id = t.id"
+            where_clauses.append("t.name = %s")
+            params.append(tag)
+
+        where = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        total = self._execute(
+            f"SELECT COUNT(DISTINCT q.id) FROM dogpark.questions q{join}{where}", tuple(params)
+        ).fetchone()[0]
+
+        rows = self._execute(
+            f"SELECT DISTINCT q.data FROM dogpark.questions q{join}{where} ORDER BY q.created_at DESC LIMIT %s OFFSET %s",
+            (*params, limit, offset),
+        ).fetchall()
+
+        results: list[dict] = []
+        for (data_json,) in rows:
+            q = Question.model_validate_json(data_json)
+            tag_names = self._get_question_tag_names(q.id)
+            tags = [{"name": n} for n in sorted(tag_names)]
+            answer_count = self._execute(
+                "SELECT COUNT(*) FROM dogpark.answers WHERE question_id = %s AND status IN ('approved', 'pending')",
+                (q.id,),
+            ).fetchone()[0]
+            results.append({"question": q.model_dump(mode="json"), "tags": tags, "answer_count": answer_count})
+        return results, total
+
     # ------------------------------------------------------------------
     # Answers
     # ------------------------------------------------------------------
@@ -446,6 +488,33 @@ class PostgresStore:
                 )
         return counts
 
+    def delete_vote(self, target_id: str, voter_id: str, voter_type: str) -> bool:
+        cur = self._execute(
+            "SELECT target_type FROM dogpark.votes WHERE target_id = %s AND voter_id = %s AND voter_type = %s",
+            (target_id, voter_id, voter_type),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return False
+        target_type = row[0]
+        self._execute(
+            "DELETE FROM dogpark.votes WHERE target_id = %s AND voter_id = %s AND voter_type = %s",
+            (target_id, voter_id, voter_type),
+        )
+        self._recalculate_vote_counts(target_id, target_type)
+        self._conn.commit()
+        return True
+
+    def get_user_votes(self, voter_id: str, voter_type: str, target_ids: list[str]) -> dict[str, int]:
+        if not target_ids:
+            return {}
+        placeholders = ",".join("%s" for _ in target_ids)
+        cur = self._execute(
+            f"SELECT target_id, value FROM dogpark.votes WHERE voter_id = %s AND voter_type = %s AND target_id IN ({placeholders})",
+            (voter_id, voter_type, *target_ids),
+        )
+        return {r[0]: r[1] for r in cur.fetchall()}
+
     # ------------------------------------------------------------------
     # Moderation
     # ------------------------------------------------------------------
@@ -514,18 +583,31 @@ class PostgresStore:
             "comments": [Comment.model_validate_json(r[0]) for r in comment_rows],
         }
 
-    def get_question_thread(self, question_id: str) -> dict[str, Any] | None:
+    def get_question_thread(self, question_id: str, include_pending: bool = False) -> dict[str, Any] | None:
         q = self.get_question(question_id)
         if q is None:
             return None
 
-        cur = self._execute(
-            "SELECT data FROM dogpark.answers WHERE question_id = %s AND status = 'approved'",
-            (question_id,),
-        )
-        answer_rows = cur.fetchall()
-        answers = [Answer.model_validate_json(r[0]) for r in answer_rows]
-        ranked = rank_answers(answers, q.pinned_answer_id)
+        if include_pending:
+            cur = self._execute(
+                "SELECT data FROM dogpark.answers WHERE question_id = %s AND status IN ('approved', 'pending')",
+                (question_id,),
+            )
+            answer_rows = cur.fetchall()
+            all_answers = [Answer.model_validate_json(r[0]) for r in answer_rows]
+            approved = [a for a in all_answers if a.status == "approved"]
+            pending = [a for a in all_answers if a.status == "pending"]
+            ranked = rank_answers(approved, q.pinned_answer_id) + pending
+        else:
+            cur = self._execute(
+                "SELECT data FROM dogpark.answers WHERE question_id = %s AND status = 'approved'",
+                (question_id,),
+            )
+            answer_rows = cur.fetchall()
+            ranked = rank_answers(
+                [Answer.model_validate_json(r[0]) for r in answer_rows],
+                q.pinned_answer_id,
+            )
 
         cur = self._execute(
             "SELECT data FROM dogpark.comments WHERE parent_id = %s AND parent_type = 'question' AND status = 'approved'",
@@ -544,10 +626,11 @@ class PostgresStore:
             a_comments = [Comment.model_validate_json(r[0]) for r in a_comment_rows]
             answer_threads.append({"answer": answer, "comments": a_comments})
 
-        tag_names = sorted(self._get_question_tag_names(question_id))
+        tag_names = self._get_question_tag_names(question_id)
+
         return {
             "question": q,
-            "tags": tag_names,
+            "tags": [{"name": n} for n in sorted(tag_names)],
             "comments": q_comments,
             "answers": answer_threads,
         }
