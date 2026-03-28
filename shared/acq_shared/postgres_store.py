@@ -15,7 +15,7 @@ import psycopg2
 
 from acq_shared.models import Answer, Comment, EditHistory, Question, Tag, Vote
 from acq_shared.postgres_schema import create_tables
-from acq_shared.scoring import rank_answers, search_content_score, text_relevance_score
+from acq_shared.scoring import rank_answers, search_score, text_relevance_score
 
 
 class PostgresStore:
@@ -652,8 +652,11 @@ class PostgresStore:
             ranked_answers = rank_answers(answers, q.pinned_answer_id)
             best_answer = ranked_answers[0] if ranked_answers else None
 
-            content_score = search_content_score(q, best_answer)
-            final_score = text_rel * (1.0 + content_score)
+            final_score = search_score(
+                text_relevance=text_rel,
+                question=q,
+                best_answer=best_answer,
+            )
 
             scored.append((final_score, question_id))
 

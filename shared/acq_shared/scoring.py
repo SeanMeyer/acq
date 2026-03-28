@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from acq_shared.models import Answer, Question
 
 DEFAULT_HUMAN_VOTE_WEIGHT = 5
@@ -59,6 +61,16 @@ def text_relevance_score(
     return fts_rank + 0.3 * context_bonus
 
 
+def vote_boost(content_score: float) -> float:
+    """Log-damped boost from vote-based content score.
+
+    Returns 0 for unvoted content (no penalty), with diminishing returns
+    as votes accumulate.  Swap this function to change the vote-to-ranking
+    algorithm without touching the rest of the scoring pipeline.
+    """
+    return math.log1p(max(0.0, content_score))
+
+
 def search_score(
     *,
     text_relevance: float,
@@ -66,7 +78,8 @@ def search_score(
     best_answer: Answer | None,
     human_weight: int = DEFAULT_HUMAN_VOTE_WEIGHT,
 ) -> float:
-    return text_relevance * search_content_score(question, best_answer, human_weight)
+    content = search_content_score(question, best_answer, human_weight)
+    return text_relevance * (1.0 + vote_boost(content))
 
 
 def rank_answers(

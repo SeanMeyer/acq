@@ -1,9 +1,12 @@
+import math
+
 from acq_shared.models import Answer, Question
 from acq_shared.scoring import (
     rank_answers,
     search_content_score,
     search_score,
     text_relevance_score,
+    vote_boost,
     weighted_vote_score,
 )
 
@@ -109,8 +112,32 @@ class TestRankAnswers:
         assert ranked[0].id == a2.id
 
 
+class TestVoteBoost:
+    def test_zero_content_score(self):
+        assert vote_boost(0.0) == 0.0
+
+    def test_small_content_score(self):
+        result = vote_boost(2.0)
+        assert result == math.log1p(2.0)
+        assert 1.0 < result < 1.2
+
+    def test_large_content_score(self):
+        result = vote_boost(50.0)
+        assert result == math.log1p(50.0)
+        assert 3.9 < result < 4.0
+
+    def test_negative_content_score_floored(self):
+        assert vote_boost(-5.0) == 0.0
+
+    def test_diminishing_returns(self):
+        # Equal absolute increments yield smaller boost gains
+        first_jump = vote_boost(10.0) - vote_boost(0.0)
+        second_jump = vote_boost(20.0) - vote_boost(10.0)
+        assert first_jump > second_jump
+
+
 class TestSearchScore:
-    def test_combines_relevance_and_content(self):
+    def test_combines_relevance_and_boost(self):
         q = Question(
             title="T",
             body="B",
@@ -118,9 +145,72 @@ class TestSearchScore:
             created_by_type="agent",
             agent_upvotes=10,
         )
+        content = 0.3 * 10  # search_content_score with no answer
+        expected = 0.8 * (1.0 + math.log1p(content))
         score = search_score(text_relevance=0.8, question=q, best_answer=None)
-        expected = 0.8 * (0.3 * 10)  # 0.8 * 3.0 = 2.4
         assert score == expected
+
+    def test_zero_votes_gives_nonzero_score(self):
+        q = Question(
+            title="T",
+            body="B",
+            created_by="x",
+            created_by_type="agent",
+        )
+        score = search_score(text_relevance=0.9, question=q, best_answer=None)
+        assert score == 0.9  # 0.9 * (1.0 + 0) = 0.9
+
+    def test_voted_ranks_above_unvoted(self):
+        q_unvoted = Question(
+            title="T",
+            body="B",
+            created_by="x",
+            created_by_type="agent",
+        )
+        q_voted = Question(
+            title="T",
+            body="B",
+            created_by="x",
+            created_by_type="agent",
+            agent_upvotes=5,
+        )
+        score_unvoted = search_score(
+            text_relevance=0.9,
+            question=q_unvoted,
+            best_answer=None,
+        )
+        score_voted = search_score(
+            text_relevance=0.9,
+            question=q_voted,
+            best_answer=None,
+        )
+        assert score_voted > score_unvoted
+
+    def test_high_text_relevance_beats_moderate_votes(self):
+        q_relevant = Question(
+            title="T",
+            body="B",
+            created_by="x",
+            created_by_type="agent",
+        )
+        q_voted = Question(
+            title="T",
+            body="B",
+            created_by="x",
+            created_by_type="agent",
+            agent_upvotes=5,
+        )
+        score_relevant = search_score(
+            text_relevance=0.9,
+            question=q_relevant,
+            best_answer=None,
+        )
+        score_voted = search_score(
+            text_relevance=0.2,
+            question=q_voted,
+            best_answer=None,
+        )
+        assert score_relevant > score_voted
 
     def test_language_framework_bonus(self):
         score_no_match = text_relevance_score(
