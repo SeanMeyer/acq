@@ -130,7 +130,7 @@ ACQ_JWT_SECRET=dev-secret ACQ_API_KEYS='{"dev-key":"dev-agent"}' uv run acq-team
 
 ### Deploying the Team API
 
-The team API runs on [Howler](https://howler.us1.staging.dog/) with [DogPark](https://datadoghq.atlassian.net/wiki/spaces/ORGSTORE/pages/3681321565/DogPark) Postgres. See `docs/specs/2026-03-26-accrue-howler-deployment-design.md` for the full deployment spec.
+The team API and review UI are bundled into a single image and deployed to [Howler](https://howler.us1.staging.dog/) with [DogPark](https://datadoghq.atlassian.net/wiki/spaces/ORGSTORE/pages/3681321565/DogPark) Postgres. See [DEVELOPMENT.md](DEVELOPMENT.md#deploying-to-howler) for deployment steps.
 
 ## Status
 

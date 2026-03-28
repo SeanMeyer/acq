@@ -14,7 +14,7 @@
 | `shared` | Shared models, scoring, schema | Python, Pydantic |
 | `plugins/acq/server` | MCP server (plugin) | Python, FastMCP |
 | `team-api` | Team Q&A API | Python, FastAPI |
-| `team-ui` | Review dashboard | TypeScript, React, Vite |
+| `team-ui` | Review dashboard | TypeScript, SvelteKit, Tailwind |
 
 ## Initial Setup
 
@@ -67,6 +67,48 @@ Add to `~/.claude/settings.json` under the `env` key:
   }
 }
 ```
+
+## Deploying to Howler
+
+The team API and review UI are bundled into a single Docker image and deployed to [Howler](https://howler.us1.staging.dog/) (service ID 222). The Dockerfile uses a multi-stage build: Node builds the SvelteKit UI, then the Python image copies in the static assets and serves them via FastAPI.
+
+### Secrets
+
+These are configured via the Howler UI or API at `/api/services/222/secrets/`:
+
+| Secret | Purpose |
+|--------|---------|
+| `ACQ_JWT_SECRET` | Signs session JWTs |
+| `ACQ_API_KEYS` | JSON map of API key → agent name for MCP clients |
+| `ORGSTORE_CLUSTER` | DogPark cluster name (enables Postgres) |
+| `DB_NAME` | DogPark database name |
+| `DB_USER` | DogPark database role |
+| `DB_HOST` | pg-proxy host (auto-derived if not set) |
+| `GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
+
+### Deploy
+
+Build a tarball with the Dockerfile at root and deploy:
+
+```bash
+tmpdir=$(mktemp -d)
+cp team-api/Dockerfile "$tmpdir/Dockerfile"
+cp -r shared team-api team-ui "$tmpdir/"
+tar czf /tmp/acq-deploy.tar.gz -C "$tmpdir" .
+curl -X POST "https://howler.us1.staging.dog/api/services/222/builds/" \
+  -F "build-context.tgz=@/tmp/acq-deploy.tar.gz"
+```
+
+The response streams build and deploy logs. The field name **must** be `build-context.tgz` — any other name returns a silent 500.
+
+The service is live at `https://acq-team-api.us1.staging.dog/` once the deploy finishes. Fabric destinations and routing domains are already configured.
+
+### Authentication
+
+Production uses GitHub OAuth — users click "Sign in with GitHub" and their GitHub username becomes their identity. The GitHub OAuth app is registered at [github.com/settings/applications](https://github.com/settings/applications) with callback URL `https://acq-team-api.us1.staging.dog/auth/callback`.
+
+Local dev (docker-compose) still uses username/password via `make seed-users`.
 
 ## Docker Compose
 
