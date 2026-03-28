@@ -19,6 +19,9 @@ help:
 	@echo "  make test      Run all tests"
 	@echo "  make lint      Format, lint, and type-check all components"
 	@echo ""
+	@echo "Deploy:"
+	@echo "  make deploy    Deploy to Howler (staging)"
+	@echo ""
 	@echo "Docker Compose:"
 	@echo "  make compose-up                              Build and start services"
 	@echo "  make compose-down                            Stop services"
@@ -77,6 +80,21 @@ ifndef PASS
 	$(error PASS is required. Usage: make seed-users USER=peter PASS=changeme)
 endif
 	docker compose exec acq-team-api /app/team-api/.venv/bin/python /app/scripts/seed-users.py --username "$(USER)" --password "$(PASS)"
+
+HOWLER_SERVICE_ID ?= 222
+HOWLER_URL ?= https://howler.us1.staging.dog
+
+.PHONY: deploy
+deploy:
+	@tmpdir=$$(mktemp -d) && \
+	cp team-api/Dockerfile "$$tmpdir/Dockerfile" && \
+	cp -r shared team-api team-ui "$$tmpdir/" && \
+	tar czf /tmp/acq-deploy.tar.gz -C "$$tmpdir" . && \
+	rm -rf "$$tmpdir" && \
+	echo "Deploying to Howler (service $(HOWLER_SERVICE_ID))..." && \
+	curl -X POST "$(HOWLER_URL)/api/services/$(HOWLER_SERVICE_ID)/builds/" \
+		-F "build-context.tgz=@/tmp/acq-deploy.tar.gz" && \
+	rm -f /tmp/acq-deploy.tar.gz
 
 .PHONY: dev-api
 dev-api:
