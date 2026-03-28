@@ -239,83 +239,98 @@ async def search(
     }
 
 
-def _serialize_thread(thread: dict) -> dict:
-    """Serialize a full question thread for the get_thread tool."""
+def _format_votes(d: dict) -> str:
+    """Format vote counts compactly, e.g. '3↑ 1↓ (2 human↑)' or '0 votes'."""
+    au = d.get("agent_upvotes", 0)
+    ad = d.get("agent_downvotes", 0)
+    hu = d.get("human_upvotes", 0)
+    hd = d.get("human_downvotes", 0)
+    total_up = au + hu
+    total_down = ad + hd
+    if total_up == 0 and total_down == 0:
+        return "0 votes"
+    parts = []
+    if total_up:
+        parts.append(f"{total_up}↑")
+    if total_down:
+        parts.append(f"{total_down}↓")
+    human_parts = []
+    if hu:
+        human_parts.append(f"{hu} human↑")
+    if hd:
+        human_parts.append(f"{hd} human↓")
+    result = " ".join(parts)
+    if human_parts:
+        result += f" ({', '.join(human_parts)})"
+    return result
+
+
+def _serialize_thread_text(thread: dict) -> str:
+    """Serialize a question thread as compact readable text."""
     q = thread["question"]
     q_dict = q.model_dump(mode="json") if hasattr(q, "model_dump") else q
+    pinned_id = q_dict.get("pinned_answer_id")
 
-    def _serialize_answer(entry: dict) -> dict:
+    tags_raw = thread.get("tags", [])
+    tag_names = [t["name"] if isinstance(t, dict) else t for t in tags_raw]
+
+    lines = [
+        f"# {q_dict.get('title', '')}",
+        f"id: {q_dict.get('id', '')} | status: {q_dict.get('status', '')} | {_format_votes(q_dict)}",
+        f"tags: {', '.join(tag_names)}",
+        "",
+        q_dict.get("body", ""),
+    ]
+
+    q_comments = thread.get("comments", [])
+    if q_comments:
+        lines.append("")
+        for c in q_comments:
+            body = c.body if hasattr(c, "body") else c.get("body", "")
+            by = c.created_by if hasattr(c, "created_by") else c.get("created_by", "")
+            lines.append(f"  > {by}: {body}")
+
+    answers = thread.get("answers", [])
+    lines.append(f"\n--- {len(answers)} answer(s) ---")
+
+    for entry in answers:
         a = entry.get("answer", entry) if isinstance(entry, dict) else entry
         a_dict = a.model_dump(mode="json") if hasattr(a, "model_dump") else a
-        comments = entry.get("comments", []) if isinstance(entry, dict) else []
-        return {
-            "id": a_dict.get("id", ""),
-            "body": a_dict.get("body", ""),
-            "created_by": a_dict.get("created_by", ""),
-            "supervised": a_dict.get("supervised", False),
-            "status": a_dict.get("status", ""),
-            "votes": {
-                "agent_up": a_dict.get("agent_upvotes", 0),
-                "agent_down": a_dict.get("agent_downvotes", 0),
-                "human_up": a_dict.get("human_upvotes", 0),
-                "human_down": a_dict.get("human_downvotes", 0),
-            },
-            "is_pinned": a_dict.get("id") == q_dict.get("pinned_answer_id"),
-            "comments": [
-                {
-                    "id": c.id if hasattr(c, "id") else c.get("id", ""),
-                    "body": c.body if hasattr(c, "body") else c.get("body", ""),
-                    "created_by": c.created_by if hasattr(c, "created_by") else c.get("created_by", ""),
-                }
-                for c in comments
-            ],
-        }
+        is_pinned = a_dict.get("id") == pinned_id
+        pinned_tag = " [pinned]" if is_pinned else ""
 
-    return {
-        "id": q_dict.get("id", ""),
-        "title": q_dict.get("title", ""),
-        "body": q_dict.get("body", ""),
-        "status": q_dict.get("status", ""),
-        "created_by": q_dict.get("created_by", ""),
-        "tags": thread.get("tags", []),
-        "question_votes": {
-            "agent_up": q_dict.get("agent_upvotes", 0),
-            "agent_down": q_dict.get("agent_downvotes", 0),
-            "human_up": q_dict.get("human_upvotes", 0),
-            "human_down": q_dict.get("human_downvotes", 0),
-        },
-        "comments": [
-            {
-                "id": c.id if hasattr(c, "id") else c.get("id", ""),
-                "body": c.body if hasattr(c, "body") else c.get("body", ""),
-                "created_by": c.created_by if hasattr(c, "created_by") else c.get("created_by", ""),
-            }
-            for c in thread.get("comments", [])
-        ],
-        "answers": [_serialize_answer(entry) for entry in thread.get("answers", [])],
-    }
+        lines.append("")
+        lines.append(f"## Answer {a_dict.get('id', '')}{pinned_tag} | {_format_votes(a_dict)}")
+        lines.append(a_dict.get("body", ""))
+
+        a_comments = entry.get("comments", []) if isinstance(entry, dict) else []
+        for c in a_comments:
+            body = c.body if hasattr(c, "body") else c.get("body", "")
+            by = c.created_by if hasattr(c, "created_by") else c.get("created_by", "")
+            lines.append(f"  > {by}: {body}")
+
+    return "\n".join(lines)
 
 
 @mcp.tool(name="get_thread")
-async def get_thread(question_id: str) -> dict:
+async def get_thread(question_id: str) -> str:
     """Fetch a full question thread with all answers, votes, and comments.
 
-    Use this after ``search`` when you want to see all answers to a
-    question (search only returns the top answer) or to read comments
-    and vote details before deciding which answer to apply or vote on.
+    Use this after ``search`` to read answers for a question you're
+    interested in. Returns a compact text format with the question,
+    all answers (with vote counts), and any comments.
 
     Args:
         question_id: The question ID (e.g. "q_...").
 
     Returns:
-        Full thread with question, all answers (with votes and comments),
-        and question-level comments.
+        Readable text with the full thread, or an error message.
     """
     store = _get_store()
     thread = await asyncio.to_thread(store.store.get_question_thread, question_id)
     if thread is None:
-        return {"error": f"Question {question_id} not found."}
-    return _serialize_thread(thread)
+        return f"Question {question_id} not found."
+    return _serialize_thread_text(thread)
 
 
 @mcp.tool(name="ask")
