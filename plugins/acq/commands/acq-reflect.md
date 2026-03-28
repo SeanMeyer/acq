@@ -9,7 +9,25 @@ Retrospectively mine this session for shareable Q&A pairs and submit approved ca
 
 ## Instructions
 
-### Step 1 — Summarise the session context
+### Step 1 — Vote on acq content you used
+
+Review the session for any acq answers you consumed via `get_thread`. For each one, determine what you can now say about it based on the work you did:
+
+- **Verified correct** — you used the answer and your work confirmed it (the file path existed, the command worked, the behaviour matched). `vote +1` on the answer, and `vote +1` on the question.
+- **Verified wrong or outdated** — you tried the answer and it was incorrect. Add a `comment` on the answer explaining what's actually correct now.
+- **Never verified** — you read the answer but never tested it through your work. Do not vote. No vote is better than a false signal.
+
+Present a summary to the user:
+
+```
+## acq votes from this session
+
+- {question_title}: {voted/commented/skipped} — {reason}
+```
+
+If no acq results were consumed during the session, skip this step.
+
+### Step 2 — Summarise the session context
 
 Before calling any tool, construct a compact session summary covering:
 
@@ -23,7 +41,7 @@ Before calling any tool, construct a compact session summary covering:
 
 The summary should be dense prose — enough for a reader with no prior context to reconstruct the session's technical events. Omit routine file edits, standard library calls, and anything already well-documented.
 
-### Step 2 — Call `reflect`
+### Step 3 — Call `reflect`
 
 Call the `reflect` MCP tool, passing the session summary as `session_context`.
 
@@ -35,7 +53,7 @@ The tool may return a `candidates` list or may return a message directing you to
 
 If the tool call fails (MCP server unavailable, timeout, or any error), note this briefly to the user and continue to Step 3 using local reasoning only — the reflect flow does not require the tool to succeed.
 
-### Step 3 — Identify candidate Q&A pairs
+### Step 4 — Identify candidate Q&A pairs
 
 Using your own reasoning, scan the session for insights worth sharing. Use any candidates returned by `reflect` as a starting point; if none were returned, identify candidates independently.
 
@@ -69,9 +87,9 @@ For each candidate, draft:
 - **tags** — two to five lowercase tags. Be generous with tags — include tool names, service names, and related terms. More tags = better search.
 - Optionally: **language**, **framework**, **pattern** if relevant.
 
-If the session contained no events meeting the above criteria, skip Steps 4–6 and follow the "no candidates" instruction in Step 7.
+If the session contained no events meeting the above criteria, skip Steps 5–7 and follow the "no candidates" instruction in Step 8.
 
-### Step 4 — Present candidates to the user
+### Step 5 — Present candidates to the user
 
 Open with:
 
@@ -96,11 +114,11 @@ Reply with a number to approve, "skip {N}" to discard, or "edit {N}" to revise.
 You can also reply "all" to approve everything, or "none" to discard everything.
 ```
 
-### Step 5 — Handle edits
+### Step 6 — Handle edits
 
 If the user requests an edit, show the current field values and ask which field to change. Apply the changes and confirm the updated candidate before submitting.
 
-### Step 6 — Submit approved candidates
+### Step 7 — Submit approved candidates
 
 For each approved candidate, call `ask` then `answer`:
 
@@ -133,7 +151,7 @@ Confirm each inline after the calls:
 Stored: {question_id} — "{title}"
 ```
 
-### Step 7 — Final summary
+### Step 8 — Final summary
 
 ```
 ## Session Reflect Complete

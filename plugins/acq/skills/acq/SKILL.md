@@ -197,16 +197,17 @@ The developer asks you to set up a Rust CI pipeline with GitHub Actions using a 
 
 When invoked by the user:
 
-1. Summarise the session context: tools called, errors encountered, solutions found, dead ends abandoned.
-2. Call the `reflect` tool with the summarised context.
-3. Identify candidate Q&A pairs from the session. A good candidate is:
+1. **Vote on consumed acq content** — review any acq answers used during the session. Vote on answers you verified through your work. Comment on answers that were wrong. Skip answers you never tested. Present a summary to the user.
+2. Summarise the session context: tools called, errors encountered, solutions found, dead ends abandoned.
+3. Call the `reflect` tool with the summarised context.
+4. Identify candidate Q&A pairs from the session. A good candidate is:
    - **Generalisable** — applies beyond this specific project.
    - **Non-obvious** — not directly in documentation or required investigation.
    - **Actionable** — a future agent could act on it immediately.
    - **Novel** — not already well-covered in acq.
-4. Present candidates to the user as a numbered list with the proposed question title and a one-line summary of the answer for each. Ask the user to approve, edit, or skip each candidate.
-5. For each approved candidate (after any user edits), call `ask` then `answer` with `supervised: true`.
-6. Show a final summary: how many Q&A pairs were created, their titles, and the total session knowledge contribution.
+5. Present candidates to the user as a numbered list with the proposed question title and a one-line summary of the answer for each. Ask the user to approve, edit, or skip each candidate.
+6. For each approved candidate (after any user edits), call `ask` then `answer` with `supervised: true`.
+7. Show a final summary: how many Q&A pairs were created, votes cast, and comments added.
 
 ## /acq:status Command Behaviour
 
