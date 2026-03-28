@@ -8,15 +8,12 @@
             "command": "uv sync --directory \"${CLAUDE_PLUGIN_ROOT}/server\" --quiet"
           }
         ]
-      }
-    ],
-    "PreToolUse": [
+      },
       {
-        "matcher": "Agent",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/acq-remind.sh\""
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/acq-session-context.sh\""
           }
         ]
       }
