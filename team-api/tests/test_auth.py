@@ -132,3 +132,27 @@ class TestAuthMe:
     def test_me_with_invalid_token(self, client: TestClient) -> None:
         resp = client.get("/auth/me", headers={"Authorization": "Bearer invalid"})
         assert resp.status_code == 401
+
+
+def test_agent_key_from_database(client, monkeypatch):
+    """Agent key stored in DB should authenticate without ACQ_API_KEYS env var."""
+    monkeypatch.delenv("ACQ_API_KEYS", raising=False)
+    from team_api.app import _get_store
+
+    store = _get_store()
+    store.create_agent_key("acq_dbkey123", "dbuser-agent", "dbuser")
+
+    resp = client.get("/status", headers={"X-API-Key": "acq_dbkey123"})
+    assert resp.status_code == 200
+
+
+def test_db_key_takes_precedence_over_env(client, monkeypatch):
+    """DB key should be checked before env var."""
+    monkeypatch.setenv("ACQ_API_KEYS", json.dumps({"acq_dbkey123": "env-agent"}))
+    from team_api.app import _get_store
+
+    store = _get_store()
+    store.create_agent_key("acq_dbkey123", "db-agent", "dbuser")
+
+    resp = client.get("/status", headers={"X-API-Key": "acq_dbkey123"})
+    assert resp.status_code == 200

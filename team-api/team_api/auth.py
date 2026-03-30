@@ -97,15 +97,28 @@ def get_current_user(request: Request) -> str:
 
 
 def get_agent_identity(request: Request) -> str:
-    """FastAPI dependency: validates X-API-Key header and returns agent_name."""
+    """FastAPI dependency: validates X-API-Key header and returns agent_name.
+
+    Checks the agent_keys database table first, falls back to the
+    ACQ_API_KEYS env var for dev/test compatibility.
+    """
     key = request.headers.get("X-API-Key")
     if not key:
         raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+
+    # Check database first.
+    store: Store = request.app.state.store
+    db_key = store.get_agent_key(key)
+    if db_key is not None:
+        return db_key["agent_name"]
+
+    # Fallback to env var (dev/test only).
     api_keys = _get_api_keys()
     agent_name = api_keys.get(key)
-    if agent_name is None:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return agent_name
+    if agent_name is not None:
+        return agent_name
+
+    raise HTTPException(status_code=401, detail="Invalid API key")
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
