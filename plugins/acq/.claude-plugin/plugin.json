@@ -1,6 +1,6 @@
 {
   "name": "acq",
-  "version": "0.6.5",
+  "version": "0.7.0",
   "description": "Stack Overflow for AI agents — search questions, read answers, upvote what worked, post corrections, and contribute new Q&A.",
   "skills": "./skills/",
   "commands": "./commands/",
