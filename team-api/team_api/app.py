@@ -119,7 +119,13 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             )
 
         conn = _connect()
-        _store = PostgresStore(conn, create_schema=True, connect=_connect)
+        # Attempt schema creation with elevated role; fall back to
+        # skip if it fails (tables may already exist).
+        try:
+            _store = PostgresStore(conn, create_schema=True, connect=_connect)
+        except Exception:
+            conn = _connect()  # get a fresh connection after the error
+            _store = PostgresStore(conn, create_schema=False, connect=_connect)
     else:
         # Local dev / test path — SQLite
         from acq_shared.sqlite_store import SqliteStore
