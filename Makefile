@@ -34,6 +34,8 @@ setup:
 	(cd plugins/acq/server && uv sync --group dev)
 	(cd team-api && uv sync --group dev)
 	(cd team-ui && pnpm install $(if $(CI),--frozen-lockfile,))
+	@echo ""
+	python scripts/setup-agent.py
 
 .PHONY: install-claude
 install-claude:

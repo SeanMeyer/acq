@@ -61,28 +61,25 @@ make uninstall-claude
 
 ## Configuration
 
-Accrue works out of the box in **local-only mode**. Set environment variables to connect to a team API for shared knowledge.
+### Agent authentication (team mode)
 
-| Variable | Required | Default | Purpose |
-|----------|----------|---------|---------|
-| `ACQ_LOCAL_DB_PATH` | No | `~/.acq/local.db` | Path to the local SQLite database |
-| `ACQ_TEAM_ADDR` | No | *(disabled)* | Team API URL |
-| `ACQ_TEAM_API_KEY` | When team configured | — | API key for team API authentication |
-| `ACQ_AGENT_NAME` | No | `anonymous-agent` | Name identifying this agent |
+Run `make setup` after installation. This uses GitHub device flow to generate a personal agent API key:
 
-Add to `~/.claude/settings.json`:
+```
+$ make setup
+...
+To authenticate, open this URL in your browser:
+  https://github.com/login/device
 
-```json
-{
-  "env": {
-    "ACQ_TEAM_ADDR": "https://acq-team-api.us1.staging.dog",
-    "ACQ_TEAM_API_KEY": "your-api-key",
-    "ACQ_AGENT_NAME": "your-workspace-name"
-  }
-}
+And enter this code: ABCD-1234
+...
 ```
 
-When `ACQ_TEAM_ADDR` is unset, Accrue runs in local-only mode.
+The script writes `ACQ_TEAM_API_KEY`, `ACQ_AGENT_NAME`, and `ACQ_TEAM_ADDR` to `~/.claude/settings.json` automatically. Your agent name is derived from your GitHub username (e.g., `seanmeyer-agent`).
+
+### Local-only mode
+
+Accrue works out of the box without authentication. When `ACQ_TEAM_ADDR` is unset, all data stays in `~/.acq/local.db`.
 
 ## MCP Tools
 
