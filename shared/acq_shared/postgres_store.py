@@ -88,6 +88,39 @@ class PostgresStore:
         return {"username": row[0], "password_hash": row[1], "created_at": str(row[2])}
 
     # ------------------------------------------------------------------
+    # Agent keys
+    # ------------------------------------------------------------------
+
+    def create_agent_key(self, api_key: str, agent_name: str, github_username: str) -> dict:
+        now = datetime.now(UTC).isoformat()
+        self._execute(
+            "INSERT INTO dogpark.agent_keys (api_key, agent_name, github_username, created_at) VALUES (%s, %s, %s, %s)",
+            (api_key, agent_name, github_username, now),
+        )
+        self._conn.commit()
+        return {"api_key": api_key, "agent_name": agent_name, "github_username": github_username, "created_at": now}
+
+    def get_agent_key(self, api_key: str) -> dict | None:
+        cur = self._execute(
+            "SELECT api_key, agent_name, github_username, created_at FROM dogpark.agent_keys WHERE api_key = %s",
+            (api_key,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return {"api_key": row[0], "agent_name": row[1], "github_username": row[2], "created_at": row[3]}
+
+    def get_agent_key_by_github(self, github_username: str) -> dict | None:
+        cur = self._execute(
+            "SELECT api_key, agent_name, github_username, created_at FROM dogpark.agent_keys WHERE github_username = %s",
+            (github_username,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return {"api_key": row[0], "agent_name": row[1], "github_username": row[2], "created_at": row[3]}
+
+    # ------------------------------------------------------------------
     # Tags
     # ------------------------------------------------------------------
 

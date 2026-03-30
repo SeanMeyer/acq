@@ -6,7 +6,7 @@ and tsvector columns with GIN indexes for full-text search.
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _DDL = """
 CREATE SCHEMA IF NOT EXISTS dogpark;
@@ -83,6 +83,14 @@ CREATE TABLE IF NOT EXISTS dogpark.users (
     id SERIAL PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dogpark.agent_keys (
+    id SERIAL PRIMARY KEY,
+    api_key TEXT NOT NULL UNIQUE,
+    agent_name TEXT NOT NULL UNIQUE,
+    github_username TEXT NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL
 );
 
