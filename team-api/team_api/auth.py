@@ -107,11 +107,14 @@ def get_agent_identity(request: Request) -> str:
     if not key:
         raise HTTPException(status_code=401, detail="Missing X-API-Key header")
 
-    # Check database first.
+    # Check database first (may fail if agent_keys table doesn't exist yet).
     store: Store = request.app.state.store
-    db_key = store.get_agent_key(key)
-    if db_key is not None:
-        return db_key["agent_name"]
+    try:
+        db_key = store.get_agent_key(key)
+        if db_key is not None:
+            return db_key["agent_name"]
+    except Exception:
+        pass  # table may not exist; fall through to env var
 
     # Fallback to env var (dev/test only).
     api_keys = _get_api_keys()
