@@ -6,6 +6,7 @@ import json
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import jwt
 import pytest
@@ -156,3 +157,55 @@ def test_db_key_takes_precedence_over_env(client, monkeypatch):
 
     resp = client.get("/status", headers={"X-API-Key": "acq_dbkey123"})
     assert resp.status_code == 200
+
+
+def test_create_agent_key_success(client, monkeypatch):
+    """POST /auth/agent-key with valid GitHub token creates a key."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"login": "testuser", "name": "Test User"}
+
+    with patch("team_api.auth.http_requests.get", return_value=mock_resp):
+        resp = client.post(
+            "/auth/agent-key",
+            headers={"Authorization": "Bearer ghp_fake_token"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["agent_name"] == "testuser-agent"
+    assert data["github_username"] == "testuser"
+    assert data["api_key"].startswith("acq_")
+
+
+def test_create_agent_key_returns_existing(client, monkeypatch):
+    """If user already has a key, return the existing one."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"login": "testuser", "name": "Test User"}
+
+    with patch("team_api.auth.http_requests.get", return_value=mock_resp):
+        resp1 = client.post(
+            "/auth/agent-key",
+            headers={"Authorization": "Bearer ghp_fake_token"},
+        )
+        resp2 = client.post(
+            "/auth/agent-key",
+            headers={"Authorization": "Bearer ghp_fake_token"},
+        )
+
+    assert resp1.json()["api_key"] == resp2.json()["api_key"]
+
+
+def test_create_agent_key_invalid_github_token(client):
+    """POST /auth/agent-key with invalid GitHub token returns 401."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 401
+
+    with patch("team_api.auth.http_requests.get", return_value=mock_resp):
+        resp = client.post(
+            "/auth/agent-key",
+            headers={"Authorization": "Bearer ghp_bad_token"},
+        )
+
+    assert resp.status_code == 401

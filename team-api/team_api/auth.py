@@ -2,6 +2,7 @@
 
 import json
 import os
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -226,3 +227,41 @@ def github_callback(
     # Issue ACQ JWT
     token = create_token(username, secret=_get_jwt_secret())
     return RedirectResponse(f"/login?token={token}")
+
+
+@router.post("/agent-key")
+def create_agent_key(
+    request: Request,
+    store: Store = Depends(get_store),
+) -> dict:
+    """Exchange a GitHub access token for a persistent agent API key.
+
+    Uses the GitHub token to identify the user, then returns an existing
+    key or generates a new one. Device flow clients call this after
+    completing the OAuth dance.
+    """
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    github_token = auth_header.removeprefix("Bearer ")
+
+    # Validate GitHub token and get user info.
+    gh_resp = http_requests.get(
+        GITHUB_USER_URL,
+        headers={"Authorization": f"Bearer {github_token}", "Accept": "application/json"},
+        timeout=10,
+    )
+    if gh_resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid GitHub token")
+    gh_user = gh_resp.json()
+    github_username = gh_user["login"]
+
+    # Return existing key if user already has one.
+    existing = store.get_agent_key_by_github(github_username)
+    if existing is not None:
+        return existing
+
+    # Generate new key.
+    api_key = f"acq_{secrets.token_hex(24)}"
+    agent_name = f"{github_username}-agent"
+    return store.create_agent_key(api_key, agent_name, github_username)
