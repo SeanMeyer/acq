@@ -865,3 +865,29 @@ class TestListQuestions:
         items, total = store.list_questions(status="open", tag="python")
         assert total == 1
         assert items[0]["question"]["id"] == q1.id
+
+
+class TestAgentKeys:
+    def test_create_and_get_agent_key(self, store: SqliteStore) -> None:
+        key = store.create_agent_key("acq_test123", "alice-agent", "alice")
+        assert key["api_key"] == "acq_test123"
+        assert key["agent_name"] == "alice-agent"
+        assert key["github_username"] == "alice"
+
+        fetched = store.get_agent_key("acq_test123")
+        assert fetched is not None
+        assert fetched["agent_name"] == "alice-agent"
+
+    def test_get_nonexistent_agent_key(self, store: SqliteStore) -> None:
+        assert store.get_agent_key("acq_doesnotexist") is None
+
+    def test_get_existing_key_by_github_username(self, store: SqliteStore) -> None:
+        store.create_agent_key("acq_test456", "bob-agent", "bob")
+        existing = store.get_agent_key_by_github("bob")
+        assert existing is not None
+        assert existing["api_key"] == "acq_test456"
+
+    def test_duplicate_github_username_raises(self, store: SqliteStore) -> None:
+        store.create_agent_key("acq_key1", "alice-agent", "alice")
+        with pytest.raises(Exception):
+            store.create_agent_key("acq_key2", "alice-agent2", "alice")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS questions (
@@ -82,6 +82,14 @@ CREATE TABLE IF NOT EXISTS pending_drain (
     entity_id TEXT PRIMARY KEY,
     entity_type TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS agent_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key TEXT NOT NULL UNIQUE,
+    agent_name TEXT NOT NULL UNIQUE,
+    github_username TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(

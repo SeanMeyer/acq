@@ -977,6 +977,37 @@ class SqliteStore:
         self._conn.execute("DELETE FROM pending_drain WHERE entity_id = ?", (entity_id,))
         self._conn.commit()
 
+    # ------------------------------------------------------------------
+    # Agent keys
+    # ------------------------------------------------------------------
+
+    def create_agent_key(self, api_key: str, agent_name: str, github_username: str) -> dict:
+        now = datetime.now(UTC).isoformat()
+        self._conn.execute(
+            "INSERT INTO agent_keys (api_key, agent_name, github_username, created_at) VALUES (?, ?, ?, ?)",
+            (api_key, agent_name, github_username, now),
+        )
+        self._conn.commit()
+        return {"api_key": api_key, "agent_name": agent_name, "github_username": github_username, "created_at": now}
+
+    def get_agent_key(self, api_key: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT api_key, agent_name, github_username, created_at FROM agent_keys WHERE api_key = ?",
+            (api_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"api_key": row[0], "agent_name": row[1], "github_username": row[2], "created_at": row[3]}
+
+    def get_agent_key_by_github(self, github_username: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT api_key, agent_name, github_username, created_at FROM agent_keys WHERE github_username = ?",
+            (github_username,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"api_key": row[0], "agent_name": row[1], "github_username": row[2], "created_at": row[3]}
+
     def close(self) -> None:
         self._conn.close()
 
