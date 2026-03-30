@@ -107,8 +107,15 @@ def create_tables(conn) -> None:
     """Execute DDL to create the dogpark schema and all tables.
 
     *conn* must be a psycopg2 connection (or compatible).
+    On DogPark, the default role lacks CREATE permission. If
+    ``sp_set_role_dbowner()`` exists (created by the PG Schema Manager
+    init migration), call it first to elevate to the DB owner role.
     """
     cur = conn.cursor()
+    try:
+        cur.execute("CALL sp_set_role_dbowner();")
+    except Exception:
+        conn.rollback()  # stored proc may not exist (local dev / tests)
     cur.execute(_DDL)
 
     cur.execute("SELECT version FROM dogpark.schema_version")

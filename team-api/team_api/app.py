@@ -119,9 +119,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             )
 
         conn = _connect()
-        # Tables already created via DogPark toolbox — skip CREATE TABLE
-        # (the dev_db_acq user only has USAGE, not CREATE on dogpark schema)
-        _store = PostgresStore(conn, create_schema=False, connect=_connect)
+        _store = PostgresStore(conn, create_schema=True, connect=_connect)
     else:
         # Local dev / test path — SQLite
         from acq_shared.sqlite_store import SqliteStore
