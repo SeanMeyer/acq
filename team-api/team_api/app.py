@@ -119,31 +119,9 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             )
 
         conn = _connect()
+        # DogPark roles lack CREATE permission — tables must be created
+        # manually via the toolbox with -b admin. See DEVELOPMENT.md.
         _store = PostgresStore(conn, create_schema=False, connect=_connect)
-
-        # Ensure new tables exist. The default DogPark role lacks
-        # CREATE permission, so elevate via sp_set_role_dbowner()
-        # (created by PG Schema Manager) before running DDL.
-        try:
-            cur = conn.cursor()
-            cur.execute("SAVEPOINT ensure_tables;")
-            cur.execute("CALL sp_set_role_dbowner();")
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS dogpark.agent_keys (
-                    id SERIAL PRIMARY KEY,
-                    api_key TEXT NOT NULL UNIQUE,
-                    agent_name TEXT NOT NULL UNIQUE,
-                    github_username TEXT NOT NULL UNIQUE,
-                    created_at TIMESTAMPTZ NOT NULL
-                );
-            """)
-            cur.execute("RELEASE SAVEPOINT ensure_tables;")
-            conn.commit()
-        except Exception:
-            try:
-                cur.execute("ROLLBACK TO SAVEPOINT ensure_tables;")
-            except Exception:
-                pass  # connection may be in a bad state
     else:
         # Local dev / test path — SQLite
         from acq_shared.sqlite_store import SqliteStore

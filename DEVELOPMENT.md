@@ -53,11 +53,14 @@ For isolated component testing outside Docker, use `make dev-api` (team API) and
 
 ## Agent Configuration
 
-To point your agent at a local team API instance, set `ACQ_TEAM_ADDR` and `ACQ_TEAM_API_KEY`.
+### Production (team API)
 
-### Claude Code
+Run `make setup` — it installs dependencies and runs `scripts/setup-agent.py` which
+authenticates via GitHub device flow and writes credentials to `~/.claude/settings.json`.
 
-Add to `~/.claude/settings.json` under the `env` key:
+### Local dev
+
+To point your agent at a local team API instance:
 
 ```json
 {
@@ -79,13 +82,43 @@ These are configured via the Howler UI or API at `/api/services/222/secrets/`:
 | Secret | Purpose |
 |--------|---------|
 | `ACQ_JWT_SECRET` | Signs session JWTs |
-| `ACQ_API_KEYS` | JSON map of API key → agent name for MCP clients |
-| `ORGSTORE_CLUSTER` | DogPark cluster name (enables Postgres) |
-| `DB_NAME` | DogPark database name |
-| `DB_USER` | DogPark database role |
+| `ACQ_API_KEYS` | JSON map of static API key → agent name (dev/test fallback only) |
+| `ORGSTORE_CLUSTER` | DogPark cluster name (`dogpark`) — enables Postgres |
+| `DB_NAME` | DogPark database name (`dev_db_acq`) |
+| `DB_USER` | DogPark database role (`dev_db_acq`) |
 | `DB_HOST` | pg-proxy host (auto-derived if not set) |
 | `GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
+
+### DogPark Schema Migrations
+
+The team API uses a DogPark developer database (`dev_db_acq` on the `dogpark` cluster).
+DogPark's default roles lack CREATE permission, so DDL changes must be run via the
+admin bypass role in the toolbox. **Do not use `orgstore toolbox psql`** — it connects
+as the default role which cannot create tables.
+
+To run DDL (from a machine with kubectl access — not workspaces):
+
+```bash
+DEV_DB=dev_db_acq
+
+kubectl exec \
+  --context gizmo.us1.staging.dog \
+  --namespace orgstore-dogpark \
+  -it \
+  deployment/orgstore-dogpark-toolbox -- \
+  pg-wrap -o dogpark -b admin -D $DEV_DB psql
+```
+
+The `-b admin` flag is critical — it bypasses the default role and connects with
+CREATE permission on the `dogpark` schema. You can then run any DDL:
+
+```sql
+CREATE TABLE IF NOT EXISTS dogpark.my_new_table (...);
+```
+
+Note: DogPark is not compatible with PG Schema Manager (PGSM/Alembic). DDL changes
+are manual via the toolbox. See the [DogPark Confluence page](https://datadoghq.atlassian.net/wiki/spaces/ORGSTORE/pages/3681321565/DogPark) for details.
 
 ### Deploy
 

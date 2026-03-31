@@ -112,15 +112,6 @@ def create_tables(conn) -> None:
     init migration), call it first to elevate to the DB owner role.
     """
     cur = conn.cursor()
-    # On DogPark, elevate to DB owner role for CREATE permission.
-    # Use a savepoint so failure (e.g. in local dev where the proc
-    # doesn't exist) doesn't abort the transaction.
-    try:
-        cur.execute("SAVEPOINT sp_role_check;")
-        cur.execute("CALL sp_set_role_dbowner();")
-        cur.execute("RELEASE SAVEPOINT sp_role_check;")
-    except Exception:
-        cur.execute("ROLLBACK TO SAVEPOINT sp_role_check;")
     cur.execute(_DDL)
 
     cur.execute("SELECT version FROM dogpark.schema_version")
