@@ -311,7 +311,7 @@ class LocalStore:
                         pattern=q.context_pattern,
                         force_create=True,
                     )
-                    if result is not None:
+                    if result.ok:
                         self._store.clear_drain(eid)
                         drained += 1
 
@@ -327,7 +327,7 @@ class LocalStore:
                         created_by=a.created_by,
                         supervised=a.supervised,
                     )
-                    if result is not None:
+                    if result.ok:
                         self._store.clear_drain(eid)
                         drained += 1
 
@@ -344,7 +344,7 @@ class LocalStore:
                         value=row[3],
                         voter_id=row[2],
                     )
-                    if result is not None:
+                    if result.ok:
                         self._store.clear_drain(eid)
                         drained += 1
 
@@ -361,7 +361,7 @@ class LocalStore:
                         created_by=c.created_by,
                         supervised=c.supervised,
                     )
-                    if result is not None:
+                    if result.ok:
                         self._store.clear_drain(eid)
                         drained += 1
 
@@ -375,12 +375,12 @@ class LocalStore:
 
         Returns the number of items upserted.
         """
-        data = await team_client.export_since(since=since)
-        if not data:
+        result = await team_client.export_since(since=since)
+        if not result.ok:
             return 0
         with self._lock:
             self._check_open()
-            return self._store.bulk_upsert(data)
+            return self._store.bulk_upsert(result.data)
 
     def _get_tag_names_for_question_unlocked(self, question_id: str) -> list[str]:
         """Read tag names without acquiring the lock (caller must hold it or be safe)."""

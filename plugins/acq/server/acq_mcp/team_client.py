@@ -8,6 +8,7 @@ mode. HTTP errors (4xx/5xx) are returned as structured error dicts.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -16,6 +17,62 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT = 5.0
 
 _TRANSPORT_ERRORS = (httpx.TransportError, httpx.TimeoutException)
+
+
+@dataclass(frozen=True, slots=True)
+class ApiResult:
+    """Structured result from a Team API call.
+
+    Ported from upstream cq's structured-warnings pattern: callers get
+    success data, HTTP error details, AND accumulated warnings in one
+    object instead of guessing whether the return is None, a dict with
+    ``error``, or a success payload.
+
+    Usage::
+
+        r = await client.create_question(...)
+        if r.ok:
+            process(r.data)
+        elif r.status_code == 409:
+            handle_conflict(r.error)
+        if r.warnings:
+            log_warnings(r.warnings)
+    """
+
+    data: dict | list | None = None
+    error: str | None = None
+    status_code: int = 0
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None and self.data is not None
+
+    @staticmethod
+    def success(data: dict | list) -> ApiResult:
+        return ApiResult(data=data)
+
+    @staticmethod
+    def transport_error(method: str, exc: Exception) -> ApiResult:
+        msg = f"Team API {method} unreachable: {exc}"
+        logger.warning(msg, exc_info=True)
+        return ApiResult(error=msg, warnings=[msg])
+
+    @staticmethod
+    def http_error(method: str, exc: httpx.HTTPStatusError) -> ApiResult:
+        msg = f"Team API {method} error {exc.response.status_code}"
+        logger.warning(msg)
+        return ApiResult(
+            error=exc.response.text,
+            status_code=exc.response.status_code,
+            warnings=[msg],
+        )
+
+    @staticmethod
+    def unexpected_error(method: str, exc: Exception) -> ApiResult:
+        msg = f"Team API {method} failed: {exc}"
+        logger.warning(msg, exc_info=True)
+        return ApiResult(error=msg, warnings=[msg])
 
 
 class TeamClient:
@@ -62,7 +119,7 @@ class TeamClient:
         language: str | None = None,
         framework: str | None = None,
         limit: int = 5,
-    ) -> list[dict] | None:
+    ) -> ApiResult:
         params: dict[str, object] = {"q": query, "limit": limit}
         if tags:
             params["tags"] = tags
@@ -73,16 +130,13 @@ class TeamClient:
         try:
             resp = await self._client.get("/search", params=params)
             resp.raise_for_status()
-            return resp.json()
-        except _TRANSPORT_ERRORS:
-            logger.warning("Team API search unreachable", exc_info=True)
-            return None
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("search", exc)
         except httpx.HTTPStatusError as exc:
-            logger.warning("Team API search error %d", exc.response.status_code)
-            return None
-        except Exception:
-            logger.warning("Team API search failed", exc_info=True)
-            return None
+            return ApiResult.http_error("search", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("search", exc)
 
     async def create_question(
         self,
@@ -94,7 +148,7 @@ class TeamClient:
         framework: str | None = None,
         pattern: str | None = None,
         force_create: bool = False,
-    ) -> dict | None:
+    ) -> ApiResult:
         payload: dict[str, object] = {
             "title": title,
             "body": body,
@@ -111,16 +165,13 @@ class TeamClient:
         try:
             resp = await self._client.post("/questions", json=payload)
             resp.raise_for_status()
-            return resp.json()
-        except _TRANSPORT_ERRORS:
-            logger.warning("Team API create_question unreachable", exc_info=True)
-            return None
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("create_question", exc)
         except httpx.HTTPStatusError as exc:
-            logger.warning("Team API create_question error %d", exc.response.status_code)
-            return {"error": exc.response.text, "status_code": exc.response.status_code}
-        except Exception:
-            logger.warning("Team API create_question failed", exc_info=True)
-            return None
+            return ApiResult.http_error("create_question", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("create_question", exc)
 
     async def create_answer(
         self,
@@ -128,7 +179,7 @@ class TeamClient:
         body: str,
         created_by: str,
         supervised: bool = False,
-    ) -> dict | None:
+    ) -> ApiResult:
         payload = {
             "body": body,
             "created_by": created_by,
@@ -137,16 +188,13 @@ class TeamClient:
         try:
             resp = await self._client.post(f"/questions/{question_id}/answers", json=payload)
             resp.raise_for_status()
-            return resp.json()
-        except _TRANSPORT_ERRORS:
-            logger.warning("Team API create_answer unreachable", exc_info=True)
-            return None
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("create_answer", exc)
         except httpx.HTTPStatusError as exc:
-            logger.warning("Team API create_answer error %d", exc.response.status_code)
-            return {"error": exc.response.text, "status_code": exc.response.status_code}
-        except Exception:
-            logger.warning("Team API create_answer failed", exc_info=True)
-            return None
+            return ApiResult.http_error("create_answer", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("create_answer", exc)
 
     async def cast_vote(
         self,
@@ -154,21 +202,19 @@ class TeamClient:
         target_type: str,
         value: int,
         voter_id: str,
-    ) -> dict | None:
+    ) -> ApiResult:
         payload = {"target_id": target_id, "target_type": target_type, "value": value}
         try:
             resp = await self._client.post("/vote", json=payload)
             resp.raise_for_status()
-            return resp.json()
-        except _TRANSPORT_ERRORS:
-            logger.warning("Team API cast_vote unreachable", exc_info=True)
-            return None
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("cast_vote", exc)
         except httpx.HTTPStatusError as exc:
             # 409 = already voted, 429 = rate limited — caller handles these gracefully.
-            return {"error": exc.response.text, "status_code": exc.response.status_code}
-        except Exception:
-            logger.warning("Team API cast_vote failed", exc_info=True)
-            return None
+            return ApiResult.http_error("cast_vote", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("cast_vote", exc)
 
     async def create_comment(
         self,
@@ -177,7 +223,7 @@ class TeamClient:
         body: str,
         created_by: str,
         supervised: bool = False,
-    ) -> dict | None:
+    ) -> ApiResult:
         payload = {
             "parent_id": parent_id,
             "parent_type": parent_type,
@@ -188,68 +234,57 @@ class TeamClient:
         try:
             resp = await self._client.post("/comments", json=payload)
             resp.raise_for_status()
-            return resp.json()
-        except _TRANSPORT_ERRORS:
-            logger.warning("Team API create_comment unreachable", exc_info=True)
-            return None
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("create_comment", exc)
         except httpx.HTTPStatusError as exc:
-            logger.warning("Team API create_comment error %d", exc.response.status_code)
-            return {"error": exc.response.text, "status_code": exc.response.status_code}
-        except Exception:
-            logger.warning("Team API create_comment failed", exc_info=True)
-            return None
+            return ApiResult.http_error("create_comment", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("create_comment", exc)
 
-    async def export_since(self, since: str | None = None) -> dict | None:
+    async def export_since(self, since: str | None = None) -> ApiResult:
         params = {}
         if since:
             params["since"] = since
         try:
             resp = await self._client.get("/export", params=params)
             resp.raise_for_status()
-            return resp.json()
-        except _TRANSPORT_ERRORS:
-            logger.warning("Team API export unreachable", exc_info=True)
-            return None
-        except Exception:
-            logger.warning("Team API export failed", exc_info=True)
-            return None
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("export", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("export", exc)
 
-    async def reflect(self, session_context: str) -> dict | None:
+    async def reflect(self, session_context: str) -> ApiResult:
         payload = {"session_context": session_context}
         try:
             resp = await self._client.post("/reflect", json=payload)
             resp.raise_for_status()
-            return resp.json()
-        except _TRANSPORT_ERRORS:
-            logger.warning("Team API reflect unreachable", exc_info=True)
-            return None
-        except Exception:
-            logger.warning("Team API reflect failed", exc_info=True)
-            return None
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("reflect", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("reflect", exc)
 
-    async def get_status(self) -> dict | None:
+    async def get_status(self) -> ApiResult:
         try:
             resp = await self._client.get("/status")
             resp.raise_for_status()
-            return resp.json()
-        except _TRANSPORT_ERRORS:
-            logger.warning("Team API get_status unreachable", exc_info=True)
-            return None
-        except Exception:
-            logger.warning("Team API get_status failed", exc_info=True)
-            return None
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("get_status", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("get_status", exc)
 
-    async def get_tags(self, query: str = "") -> list[dict] | None:
+    async def get_tags(self, query: str = "") -> ApiResult:
         params = {}
         if query:
             params["q"] = query
         try:
             resp = await self._client.get("/tags", params=params)
             resp.raise_for_status()
-            return resp.json()
-        except _TRANSPORT_ERRORS:
-            logger.warning("Team API get_tags unreachable", exc_info=True)
-            return None
-        except Exception:
-            logger.warning("Team API get_tags failed", exc_info=True)
-            return None
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("get_tags", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("get_tags", exc)

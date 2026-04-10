@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from acq_mcp.local_store import LocalStore
+from acq_mcp.team_client import ApiResult
 
 
 @pytest.fixture()
@@ -255,7 +256,7 @@ class TestDrainToTeam:
         store.store.mark_for_drain(q.id, "question")
 
         mock_client = MagicMock()
-        mock_client.create_question = AsyncMock(return_value={"id": q.id})
+        mock_client.create_question = AsyncMock(return_value=ApiResult.success({"id": q.id}))
 
         drained = await store.drain_to_team(mock_client)
 
@@ -271,7 +272,7 @@ class TestDrainToTeam:
         # Not marked for drain — should not be pushed to team
 
         mock_client = MagicMock()
-        mock_client.create_question = AsyncMock(return_value={"id": "q_team_1"})
+        mock_client.create_question = AsyncMock(return_value=ApiResult.success({"id": "q_team_1"}))
 
         drained = await store.drain_to_team(mock_client)
 
@@ -283,7 +284,9 @@ class TestDrainToTeam:
         store.store.mark_for_drain(q.id, "question")
 
         mock_client = MagicMock()
-        mock_client.create_question = AsyncMock(return_value=None)
+        mock_client.create_question = AsyncMock(
+            return_value=ApiResult(error="unreachable", warnings=["unreachable"])
+        )
 
         drained = await store.drain_to_team(mock_client)
 
@@ -309,8 +312,8 @@ class TestDrainToTeam:
         store.store.mark_for_drain(a.id, "answer")
 
         mock_client = MagicMock()
-        mock_client.create_question = AsyncMock(return_value={"id": q.id})
-        mock_client.create_answer = AsyncMock(return_value={"id": a.id})
+        mock_client.create_question = AsyncMock(return_value=ApiResult.success({"id": q.id}))
+        mock_client.create_answer = AsyncMock(return_value=ApiResult.success({"id": a.id}))
 
         drained = await store.drain_to_team(mock_client)
 
@@ -324,8 +327,8 @@ class TestDrainToTeam:
         store.store.mark_for_drain(c.id, "comment")
 
         mock_client = MagicMock()
-        mock_client.cast_vote = AsyncMock(return_value={"id": v.id})
-        mock_client.create_comment = AsyncMock(return_value={"id": c.id})
+        mock_client.cast_vote = AsyncMock(return_value=ApiResult.success({"id": v.id}))
+        mock_client.create_comment = AsyncMock(return_value=ApiResult.success({"id": c.id}))
 
         drained = await store.drain_to_team(mock_client)
 
