@@ -188,6 +188,20 @@ def _serialize_results(results: list) -> list[dict]:
     return serialized
 
 
+def _as_list(value: list[str] | str | None) -> list[str] | None:
+    """Coerce a bare string to a single-item list.
+
+    Prevents the classic Python bug where ``"python"`` is iterated as
+    ``['p','y','t','h','o','n']`` instead of ``["python"]``.
+    Ported from upstream cq sdk/python/src/cq/_util.py.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [value]
+    return value
+
+
 @mcp.tool(name="search")
 async def search(
     query: str,
@@ -214,6 +228,7 @@ async def search(
         Dict with ``results`` (ranked list of questions — no answer
         bodies) and ``source`` ("local").
     """
+    tags = _as_list(tags)
     store = _get_store()
     results = await asyncio.to_thread(
         store.store.search,
@@ -381,6 +396,7 @@ async def ask(
     body = body.strip()
     if not title or not body:
         return {"error": "title and body must be non-blank."}
+    tags = _as_list(tags) or []
     if not tags:
         return {"error": "At least one tag is required."}
 
@@ -398,12 +414,12 @@ async def ask(
             pattern=pattern,
             force_create=force_create,
         )
-        if result is not None and "error" not in result:
-            similar = result.get("similar_questions", [])
+        if result.ok:
+            similar = result.data.get("similar_questions", [])
             if similar and not force_create:
                 return {"action": "similar_found", "similar_questions": similar}
             # Write-through to local
-            q_data = result.get("question", {})
+            q_data = result.data.get("question", {})
             if isinstance(q_data, dict) and q_data.get("id"):
                 try:
                     q = Question.model_validate(q_data)
@@ -462,16 +478,16 @@ async def answer(
             created_by=_get_agent_name(),
             supervised=supervised,
         )
-        if result is not None and "error" not in result:
+        if result.ok:
             # Write-through to local
-            a_id = result.get("id")
+            a_id = result.data.get("id")
             if a_id:
                 try:
-                    a = Answer.model_validate(result)
+                    a = Answer.model_validate(result.data)
                     await asyncio.to_thread(store.store.create_answer, a)
                 except Exception:
                     logger.warning("Write-through answer to local failed", exc_info=True)
-            return {"answer_id": result.get("id"), "status": result.get("status", "pending"), "source": "team"}
+            return {"answer_id": result.data.get("id"), "status": result.data.get("status", "pending"), "source": "team"}
 
     # Fallback: local only (mark for drain)
     a = Answer(
@@ -525,26 +541,24 @@ async def vote(
             value=value,
             voter_id=voter_id,
         )
-        if result is not None:
-            status_code = result.get("status_code", 0)
-            if status_code == 409:
-                return {"error": "Already voted on this item."}
-            if status_code == 429:
-                return {"error": "Vote rate limit exceeded. Try again later."}
-            if "error" not in result:
-                # Write-through to local
-                try:
-                    v = Vote(
-                        target_id=target_id,
-                        target_type=target_type,
-                        voter_id=voter_id,
-                        voter_type="agent",
-                        value=value,
-                    )
-                    await asyncio.to_thread(store.store.cast_vote, v)
-                except Exception:
-                    logger.warning("Write-through vote to local failed", exc_info=True)
-                return result
+        if result.ok:
+            # Write-through to local
+            try:
+                v = Vote(
+                    target_id=target_id,
+                    target_type=target_type,
+                    voter_id=voter_id,
+                    voter_type="agent",
+                    value=value,
+                )
+                await asyncio.to_thread(store.store.cast_vote, v)
+            except Exception:
+                logger.warning("Write-through vote to local failed", exc_info=True)
+            return result.data
+        elif result.status_code == 409:
+            return {"error": "Already voted on this item."}
+        elif result.status_code == 429:
+            return {"error": "Vote rate limit exceeded. Try again later."}
 
     # Fallback: local only (mark for drain)
     v = Vote(
@@ -591,16 +605,16 @@ async def comment(
             created_by=_get_agent_name(),
             supervised=supervised,
         )
-        if result is not None and "error" not in result:
+        if result.ok:
             # Write-through to local
-            c_id = result.get("id")
+            c_id = result.data.get("id")
             if c_id:
                 try:
-                    c = Comment.model_validate(result)
+                    c = Comment.model_validate(result.data)
                     await asyncio.to_thread(store.store.create_comment, c)
                 except Exception:
                     logger.warning("Write-through comment to local failed", exc_info=True)
-            return {"comment_id": result.get("id"), "status": result.get("status", "pending"), "source": "team"}
+            return {"comment_id": result.data.get("id"), "status": result.data.get("status", "pending"), "source": "team"}
 
     # Fallback: local only (mark for drain)
     c = Comment(
@@ -664,8 +678,8 @@ async def status() -> dict:
     elif await team_client.health():
         team_status = {"status": "ok", "url": team_client.base_url}
         remote = await team_client.get_status()
-        if remote:
-            team_api_stats = remote
+        if remote.ok:
+            team_api_stats = remote.data
     else:
         team_status = {"status": "unreachable", "url": team_client.base_url}
 

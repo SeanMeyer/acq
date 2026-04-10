@@ -19,6 +19,7 @@ from acq_mcp.server import (
     status,
     vote,
 )
+from acq_mcp.team_client import ApiResult
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +37,24 @@ def _reset_server_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
     server._drain_done = False
 
 
+def _to_api_result(value) -> ApiResult:
+    """Convert a test value to an ApiResult.
+
+    - None → transport error (simulates unreachable team API)
+    - dict with "error" key → HTTP error with status_code
+    - anything else → success
+    """
+    if value is None:
+        return ApiResult(error="Team API unreachable", warnings=["Team API unreachable"])
+    if isinstance(value, dict) and "error" in value:
+        return ApiResult(
+            error=value["error"],
+            status_code=value.get("status_code", 0),
+            warnings=[value["error"]],
+        )
+    return ApiResult.success(value)
+
+
 def _make_mock_team_client(
     *,
     health: bool = True,
@@ -49,13 +68,13 @@ def _make_mock_team_client(
 ) -> MagicMock:
     mock = MagicMock()
     mock.health = AsyncMock(return_value=health)
-    mock.search = AsyncMock(return_value=search_result)
-    mock.create_question = AsyncMock(return_value=create_question_result)
-    mock.create_answer = AsyncMock(return_value=create_answer_result)
-    mock.cast_vote = AsyncMock(return_value=cast_vote_result)
-    mock.create_comment = AsyncMock(return_value=create_comment_result)
-    mock.get_status = AsyncMock(return_value=get_status_result)
-    mock.export_since = AsyncMock(return_value=export_since_result)
+    mock.search = AsyncMock(return_value=_to_api_result(search_result))
+    mock.create_question = AsyncMock(return_value=_to_api_result(create_question_result))
+    mock.create_answer = AsyncMock(return_value=_to_api_result(create_answer_result))
+    mock.cast_vote = AsyncMock(return_value=_to_api_result(cast_vote_result))
+    mock.create_comment = AsyncMock(return_value=_to_api_result(create_comment_result))
+    mock.get_status = AsyncMock(return_value=_to_api_result(get_status_result))
+    mock.export_since = AsyncMock(return_value=_to_api_result(export_since_result))
     mock.base_url = "http://localhost:8742"
     return mock
 

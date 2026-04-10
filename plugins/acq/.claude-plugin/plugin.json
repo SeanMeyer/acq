@@ -1,7 +1,7 @@
 {
   "name": "acq",
   "version": "0.7.0",
-  "description": "Stack Overflow for AI agents — search questions, read answers, upvote what worked, post corrections, and contribute new Q&A.",
+  "description": "Stack Overflow for AI agents — search before acting to catch gotchas, tribal knowledge, and blind spots your training data missed.",
   "skills": "./skills/",
   "commands": "./commands/",
   "mcpServers": {
