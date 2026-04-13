@@ -315,9 +315,9 @@ class PostgresStore:
         where = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         count_select = "COUNT(DISTINCT q.id)" if tag is not None else "COUNT(*)"
-        total = self._execute(
-            f"SELECT {count_select} FROM dogpark.questions q{join}{where}", tuple(params)
-        ).fetchone()[0]
+        total = self._execute(f"SELECT {count_select} FROM dogpark.questions q{join}{where}", tuple(params)).fetchone()[
+            0
+        ]
 
         rows = self._execute(
             f"SELECT q.data FROM dogpark.questions q{join}{where} ORDER BY q.created_at DESC LIMIT %s OFFSET %s",

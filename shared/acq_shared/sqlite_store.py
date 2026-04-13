@@ -255,9 +255,7 @@ class SqliteStore:
 
         where = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
-        total = self._conn.execute(
-            f"SELECT COUNT(DISTINCT q.id) FROM questions q{join}{where}", params
-        ).fetchone()[0]
+        total = self._conn.execute(f"SELECT COUNT(DISTINCT q.id) FROM questions q{join}{where}", params).fetchone()[0]
 
         rows = self._conn.execute(
             f"SELECT DISTINCT q.data FROM questions q{join}{where} ORDER BY q.created_at DESC LIMIT ? OFFSET ?",

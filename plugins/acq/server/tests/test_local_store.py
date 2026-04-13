@@ -284,9 +284,7 @@ class TestDrainToTeam:
         store.store.mark_for_drain(q.id, "question")
 
         mock_client = MagicMock()
-        mock_client.create_question = AsyncMock(
-            return_value=ApiResult(error="unreachable", warnings=["unreachable"])
-        )
+        mock_client.create_question = AsyncMock(return_value=ApiResult(error="unreachable", warnings=["unreachable"]))
 
         drained = await store.drain_to_team(mock_client)
 

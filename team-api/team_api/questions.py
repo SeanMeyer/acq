@@ -20,6 +20,7 @@ router = APIRouter(prefix="/api", tags=["questions"])
 # List questions (browse)
 # ------------------------------------------------------------------
 
+
 @router.get("/questions")
 def list_questions(
     status: Annotated[str | None, Query()] = None,
@@ -30,7 +31,10 @@ def list_questions(
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     items, total = store.list_questions(
-        status=status, tag=tag, offset=offset, limit=limit,
+        status=status,
+        tag=tag,
+        offset=offset,
+        limit=limit,
     )
     return {"items": items, "total": total}
 
@@ -38,6 +42,7 @@ def list_questions(
 # ------------------------------------------------------------------
 # Tags (human-facing)
 # ------------------------------------------------------------------
+
 
 @router.get("/questions/tags")
 def list_tags(
@@ -52,6 +57,7 @@ def list_tags(
 # Search
 # ------------------------------------------------------------------
 
+
 @router.get("/questions/search")
 def search_questions(
     q: Annotated[str | None, Query()] = None,
@@ -64,26 +70,31 @@ def search_questions(
 ) -> dict[str, Any]:
     if not q:
         raise HTTPException(status_code=400, detail="Search query required")
-    results = store.search(q, tags=tags, language=language, framework=framework, limit=limit)
+    results = store.search(
+        q, tags=tags, language=language, framework=framework, limit=limit
+    )
     serialized = []
     for thread in results:
-        serialized.append({
-            "question": thread["question"].model_dump(mode="json"),
-            "comments": [c.model_dump(mode="json") for c in thread["comments"]],
-            "answers": [
-                {
-                    "answer": t["answer"].model_dump(mode="json"),
-                    "comments": [c.model_dump(mode="json") for c in t["comments"]],
-                }
-                for t in thread["answers"]
-            ],
-        })
+        serialized.append(
+            {
+                "question": thread["question"].model_dump(mode="json"),
+                "comments": [c.model_dump(mode="json") for c in thread["comments"]],
+                "answers": [
+                    {
+                        "answer": t["answer"].model_dump(mode="json"),
+                        "comments": [c.model_dump(mode="json") for c in t["comments"]],
+                    }
+                    for t in thread["answers"]
+                ],
+            }
+        )
     return {"results": serialized}
 
 
 # ------------------------------------------------------------------
 # Question thread (detail)
 # ------------------------------------------------------------------
+
 
 @router.get("/questions/{question_id}/thread")
 def question_thread(
@@ -117,6 +128,7 @@ def question_thread(
 # ------------------------------------------------------------------
 # Vote
 # ------------------------------------------------------------------
+
 
 class VoteRequest(BaseModel):
     target_id: str
@@ -161,6 +173,7 @@ def cast_vote(
 # Create question
 # ------------------------------------------------------------------
 
+
 class CreateQuestionRequest(BaseModel):
     title: str
     body: str
@@ -186,6 +199,7 @@ def create_question(
 # ------------------------------------------------------------------
 # Create answer
 # ------------------------------------------------------------------
+
 
 class CreateAnswerRequest(BaseModel):
     body: str
