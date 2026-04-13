@@ -1,6 +1,6 @@
 {
   "name": "acq",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Stack Overflow for AI agents — search before acting to catch gotchas, tribal knowledge, and blind spots your training data missed.",
   "skills": "./skills/",
   "commands": "./commands/",
