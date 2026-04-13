@@ -34,7 +34,9 @@ def _login(client: TestClient) -> str:
         store.create_user("reviewer", hash_password("pass123"))
     except Exception:
         pass
-    resp = client.post("/auth/login", json={"username": "reviewer", "password": "pass123"})
+    resp = client.post(
+        "/auth/login", json={"username": "reviewer", "password": "pass123"}
+    )
     return resp.json()["token"]
 
 
@@ -48,12 +50,16 @@ def _create_question(client: TestClient, **overrides: Any) -> dict[str, Any]:
         "body": "I need a pool with max size.",
         "tags": ["databases"],
     }
-    resp = client.post("/questions", json={**defaults, **overrides}, headers=_agent_headers())
+    resp = client.post(
+        "/questions", json={**defaults, **overrides}, headers=_agent_headers()
+    )
     assert resp.status_code == 201
     return resp.json()["question"]
 
 
-def _create_answer(client: TestClient, question_id: str, **overrides: Any) -> dict[str, Any]:
+def _create_answer(
+    client: TestClient, question_id: str, **overrides: Any
+) -> dict[str, Any]:
     defaults = {"body": "Use max_size=10.", "supervised": False}
     resp = client.post(
         f"/questions/{question_id}/answers",
@@ -122,11 +128,15 @@ class TestListQuestions:
         token = _login(client)
         for i in range(5):
             _create_question(client, title=f"Q{i}", tags=[f"tag{i}"])
-        resp = client.get("/api/questions?limit=2&offset=0", headers=_auth_header(token))
+        resp = client.get(
+            "/api/questions?limit=2&offset=0", headers=_auth_header(token)
+        )
         data = resp.json()
         assert data["total"] == 5
         assert len(data["items"]) == 2
-        resp2 = client.get("/api/questions?limit=2&offset=2", headers=_auth_header(token))
+        resp2 = client.get(
+            "/api/questions?limit=2&offset=2", headers=_auth_header(token)
+        )
         data2 = resp2.json()
         assert data2["total"] == 5
         assert len(data2["items"]) == 2
@@ -153,15 +163,21 @@ class TestSearchQuestions:
 
     def test_search_returns_results(self, client: TestClient) -> None:
         token = _login(client)
-        _create_question(client, title="Connection pooling", body="How to configure pool size")
-        resp = client.get("/api/questions/search?q=pooling", headers=_auth_header(token))
+        _create_question(
+            client, title="Connection pooling", body="How to configure pool size"
+        )
+        resp = client.get(
+            "/api/questions/search?q=pooling", headers=_auth_header(token)
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["results"]) > 0
 
     def test_search_no_results(self, client: TestClient) -> None:
         token = _login(client)
-        resp = client.get("/api/questions/search?q=nonexistent_xyz", headers=_auth_header(token))
+        resp = client.get(
+            "/api/questions/search?q=nonexistent_xyz", headers=_auth_header(token)
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["results"]) == 0
@@ -179,14 +195,18 @@ class TestQuestionThread:
 
     def test_not_found(self, client: TestClient) -> None:
         token = _login(client)
-        resp = client.get("/api/questions/nonexistent/thread", headers=_auth_header(token))
+        resp = client.get(
+            "/api/questions/nonexistent/thread", headers=_auth_header(token)
+        )
         assert resp.status_code == 404
 
     def test_returns_thread(self, client: TestClient) -> None:
         token = _login(client)
         q = _create_question(client, tags=["databases"])
         _create_answer(client, q["id"], supervised=True)
-        resp = client.get(f"/api/questions/{q['id']}/thread", headers=_auth_header(token))
+        resp = client.get(
+            f"/api/questions/{q['id']}/thread", headers=_auth_header(token)
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["question"]["id"] == q["id"]
@@ -198,7 +218,9 @@ class TestQuestionThread:
         q = _create_question(client)
         _create_answer(client, q["id"], supervised=False)  # pending
         _create_answer(client, q["id"], supervised=True)  # approved
-        resp = client.get(f"/api/questions/{q['id']}/thread", headers=_auth_header(token))
+        resp = client.get(
+            f"/api/questions/{q['id']}/thread", headers=_auth_header(token)
+        )
         data = resp.json()
         assert len(data["answers"]) == 2
         statuses = [a["answer"]["status"] for a in data["answers"]]

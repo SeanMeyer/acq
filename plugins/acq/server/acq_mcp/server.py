@@ -487,7 +487,11 @@ async def answer(
                     await asyncio.to_thread(store.store.create_answer, a)
                 except Exception:
                     logger.warning("Write-through answer to local failed", exc_info=True)
-            return {"answer_id": result.data.get("id"), "status": result.data.get("status", "pending"), "source": "team"}
+            return {
+                "answer_id": result.data.get("id"),
+                "status": result.data.get("status", "pending"),
+                "source": "team",
+            }
 
     # Fallback: local only (mark for drain)
     a = Answer(
@@ -614,7 +618,11 @@ async def comment(
                     await asyncio.to_thread(store.store.create_comment, c)
                 except Exception:
                     logger.warning("Write-through comment to local failed", exc_info=True)
-            return {"comment_id": result.data.get("id"), "status": result.data.get("status", "pending"), "source": "team"}
+            return {
+                "comment_id": result.data.get("id"),
+                "status": result.data.get("status", "pending"),
+                "source": "team",
+            }
 
     # Fallback: local only (mark for drain)
     c = Comment(

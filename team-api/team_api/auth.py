@@ -245,13 +245,18 @@ def create_agent_key(
     """
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+        raise HTTPException(
+            status_code=401, detail="Missing or invalid Authorization header"
+        )
     github_token = auth_header.removeprefix("Bearer ")
 
     # Validate GitHub token and get user info.
     gh_resp = http_requests.get(
         GITHUB_USER_URL,
-        headers={"Authorization": f"Bearer {github_token}", "Accept": "application/json"},
+        headers={
+            "Authorization": f"Bearer {github_token}",
+            "Accept": "application/json",
+        },
         timeout=10,
     )
     if gh_resp.status_code != 200:
