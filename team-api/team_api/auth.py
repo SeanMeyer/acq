@@ -192,16 +192,22 @@ def github_callback(
 ) -> RedirectResponse:
     """Exchange GitHub code for access token, create ACQ session JWT."""
     # Exchange code for GitHub access token
-    resp = http_requests.post(
-        GITHUB_TOKEN_URL,
-        json={
-            "client_id": _github_client_id(),
-            "client_secret": _github_client_secret(),
-            "code": code,
-        },
-        headers={"Accept": "application/json"},
-        timeout=10,
-    )
+    try:
+        resp = http_requests.post(
+            GITHUB_TOKEN_URL,
+            json={
+                "client_id": _github_client_id(),
+                "client_secret": _github_client_secret(),
+                "code": code,
+            },
+            headers={"Accept": "application/json"},
+            timeout=10,
+        )
+    except http_requests.RequestException as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"GitHub OAuth unreachable: {type(exc).__name__}: {exc}",
+        ) from exc
     data = resp.json()
     github_token = data.get("access_token")
     if not github_token:
@@ -210,14 +216,20 @@ def github_callback(
         )
 
     # Fetch GitHub user profile
-    user_resp = http_requests.get(
-        GITHUB_USER_URL,
-        headers={
-            "Authorization": f"Bearer {github_token}",
-            "Accept": "application/json",
-        },
-        timeout=10,
-    )
+    try:
+        user_resp = http_requests.get(
+            GITHUB_USER_URL,
+            headers={
+                "Authorization": f"Bearer {github_token}",
+                "Accept": "application/json",
+            },
+            timeout=10,
+        )
+    except http_requests.RequestException as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"GitHub user API unreachable: {type(exc).__name__}: {exc}",
+        ) from exc
     if user_resp.status_code != 200:
         raise HTTPException(status_code=401, detail="Failed to fetch GitHub user")
     gh_user = user_resp.json()
@@ -251,14 +263,20 @@ def create_agent_key(
     github_token = auth_header.removeprefix("Bearer ")
 
     # Validate GitHub token and get user info.
-    gh_resp = http_requests.get(
-        GITHUB_USER_URL,
-        headers={
-            "Authorization": f"Bearer {github_token}",
-            "Accept": "application/json",
-        },
-        timeout=10,
-    )
+    try:
+        gh_resp = http_requests.get(
+            GITHUB_USER_URL,
+            headers={
+                "Authorization": f"Bearer {github_token}",
+                "Accept": "application/json",
+            },
+            timeout=10,
+        )
+    except http_requests.RequestException as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"GitHub user API unreachable: {type(exc).__name__}: {exc}",
+        ) from exc
     if gh_resp.status_code != 200:
         raise HTTPException(status_code=401, detail="Invalid GitHub token")
     gh_user = gh_resp.json()
