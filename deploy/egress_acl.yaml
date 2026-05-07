@@ -1,0 +1,16 @@
+---
+metadata:
+    name: acq-team-api
+    namespace: kiss-app-build
+    type: egress_acl
+    apiVersion: v1
+spec:
+    rules:
+      - name: "acq-team-api"
+        service_accounts:
+          - name: "acq-team-api"
+            namespace: "kiss-app-build"
+        domains:
+            allowlist:
+              - exact: github.com:443
+              - exact: api.github.com:443
