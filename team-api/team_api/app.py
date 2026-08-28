@@ -7,12 +7,14 @@ import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query
 from starlette.exceptions import HTTPException as _StarletteHTTPException
+from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
+from starlette.types import Scope
 from pydantic import BaseModel
 
 from acq_shared.models import Answer, Comment, Question, Vote
@@ -54,13 +56,13 @@ class CreateAnswerRequest(BaseModel):
 
 class VoteRequest(BaseModel):
     target_id: str
-    target_type: str
-    value: int  # 1 or -1
+    target_type: Literal["question", "answer"]
+    value: Literal[1, -1]
 
 
 class CommentRequest(BaseModel):
     parent_id: str
-    parent_type: str
+    parent_type: Literal["question", "answer"]
     body: str
 
 
@@ -84,44 +86,20 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     if not jwt_secret:
         raise RuntimeError("ACQ_JWT_SECRET environment variable is required")
 
-    orgstore_cluster = os.environ.get("ORGSTORE_CLUSTER")
-    if orgstore_cluster:
-        # Production / Howler path — Postgres via DogPark pg-proxy with JWT auth
+    # Postgres when DATABASE_URL is set, otherwise SQLite. DATABASE_URL is a
+    # standard libpq connection string, e.g.
+    #   postgresql://user:password@host:5432/acq?sslmode=require
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
         import psycopg2
-        import requests
+
         from acq_shared.postgres_store import PostgresStore
 
-        db_name = os.environ.get("DB_NAME", "dev_db_acq")
-        db_user = os.environ.get("DB_USER", "dev_db_acq")
-        db_host = os.environ.get(
-            "DB_HOST",
-            f"orgstore-{orgstore_cluster}-pg-proxy.orgstore-{orgstore_cluster}.svc.cluster.local",
-        )
-
-        # Connection factory: fetches a fresh JWT from emissary's Vault agent
-        # and opens a new psycopg2 connection. Called at startup and on
-        # reconnect when the JWT expires (~4h).
-        vault_addr = os.environ.get("VAULT_ADDR", "http://127.0.0.1:8658/vault/agent")
-        token_url = f"{vault_addr}/v1/identity/oidc/token/orgstore-{orgstore_cluster}"
-
+        # Passed to PostgresStore so it can re-open a dropped connection.
         def _connect():
-            resp = requests.get(
-                token_url, headers={"X-Vault-Request": "true"}, timeout=5
-            )
-            resp.raise_for_status()
-            jwt_token = resp.json()["data"]["token"]
-            return psycopg2.connect(
-                host=db_host,
-                dbname=db_name,
-                user=db_user,
-                password=jwt_token,
-                sslmode="require",
-            )
+            return psycopg2.connect(database_url)
 
-        conn = _connect()
-        # DogPark roles lack CREATE permission — tables must be created
-        # manually via the toolbox with -b admin. See DEVELOPMENT.md.
-        _store = PostgresStore(conn, create_schema=False, connect=_connect)
+        _store = PostgresStore(_connect(), connect=_connect)
     else:
         # Local dev / test path — SQLite
         from acq_shared.sqlite_store import SqliteStore
@@ -374,7 +352,7 @@ _STATIC_DIR = Path(os.environ.get("ACQ_STATIC_DIR", "/app/static"))
 class _SPAStaticFiles(StaticFiles):
     """Serve static files with SPA fallback (index.html for unknown paths)."""
 
-    async def get_response(self, path: str, scope: dict) -> Any:
+    async def get_response(self, path: str, scope: Scope) -> Response:
         try:
             return await super().get_response(path, scope)
         except _StarletteHTTPException as exc:

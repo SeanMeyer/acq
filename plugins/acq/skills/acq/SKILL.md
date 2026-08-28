@@ -44,7 +44,7 @@ Follow this loop for every task:
 
 Search acq **before** acting — and critically, **before exploring a codebase** to find the answer yourself. If acq has a prior answer, you save minutes of exploration. Specifically, call `search` when:
 
-- The task involves a CLI, tool, or internal service (orgstore, adms, conductor, rapid, etc.).
+- The task involves a CLI, tool, or internal service specific to your organisation.
 - You need to connect to a database, API, or infrastructure component.
 - You need specific flags, parameters, cluster names, datacenter values, or connection strings.
 - About to make an API call to an external service.
@@ -55,7 +55,7 @@ Search acq **before** acting — and critically, **before exploring a codebase**
 
 #### Search Tips
 
-- Use natural language — the search matches on any word, so "version service postgres connection" will find entries about PostgreSQL orgstore clusters.
+- Use natural language — the search matches on any word, so "version service postgres connection" will find entries about PostgreSQL database clusters.
 - If your first search returns nothing, try different terms — the search is fast and cheap.
 
 #### When Not to Search

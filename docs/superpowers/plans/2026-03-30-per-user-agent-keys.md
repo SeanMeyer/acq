@@ -140,7 +140,7 @@ git commit -m "feat: add agent_keys table and methods to SQLite store"
 In `shared/acq_shared/postgres_schema.py`, add to `_DDL` after the `users` table:
 
 ```sql
-CREATE TABLE IF NOT EXISTS dogpark.agent_keys (
+CREATE TABLE IF NOT EXISTS acq.agent_keys (
     id SERIAL PRIMARY KEY,
     api_key TEXT NOT NULL UNIQUE,
     agent_name TEXT NOT NULL UNIQUE,
@@ -159,7 +159,7 @@ In `shared/acq_shared/postgres_store.py`, add three methods matching the SqliteS
 def create_agent_key(self, api_key: str, agent_name: str, github_username: str) -> dict:
     now = datetime.now(UTC).isoformat()
     self._execute(
-        "INSERT INTO dogpark.agent_keys (api_key, agent_name, github_username, created_at) VALUES (%s, %s, %s, %s)",
+        "INSERT INTO acq.agent_keys (api_key, agent_name, github_username, created_at) VALUES (%s, %s, %s, %s)",
         (api_key, agent_name, github_username, now),
     )
     self._conn.commit()
@@ -167,7 +167,7 @@ def create_agent_key(self, api_key: str, agent_name: str, github_username: str) 
 
 def get_agent_key(self, api_key: str) -> dict | None:
     cur = self._execute(
-        "SELECT api_key, agent_name, github_username, created_at FROM dogpark.agent_keys WHERE api_key = %s",
+        "SELECT api_key, agent_name, github_username, created_at FROM acq.agent_keys WHERE api_key = %s",
         (api_key,),
     )
     row = cur.fetchone()
@@ -177,7 +177,7 @@ def get_agent_key(self, api_key: str) -> dict | None:
 
 def get_agent_key_by_github(self, github_username: str) -> dict | None:
     cur = self._execute(
-        "SELECT api_key, agent_name, github_username, created_at FROM dogpark.agent_keys WHERE github_username = %s",
+        "SELECT api_key, agent_name, github_username, created_at FROM acq.agent_keys WHERE github_username = %s",
         (github_username,),
     )
     row = cur.fetchone()
@@ -443,8 +443,8 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
 # Configuration — no client secret needed for device flow.
-GITHUB_CLIENT_ID = "Ov23liDo2M8HH9cnPfTB"
-ACQ_TEAM_ADDR = "https://acq-team-api.us1.staging.dog"
+GITHUB_CLIENT_ID = "<github-oauth-app-client-id>"
+ACQ_TEAM_ADDR = "https://acq.example.com"
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 

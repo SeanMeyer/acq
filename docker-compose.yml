@@ -9,17 +9,19 @@ services:
       - acq-data:/data
       - ./scripts:/app/scripts:ro
     environment:
+      # The app defaults to PORT=8000; pin it to the published port.
+      - PORT=8742
+      # Omit DATABASE_URL to use SQLite at this path. Set it to a Postgres
+      # connection string to use Postgres instead.
       - ACQ_DB_PATH=/data/team.db
-      - ACQ_JWT_SECRET=${ACQ_JWT_SECRET:?Set ACQ_JWT_SECRET}
+      - ACQ_JWT_SECRET=${ACQ_JWT_SECRET:-dev-secret}
       - ACQ_API_KEYS=${ACQ_API_KEYS:-{"default-key":"default-agent"}}
       - HUMAN_VOTE_WEIGHT=${HUMAN_VOTE_WEIGHT:-5}
-
-  acq-team-ui:
-    build: ./team-ui
-    ports:
-      - "3000:3000"
-    depends_on:
-      - acq-team-api
+      # Set these to enable "Sign in with GitHub". Register an OAuth app with
+      # callback http://localhost:8742/auth/callback, then put the values in a
+      # .env file next to this one (Compose loads it automatically).
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
 
 volumes:
   acq-data:

@@ -120,7 +120,7 @@ class TeamClient:
         framework: str | None = None,
         limit: int = 5,
     ) -> ApiResult:
-        params: dict[str, object] = {"q": query, "limit": limit}
+        params: dict[str, str | int | list[str]] = {"q": query, "limit": limit}
         if tags:
             params["tags"] = tags
         if language:

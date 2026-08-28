@@ -12,6 +12,9 @@ dist/
 build/
 
 node_modules/
+.svelte-kit/
+.vite/
+*.tsbuildinfo
 
 .ruff_cache/
 

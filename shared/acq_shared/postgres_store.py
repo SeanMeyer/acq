@@ -1,6 +1,6 @@
 """PostgresStore — Postgres-backed Store implementation.
 
-Mirrors SqliteStore method-for-method but uses psycopg2, ``dogpark.`` schema
+Mirrors SqliteStore method-for-method but uses psycopg2, ``acq.`` schema
 prefix, and tsvector columns for full-text search instead of FTS5.
 """
 
@@ -9,20 +9,47 @@ from __future__ import annotations
 import json
 import threading
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import psycopg2
+import psycopg2.extensions
 
 from acq_shared.models import Answer, Comment, EditHistory, Question, Tag, Vote
 from acq_shared.postgres_schema import create_tables
-from acq_shared.scoring import rank_answers, search_score, text_relevance_score
+from acq_shared.scoring import (
+    DUPLICATE_THRESHOLD,
+    duplicate_similarity,
+    rank_answers,
+    search_score,
+    text_relevance_score,
+)
+
+# Mirrors the SQLite store: bound the rows pulled from full-text search before
+# absolute scoring, since ORing a title's terms can match a large slice of a
+# mature corpus and only the best three candidates are returned.
+_CANDIDATE_LIMIT = 50
+
+
+def _normalized_rank(raw_rank: float, min_rank: float, max_rank: float) -> float:
+    """Scale a ts_rank into 0-1, where higher is more relevant.
+
+    When every match has the same rank there is no spread to scale against.
+    In that case all matches are equally relevant and must map to 1.0, not
+    0.0: ``search_score`` multiplies by text relevance, so returning 0.0
+    would zero out every result and discard the vote, tag, and context
+    signals entirely. That also covers the common single-result search,
+    where min and max are necessarily equal.
+    """
+    if max_rank == min_rank:
+        return 1.0
+    return (raw_rank - min_rank) / (max_rank - min_rank)
 
 
 class PostgresStore:
     """Postgres-backed store implementing the Store protocol.
 
     Constructor takes a psycopg2 connection and calls ``create_tables()``
-    to ensure the ``dogpark`` schema exists.
+    to ensure the ``acq`` schema exists.
     """
 
     def __init__(self, conn, *, create_schema: bool = True, connect: Any = None) -> None:
@@ -37,9 +64,9 @@ class PostgresStore:
     # ------------------------------------------------------------------
 
     def _reconnect(self) -> None:
-        """Replace the connection using the connect factory, if available."""
+        """Replace the connection using the connect factory."""
         if self._connect is None:
-            raise
+            raise RuntimeError("no connect factory configured")
         try:
             self._conn.close()
         except Exception:
@@ -48,18 +75,43 @@ class PostgresStore:
 
     def _execute(self, sql: str, params: tuple = ()) -> Any:
         with self._lock:
+            # Captured *before* executing. If no transaction is open yet then
+            # this statement is the first of a unit of work, so replaying it on
+            # a fresh connection loses nothing. Mid-transaction we must never
+            # replay: the caller's earlier statements are uncommitted, a new
+            # connection starts a new transaction without them, and the
+            # caller's later commit() would persist a partial write.
+            at_statement_boundary = (
+                self._connect is not None
+                and self._conn.closed == 0
+                and self._conn.info.transaction_status == psycopg2.extensions.TRANSACTION_STATUS_IDLE
+            )
             try:
                 cur = self._conn.cursor()
                 cur.execute(sql, params)
                 return cur
-            except Exception:
-                # Connection may be stale (e.g., JWT expired). Reconnect and retry once.
-                if self._connect is None:
-                    raise
-                self._reconnect()
-                cur = self._conn.cursor()
-                cur.execute(sql, params)
-                return cur
+            except psycopg2.Error:
+                # Retry only a genuinely dead connection (dropped socket,
+                # restarted server, expired credential), which psycopg2 marks
+                # by setting `closed` non-zero. Everything else — deadlock,
+                # serialization failure, statement timeout, lock timeout,
+                # constraint violation — leaves a live connection whose
+                # transaction is merely aborted. Note that several of those are
+                # OperationalError subclasses, so the exception type alone is
+                # not a safe signal.
+                if at_statement_boundary and self._conn.closed != 0:
+                    self._reconnect()
+                    cur = self._conn.cursor()
+                    cur.execute(sql, params)
+                    return cur
+                # Postgres rejects every further statement on a connection
+                # whose transaction is aborted, so roll back to keep it usable,
+                # then let the caller see the original error.
+                try:
+                    self._conn.rollback()
+                except psycopg2.Error:
+                    pass
+                raise
 
     def _execute_returning(self, sql: str, params: tuple = ()) -> Any:
         cur = self._execute(sql, params)
@@ -72,14 +124,14 @@ class PostgresStore:
     def create_user(self, username: str, password_hash: str) -> None:
         now = datetime.now(UTC).isoformat()
         self._execute(
-            "INSERT INTO dogpark.users (username, password_hash, created_at) VALUES (%s, %s, %s)",
+            "INSERT INTO acq.users (username, password_hash, created_at) VALUES (%s, %s, %s)",
             (username, password_hash, now),
         )
         self._conn.commit()
 
     def get_user(self, username: str) -> dict[str, str] | None:
         cur = self._execute(
-            "SELECT username, password_hash, created_at FROM dogpark.users WHERE username = %s",
+            "SELECT username, password_hash, created_at FROM acq.users WHERE username = %s",
             (username,),
         )
         row = cur.fetchone()
@@ -94,7 +146,7 @@ class PostgresStore:
     def create_agent_key(self, api_key: str, agent_name: str, github_username: str) -> dict:
         now = datetime.now(UTC).isoformat()
         self._execute(
-            "INSERT INTO dogpark.agent_keys (api_key, agent_name, github_username, created_at) VALUES (%s, %s, %s, %s)",
+            "INSERT INTO acq.agent_keys (api_key, agent_name, github_username, created_at) VALUES (%s, %s, %s, %s)",
             (api_key, agent_name, github_username, now),
         )
         self._conn.commit()
@@ -102,7 +154,7 @@ class PostgresStore:
 
     def get_agent_key(self, api_key: str) -> dict | None:
         cur = self._execute(
-            "SELECT api_key, agent_name, github_username, created_at FROM dogpark.agent_keys WHERE api_key = %s",
+            "SELECT api_key, agent_name, github_username, created_at FROM acq.agent_keys WHERE api_key = %s",
             (api_key,),
         )
         row = cur.fetchone()
@@ -112,7 +164,7 @@ class PostgresStore:
 
     def get_agent_key_by_github(self, github_username: str) -> dict | None:
         cur = self._execute(
-            "SELECT api_key, agent_name, github_username, created_at FROM dogpark.agent_keys WHERE github_username = %s",
+            "SELECT api_key, agent_name, github_username, created_at FROM acq.agent_keys WHERE github_username = %s",
             (github_username,),
         )
         row = cur.fetchone()
@@ -127,14 +179,14 @@ class PostgresStore:
     def get_or_create_tag(self, name: str) -> Tag:
         tag = Tag(name=name)
         cur = self._execute(
-            "SELECT id, name, description, usage_count FROM dogpark.tags WHERE name = %s",
+            "SELECT id, name, description, usage_count FROM acq.tags WHERE name = %s",
             (tag.name,),
         )
         row = cur.fetchone()
         if row is not None:
             return Tag(id=row[0], name=row[1], description=row[2], usage_count=row[3])
         self._execute(
-            "INSERT INTO dogpark.tags (id, name, description, usage_count) VALUES (%s, %s, %s, %s)",
+            "INSERT INTO acq.tags (id, name, description, usage_count) VALUES (%s, %s, %s, %s)",
             (tag.id, tag.name, tag.description, tag.usage_count),
         )
         self._conn.commit()
@@ -143,26 +195,26 @@ class PostgresStore:
     def merge_tags(self, source_id: str, target_id: str) -> None:
         # Collect affected questions before the merge so we can refresh tsvectors.
         cur = self._execute(
-            "SELECT question_id FROM dogpark.question_tags WHERE tag_id = %s OR tag_id = %s",
+            "SELECT question_id FROM acq.question_tags WHERE tag_id = %s OR tag_id = %s",
             (source_id, target_id),
         )
         affected_qids = {r[0] for r in cur.fetchall()}
 
         self._execute(
             """
-            UPDATE dogpark.question_tags SET tag_id = %s
+            UPDATE acq.question_tags SET tag_id = %s
             WHERE tag_id = %s
               AND question_id NOT IN (
-                  SELECT question_id FROM dogpark.question_tags WHERE tag_id = %s
+                  SELECT question_id FROM acq.question_tags WHERE tag_id = %s
               )
             """,
             (target_id, source_id, target_id),
         )
-        self._execute("DELETE FROM dogpark.question_tags WHERE tag_id = %s", (source_id,))
-        self._execute("DELETE FROM dogpark.tags WHERE id = %s", (source_id,))
-        cur = self._execute("SELECT COUNT(*) FROM dogpark.question_tags WHERE tag_id = %s", (target_id,))
+        self._execute("DELETE FROM acq.question_tags WHERE tag_id = %s", (source_id,))
+        self._execute("DELETE FROM acq.tags WHERE id = %s", (source_id,))
+        cur = self._execute("SELECT COUNT(*) FROM acq.question_tags WHERE tag_id = %s", (target_id,))
         row = cur.fetchone()
-        self._execute("UPDATE dogpark.tags SET usage_count = %s WHERE id = %s", (row[0], target_id))
+        self._execute("UPDATE acq.tags SET usage_count = %s WHERE id = %s", (row[0], target_id))
 
         # Refresh tsvectors for affected questions.
         for qid in affected_qids:
@@ -173,11 +225,11 @@ class PostgresStore:
     def list_tags(self, q: str | None = None) -> list[Tag]:
         if q:
             cur = self._execute(
-                "SELECT id, name, description, usage_count FROM dogpark.tags WHERE name LIKE %s",
+                "SELECT id, name, description, usage_count FROM acq.tags WHERE name LIKE %s",
                 (f"%{q}%",),
             )
         else:
-            cur = self._execute("SELECT id, name, description, usage_count FROM dogpark.tags ORDER BY usage_count DESC")
+            cur = self._execute("SELECT id, name, description, usage_count FROM acq.tags ORDER BY usage_count DESC")
         rows = cur.fetchall()
         return [Tag(id=r[0], name=r[1], description=r[2], usage_count=r[3]) for r in rows]
 
@@ -187,7 +239,7 @@ class PostgresStore:
 
     def create_question(self, question: Question, tag_names: list[str]) -> Question:
         self._execute(
-            "INSERT INTO dogpark.questions (id, data, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
+            "INSERT INTO acq.questions (id, data, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
             (
                 question.id,
                 question.model_dump_json(),
@@ -199,14 +251,14 @@ class PostgresStore:
         tags = [self.get_or_create_tag(name) for name in tag_names]
         for tag in tags:
             self._execute(
-                "INSERT INTO dogpark.question_tags (question_id, tag_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                "INSERT INTO acq.question_tags (question_id, tag_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                 (question.id, tag.id),
             )
-            self._execute("UPDATE dogpark.tags SET usage_count = usage_count + 1 WHERE id = %s", (tag.id,))
+            self._execute("UPDATE acq.tags SET usage_count = usage_count + 1 WHERE id = %s", (tag.id,))
         # Update tsvector with title + body + tag names.
         tag_text = " ".join(t.name for t in tags)
         self._execute(
-            "UPDATE dogpark.questions SET search_vector ="
+            "UPDATE acq.questions SET search_vector ="
             " to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
             (question.title, question.body, tag_text, question.id),
         )
@@ -214,13 +266,15 @@ class PostgresStore:
         return question
 
     def get_question(self, question_id: str) -> Question | None:
-        cur = self._execute("SELECT data FROM dogpark.questions WHERE id = %s", (question_id,))
+        cur = self._execute("SELECT data FROM acq.questions WHERE id = %s", (question_id,))
         row = cur.fetchone()
         if row is None:
             return None
         return Question.model_validate_json(row[0])
 
-    def edit_question(self, question_id: str, new_body: str, edited_by: str, edited_by_type: str) -> Question | None:
+    def edit_question(
+        self, question_id: str, new_body: str, edited_by: str, edited_by_type: Literal["agent", "human"]
+    ) -> Question | None:
         q = self.get_question(question_id)
         if q is None:
             return None
@@ -233,7 +287,7 @@ class PostgresStore:
             edited_by_type=edited_by_type,
         )
         self._execute(
-            "INSERT INTO dogpark.edit_history (id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO acq.edit_history (id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 history.id,
                 history.target_id,
@@ -248,13 +302,13 @@ class PostgresStore:
         now = datetime.now(UTC)
         updated = q.model_copy(update={"body": new_body, "updated_at": now})
         self._execute(
-            "UPDATE dogpark.questions SET data = %s, updated_at = %s WHERE id = %s",
+            "UPDATE acq.questions SET data = %s, updated_at = %s WHERE id = %s",
             (updated.model_dump_json(), now.isoformat(), question_id),
         )
         # Refresh tsvector with title + body + tag names.
         tag_text = " ".join(sorted(self._get_question_tag_names(question_id)))
         self._execute(
-            "UPDATE dogpark.questions SET search_vector ="
+            "UPDATE acq.questions SET search_vector ="
             " to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
             (updated.title, updated.body, tag_text, question_id),
         )
@@ -267,7 +321,7 @@ class PostgresStore:
             return None
         updated = q.model_copy(update={"pinned_answer_id": answer_id})
         self._execute(
-            "UPDATE dogpark.questions SET data = %s WHERE id = %s",
+            "UPDATE acq.questions SET data = %s WHERE id = %s",
             (updated.model_dump_json(), question_id),
         )
         self._conn.commit()
@@ -279,7 +333,7 @@ class PostgresStore:
             return None
         updated = q.model_copy(update={"pinned_answer_id": None})
         self._execute(
-            "UPDATE dogpark.questions SET data = %s WHERE id = %s",
+            "UPDATE acq.questions SET data = %s WHERE id = %s",
             (updated.model_dump_json(), question_id),
         )
         self._conn.commit()
@@ -287,7 +341,7 @@ class PostgresStore:
 
     def get_question_history(self, question_id: str) -> list[EditHistory]:
         cur = self._execute(
-            "SELECT id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at FROM dogpark.edit_history WHERE target_id = %s AND target_type = 'question' ORDER BY edited_at ASC",
+            "SELECT id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at FROM acq.edit_history WHERE target_id = %s AND target_type = 'question' ORDER BY edited_at ASC",
             (question_id,),
         )
         rows = cur.fetchall()
@@ -308,19 +362,17 @@ class PostgresStore:
             where_clauses.append("q.status = %s")
             params.append(status)
         if tag is not None:
-            join = " JOIN dogpark.question_tags qt ON q.id = qt.question_id JOIN dogpark.tags t ON qt.tag_id = t.id"
+            join = " JOIN acq.question_tags qt ON q.id = qt.question_id JOIN acq.tags t ON qt.tag_id = t.id"
             where_clauses.append("t.name = %s")
             params.append(tag)
 
         where = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         count_select = "COUNT(DISTINCT q.id)" if tag is not None else "COUNT(*)"
-        total = self._execute(f"SELECT {count_select} FROM dogpark.questions q{join}{where}", tuple(params)).fetchone()[
-            0
-        ]
+        total = self._execute(f"SELECT {count_select} FROM acq.questions q{join}{where}", tuple(params)).fetchone()[0]
 
         rows = self._execute(
-            f"SELECT q.data FROM dogpark.questions q{join}{where} ORDER BY q.created_at DESC LIMIT %s OFFSET %s",
+            f"SELECT q.data FROM acq.questions q{join}{where} ORDER BY q.created_at DESC LIMIT %s OFFSET %s",
             (*params, limit, offset),
         ).fetchall()
 
@@ -330,7 +382,7 @@ class PostgresStore:
             tag_names = self._get_question_tag_names(q.id)
             tags = [{"name": n} for n in sorted(tag_names)]
             answer_count = self._execute(
-                "SELECT COUNT(*) FROM dogpark.answers WHERE question_id = %s AND status IN ('approved', 'pending')",
+                "SELECT COUNT(*) FROM acq.answers WHERE question_id = %s AND status IN ('approved', 'pending')",
                 (q.id,),
             ).fetchone()[0]
             results.append({"question": q.model_dump(mode="json"), "tags": tags, "answer_count": answer_count})
@@ -344,7 +396,7 @@ class PostgresStore:
         if answer.supervised:
             answer = answer.model_copy(update={"status": "approved"})
         self._execute(
-            "INSERT INTO dogpark.answers (id, question_id, data, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s)",
+            "INSERT INTO acq.answers (id, question_id, data, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s)",
             (
                 answer.id,
                 answer.question_id,
@@ -356,20 +408,22 @@ class PostgresStore:
         )
         # Update tsvector
         self._execute(
-            "UPDATE dogpark.answers SET search_vector = to_tsvector('english', %s) WHERE id = %s",
+            "UPDATE acq.answers SET search_vector = to_tsvector('english', %s) WHERE id = %s",
             (answer.body, answer.id),
         )
         self._conn.commit()
         return answer
 
     def get_answer(self, answer_id: str) -> Answer | None:
-        cur = self._execute("SELECT data FROM dogpark.answers WHERE id = %s", (answer_id,))
+        cur = self._execute("SELECT data FROM acq.answers WHERE id = %s", (answer_id,))
         row = cur.fetchone()
         if row is None:
             return None
         return Answer.model_validate_json(row[0])
 
-    def edit_answer(self, answer_id: str, new_body: str, edited_by: str, edited_by_type: str) -> Answer | None:
+    def edit_answer(
+        self, answer_id: str, new_body: str, edited_by: str, edited_by_type: Literal["agent", "human"]
+    ) -> Answer | None:
         a = self.get_answer(answer_id)
         if a is None:
             return None
@@ -382,7 +436,7 @@ class PostgresStore:
             edited_by_type=edited_by_type,
         )
         self._execute(
-            "INSERT INTO dogpark.edit_history (id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO acq.edit_history (id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 history.id,
                 history.target_id,
@@ -397,12 +451,12 @@ class PostgresStore:
         now = datetime.now(UTC)
         updated = a.model_copy(update={"body": new_body, "updated_at": now})
         self._execute(
-            "UPDATE dogpark.answers SET data = %s, updated_at = %s WHERE id = %s",
+            "UPDATE acq.answers SET data = %s, updated_at = %s WHERE id = %s",
             (updated.model_dump_json(), now.isoformat(), answer_id),
         )
         # Refresh tsvector
         self._execute(
-            "UPDATE dogpark.answers SET search_vector = to_tsvector('english', %s) WHERE id = %s",
+            "UPDATE acq.answers SET search_vector = to_tsvector('english', %s) WHERE id = %s",
             (updated.body, answer_id),
         )
         self._conn.commit()
@@ -410,7 +464,7 @@ class PostgresStore:
 
     def get_answer_history(self, answer_id: str) -> list[EditHistory]:
         cur = self._execute(
-            "SELECT id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at FROM dogpark.edit_history WHERE target_id = %s AND target_type = 'answer' ORDER BY edited_at ASC",
+            "SELECT id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at FROM acq.edit_history WHERE target_id = %s AND target_type = 'answer' ORDER BY edited_at ASC",
             (answer_id,),
         )
         rows = cur.fetchall()
@@ -422,7 +476,7 @@ class PostgresStore:
 
     def create_comment(self, comment: Comment) -> Comment:
         self._execute(
-            "INSERT INTO dogpark.comments (id, parent_id, parent_type, data, status, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+            "INSERT INTO acq.comments (id, parent_id, parent_type, data, status, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
             (
                 comment.id,
                 comment.parent_id,
@@ -441,7 +495,7 @@ class PostgresStore:
 
     def cast_vote(self, vote: Vote) -> dict[str, Any]:
         cur = self._execute(
-            "SELECT created_at FROM dogpark.votes WHERE target_id = %s AND voter_id = %s AND voter_type = %s",
+            "SELECT created_at FROM acq.votes WHERE target_id = %s AND voter_id = %s AND voter_type = %s",
             (vote.target_id, vote.voter_id, vote.voter_type),
         )
         existing = cur.fetchone()
@@ -450,7 +504,7 @@ class PostgresStore:
 
         cutoff = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
         cur = self._execute(
-            "SELECT created_at FROM dogpark.votes WHERE target_id = %s AND voter_id = %s AND voter_type = %s AND created_at >= %s",
+            "SELECT created_at FROM acq.votes WHERE target_id = %s AND voter_id = %s AND voter_type = %s AND created_at >= %s",
             (vote.target_id, vote.voter_id, vote.voter_type, cutoff),
         )
         recent = cur.fetchone()
@@ -459,7 +513,7 @@ class PostgresStore:
 
         try:
             self._execute(
-                "INSERT INTO dogpark.votes (id, target_id, target_type, voter_id, voter_type, value, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                "INSERT INTO acq.votes (id, target_id, target_type, voter_id, voter_type, value, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     vote.id,
                     vote.target_id,
@@ -480,7 +534,7 @@ class PostgresStore:
 
     def _recalculate_vote_counts(self, target_id: str, target_type: str) -> dict[str, int]:
         cur = self._execute(
-            "SELECT voter_type, value, COUNT(*) FROM dogpark.votes WHERE target_id = %s GROUP BY voter_type, value",
+            "SELECT voter_type, value, COUNT(*) FROM acq.votes WHERE target_id = %s GROUP BY voter_type, value",
             (target_id,),
         )
         rows = cur.fetchall()
@@ -501,30 +555,30 @@ class PostgresStore:
                 counts["human_downvotes"] = cnt
 
         if target_type == "question":
-            cur = self._execute("SELECT data FROM dogpark.questions WHERE id = %s", (target_id,))
+            cur = self._execute("SELECT data FROM acq.questions WHERE id = %s", (target_id,))
             data_row = cur.fetchone()
             if data_row:
                 q = Question.model_validate_json(data_row[0])
                 updated = q.model_copy(update=counts)
                 self._execute(
-                    "UPDATE dogpark.questions SET data = %s WHERE id = %s",
+                    "UPDATE acq.questions SET data = %s WHERE id = %s",
                     (updated.model_dump_json(), target_id),
                 )
         elif target_type == "answer":
-            cur = self._execute("SELECT data FROM dogpark.answers WHERE id = %s", (target_id,))
+            cur = self._execute("SELECT data FROM acq.answers WHERE id = %s", (target_id,))
             data_row = cur.fetchone()
             if data_row:
                 a = Answer.model_validate_json(data_row[0])
                 updated = a.model_copy(update=counts)
                 self._execute(
-                    "UPDATE dogpark.answers SET data = %s WHERE id = %s",
+                    "UPDATE acq.answers SET data = %s WHERE id = %s",
                     (updated.model_dump_json(), target_id),
                 )
         return counts
 
     def delete_vote(self, target_id: str, voter_id: str, voter_type: str) -> bool:
         cur = self._execute(
-            "SELECT target_type FROM dogpark.votes WHERE target_id = %s AND voter_id = %s AND voter_type = %s",
+            "SELECT target_type FROM acq.votes WHERE target_id = %s AND voter_id = %s AND voter_type = %s",
             (target_id, voter_id, voter_type),
         )
         row = cur.fetchone()
@@ -532,7 +586,7 @@ class PostgresStore:
             return False
         target_type = row[0]
         self._execute(
-            "DELETE FROM dogpark.votes WHERE target_id = %s AND voter_id = %s AND voter_type = %s",
+            "DELETE FROM acq.votes WHERE target_id = %s AND voter_id = %s AND voter_type = %s",
             (target_id, voter_id, voter_type),
         )
         self._recalculate_vote_counts(target_id, target_type)
@@ -544,7 +598,7 @@ class PostgresStore:
             return {}
         placeholders = ",".join("%s" for _ in target_ids)
         cur = self._execute(
-            f"SELECT target_id, value FROM dogpark.votes WHERE voter_id = %s AND voter_type = %s AND target_id IN ({placeholders})",
+            f"SELECT target_id, value FROM acq.votes WHERE voter_id = %s AND voter_type = %s AND target_id IN ({placeholders})",
             (voter_id, voter_type, *target_ids),
         )
         return {r[0]: r[1] for r in cur.fetchall()}
@@ -555,7 +609,7 @@ class PostgresStore:
 
     def approve_content(self, content_id: str) -> bool:
         for table in ("answers", "comments"):
-            cur = self._execute(f"SELECT data, status FROM dogpark.{table} WHERE id = %s", (content_id,))
+            cur = self._execute(f"SELECT data, status FROM acq.{table} WHERE id = %s", (content_id,))
             row = cur.fetchone()
             if row is not None:
                 if row[1] != "pending":
@@ -564,14 +618,14 @@ class PostgresStore:
                     obj = Answer.model_validate_json(row[0])
                     updated = obj.model_copy(update={"status": "approved"})
                     self._execute(
-                        "UPDATE dogpark.answers SET data = %s, status = 'approved' WHERE id = %s",
+                        "UPDATE acq.answers SET data = %s, status = 'approved' WHERE id = %s",
                         (updated.model_dump_json(), content_id),
                     )
                 else:
                     obj = Comment.model_validate_json(row[0])
                     updated = obj.model_copy(update={"status": "approved"})
                     self._execute(
-                        "UPDATE dogpark.comments SET data = %s, status = 'approved' WHERE id = %s",
+                        "UPDATE acq.comments SET data = %s, status = 'approved' WHERE id = %s",
                         (updated.model_dump_json(), content_id),
                     )
                 self._conn.commit()
@@ -580,7 +634,7 @@ class PostgresStore:
 
     def reject_content(self, content_id: str) -> bool:
         for table in ("answers", "comments"):
-            cur = self._execute(f"SELECT data, status FROM dogpark.{table} WHERE id = %s", (content_id,))
+            cur = self._execute(f"SELECT data, status FROM acq.{table} WHERE id = %s", (content_id,))
             row = cur.fetchone()
             if row is not None:
                 if row[1] != "pending":
@@ -589,14 +643,14 @@ class PostgresStore:
                     obj = Answer.model_validate_json(row[0])
                     updated = obj.model_copy(update={"status": "rejected"})
                     self._execute(
-                        "UPDATE dogpark.answers SET data = %s, status = 'rejected' WHERE id = %s",
+                        "UPDATE acq.answers SET data = %s, status = 'rejected' WHERE id = %s",
                         (updated.model_dump_json(), content_id),
                     )
                 else:
                     obj = Comment.model_validate_json(row[0])
                     updated = obj.model_copy(update={"status": "rejected"})
                     self._execute(
-                        "UPDATE dogpark.comments SET data = %s, status = 'rejected' WHERE id = %s",
+                        "UPDATE acq.comments SET data = %s, status = 'rejected' WHERE id = %s",
                         (updated.model_dump_json(), content_id),
                     )
                 self._conn.commit()
@@ -608,9 +662,9 @@ class PostgresStore:
     # ------------------------------------------------------------------
 
     def pending_queue(self) -> dict[str, list[Any]]:
-        cur = self._execute("SELECT data FROM dogpark.answers WHERE status = 'pending' ORDER BY created_at ASC")
+        cur = self._execute("SELECT data FROM acq.answers WHERE status = 'pending' ORDER BY created_at ASC")
         answer_rows = cur.fetchall()
-        cur = self._execute("SELECT data FROM dogpark.comments WHERE status = 'pending' ORDER BY created_at ASC")
+        cur = self._execute("SELECT data FROM acq.comments WHERE status = 'pending' ORDER BY created_at ASC")
         comment_rows = cur.fetchall()
         return {
             "answers": [Answer.model_validate_json(r[0]) for r in answer_rows],
@@ -624,7 +678,7 @@ class PostgresStore:
 
         if include_pending:
             cur = self._execute(
-                "SELECT data FROM dogpark.answers WHERE question_id = %s AND status IN ('approved', 'pending')",
+                "SELECT data FROM acq.answers WHERE question_id = %s AND status IN ('approved', 'pending')",
                 (question_id,),
             )
             answer_rows = cur.fetchall()
@@ -634,7 +688,7 @@ class PostgresStore:
             ranked = rank_answers(approved, q.pinned_answer_id) + pending
         else:
             cur = self._execute(
-                "SELECT data FROM dogpark.answers WHERE question_id = %s AND status = 'approved'",
+                "SELECT data FROM acq.answers WHERE question_id = %s AND status = 'approved'",
                 (question_id,),
             )
             answer_rows = cur.fetchall()
@@ -644,7 +698,7 @@ class PostgresStore:
             )
 
         cur = self._execute(
-            "SELECT data FROM dogpark.comments WHERE parent_id = %s AND parent_type = 'question' AND status = 'approved'",
+            "SELECT data FROM acq.comments WHERE parent_id = %s AND parent_type = 'question' AND status = 'approved'",
             (question_id,),
         )
         comment_rows = cur.fetchall()
@@ -653,7 +707,7 @@ class PostgresStore:
         answer_threads = []
         for answer in ranked:
             cur = self._execute(
-                "SELECT data FROM dogpark.comments WHERE parent_id = %s AND parent_type = 'answer' AND status = 'approved'",
+                "SELECT data FROM acq.comments WHERE parent_id = %s AND parent_type = 'answer' AND status = 'approved'",
                 (answer.id,),
             )
             a_comment_rows = cur.fetchall()
@@ -690,7 +744,7 @@ class PostgresStore:
             cur = self._execute(
                 """
                 SELECT id, ts_rank(search_vector, to_tsquery('english', %s)) AS rank
-                FROM dogpark.questions
+                FROM acq.questions
                 WHERE search_vector @@ to_tsquery('english', %s)
                 """,
                 (tsquery_str, tsquery_str),
@@ -701,7 +755,7 @@ class PostgresStore:
             cur = self._execute(
                 """
                 SELECT question_id, ts_rank(search_vector, to_tsquery('english', %s)) AS rank
-                FROM dogpark.answers
+                FROM acq.answers
                 WHERE search_vector @@ to_tsquery('english', %s)
                 """,
                 (tsquery_str, tsquery_str),
@@ -731,15 +785,14 @@ class PostgresStore:
         raw_ranks = list(best_rank_per_question.values())
         min_rank = min(raw_ranks)
         max_rank = max(raw_ranks)
-        rank_range = max_rank - min_rank if max_rank != min_rank else 1.0
 
-        scored: list[tuple[float, str]] = []
+        scored: list[tuple[float, str, list[str]]] = []
         for question_id, raw_rank in best_rank_per_question.items():
             q = self.get_question(question_id)
             if q is None:
                 continue
 
-            normalized_rank = (raw_rank - min_rank) / rank_range
+            normalized_rank = _normalized_rank(raw_rank, min_rank, max_rank)
 
             q_tags = self._get_question_tag_names(question_id)
             if query_tags or q_tags:
@@ -764,7 +817,7 @@ class PostgresStore:
             )
 
             cur = self._execute(
-                "SELECT data FROM dogpark.answers WHERE question_id = %s AND status = 'approved'",
+                "SELECT data FROM acq.answers WHERE question_id = %s AND status = 'approved'",
                 (question_id,),
             )
             answer_rows = cur.fetchall()
@@ -800,7 +853,12 @@ class PostgresStore:
         return results
 
     def find_similar_questions(self, title: str, tag_names: list[str]) -> list[dict[str, Any]]:
-        """Tsvector on title field, Jaccard on tags, threshold 0.5, return top 3."""
+        """Find questions that look like duplicates of *title*, best 3 first.
+
+        The tsvector query only narrows the candidate set; the decision uses
+        the absolute ``duplicate_similarity`` measure so a lone weak text
+        match cannot register as a duplicate.
+        """
         query_tags = set(tag_names)
 
         words = title.strip().split()
@@ -811,44 +869,32 @@ class PostgresStore:
         try:
             cur = self._execute(
                 """
-                SELECT id, ts_rank(search_vector, to_tsquery('english', %s)) AS rank
-                FROM dogpark.questions
+                SELECT id
+                FROM acq.questions
                 WHERE search_vector @@ to_tsquery('english', %s)
+                ORDER BY ts_rank(search_vector, to_tsquery('english', %s)) DESC
+                LIMIT %s
                 """,
-                (tsquery_str, tsquery_str),
+                (tsquery_str, tsquery_str, _CANDIDATE_LIMIT),
             )
             fts_rows = cur.fetchall()
         except Exception:
             self._conn.rollback()
             return []
 
-        if not fts_rows:
-            return []
-
-        raw_ranks = [r[1] for r in fts_rows]
-        min_rank = min(raw_ranks)
-        max_rank = max(raw_ranks)
-        rank_range = max_rank - min_rank if max_rank != min_rank else 1.0
-
         scored = []
-        for question_id, raw_rank in fts_rows:
+        for (question_id,) in fts_rows:
             q = self.get_question(question_id)
             if q is None:
                 continue
 
-            normalized_rank = (raw_rank - min_rank) / rank_range
-
-            q_tags = self._get_question_tag_names(question_id)
-            if query_tags or q_tags:
-                intersection = len(query_tags & q_tags)
-                union = len(query_tags | q_tags)
-                jaccard = intersection / union if union > 0 else 0.0
-            else:
-                jaccard = 0.0
-
-            similarity = 0.5 * normalized_rank + 0.5 * jaccard
-
-            if similarity >= 0.5:
+            similarity = duplicate_similarity(
+                query_title=title,
+                candidate_title=q.title,
+                query_tags=query_tags,
+                candidate_tags=self._get_question_tag_names(question_id),
+            )
+            if similarity >= DUPLICATE_THRESHOLD:
                 scored.append((similarity, q))
 
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -856,7 +902,7 @@ class PostgresStore:
 
     def _get_question_tag_names(self, question_id: str) -> set[str]:
         cur = self._execute(
-            "SELECT t.name FROM dogpark.tags t JOIN dogpark.question_tags qt ON t.id = qt.tag_id WHERE qt.question_id = %s",
+            "SELECT t.name FROM acq.tags t JOIN acq.question_tags qt ON t.id = qt.tag_id WHERE qt.question_id = %s",
             (question_id,),
         )
         rows = cur.fetchall()
@@ -869,21 +915,21 @@ class PostgresStore:
             return
         tag_text = " ".join(sorted(self._get_question_tag_names(question_id)))
         self._execute(
-            "UPDATE dogpark.questions SET search_vector ="
+            "UPDATE acq.questions SET search_vector ="
             " to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
             (q.title, q.body, tag_text, question_id),
         )
 
     def get_status(self) -> dict[str, Any]:
-        total_questions = self._execute("SELECT COUNT(*) FROM dogpark.questions").fetchone()[0]
-        total_answers = self._execute("SELECT COUNT(*) FROM dogpark.answers WHERE status = 'approved'").fetchone()[0]
-        total_tags = self._execute("SELECT COUNT(*) FROM dogpark.tags").fetchone()[0]
-        total_votes = self._execute("SELECT COUNT(*) FROM dogpark.votes").fetchone()[0]
+        total_questions = self._execute("SELECT COUNT(*) FROM acq.questions").fetchone()[0]
+        total_answers = self._execute("SELECT COUNT(*) FROM acq.answers WHERE status = 'approved'").fetchone()[0]
+        total_tags = self._execute("SELECT COUNT(*) FROM acq.tags").fetchone()[0]
+        total_votes = self._execute("SELECT COUNT(*) FROM acq.votes").fetchone()[0]
         unanswered = self._execute(
-            "SELECT COUNT(DISTINCT q.id) FROM dogpark.questions q LEFT JOIN dogpark.answers a ON a.question_id = q.id AND a.status = 'approved' WHERE a.id IS NULL"
+            "SELECT COUNT(DISTINCT q.id) FROM acq.questions q LEFT JOIN acq.answers a ON a.question_id = q.id AND a.status = 'approved' WHERE a.id IS NULL"
         ).fetchone()[0]
-        pending_answers = self._execute("SELECT COUNT(*) FROM dogpark.answers WHERE status = 'pending'").fetchone()[0]
-        pending_comments = self._execute("SELECT COUNT(*) FROM dogpark.comments WHERE status = 'pending'").fetchone()[0]
+        pending_answers = self._execute("SELECT COUNT(*) FROM acq.answers WHERE status = 'pending'").fetchone()[0]
+        pending_comments = self._execute("SELECT COUNT(*) FROM acq.comments WHERE status = 'pending'").fetchone()[0]
         return {
             "total_questions": total_questions,
             "total_answers": total_answers,
@@ -900,31 +946,31 @@ class PostgresStore:
     def export_since(self, since: str | None = None) -> dict:
         if since:
             questions = self._execute(
-                "SELECT data FROM dogpark.questions WHERE created_at >= %s ORDER BY created_at",
+                "SELECT data FROM acq.questions WHERE created_at >= %s ORDER BY created_at",
                 (since,),
             ).fetchall()
             answers = self._execute(
-                "SELECT data FROM dogpark.answers WHERE created_at >= %s ORDER BY created_at",
+                "SELECT data FROM acq.answers WHERE created_at >= %s ORDER BY created_at",
                 (since,),
             ).fetchall()
             votes = self._execute(
-                "SELECT id, target_id, target_type, voter_id, voter_type, value, created_at FROM dogpark.votes WHERE created_at >= %s ORDER BY created_at",
+                "SELECT id, target_id, target_type, voter_id, voter_type, value, created_at FROM acq.votes WHERE created_at >= %s ORDER BY created_at",
                 (since,),
             ).fetchall()
             comments = self._execute(
-                "SELECT data FROM dogpark.comments WHERE created_at >= %s ORDER BY created_at",
+                "SELECT data FROM acq.comments WHERE created_at >= %s ORDER BY created_at",
                 (since,),
             ).fetchall()
         else:
-            questions = self._execute("SELECT data FROM dogpark.questions ORDER BY created_at").fetchall()
-            answers = self._execute("SELECT data FROM dogpark.answers ORDER BY created_at").fetchall()
+            questions = self._execute("SELECT data FROM acq.questions ORDER BY created_at").fetchall()
+            answers = self._execute("SELECT data FROM acq.answers ORDER BY created_at").fetchall()
             votes = self._execute(
-                "SELECT id, target_id, target_type, voter_id, voter_type, value, created_at FROM dogpark.votes ORDER BY created_at"
+                "SELECT id, target_id, target_type, voter_id, voter_type, value, created_at FROM acq.votes ORDER BY created_at"
             ).fetchall()
-            comments = self._execute("SELECT data FROM dogpark.comments ORDER BY created_at").fetchall()
+            comments = self._execute("SELECT data FROM acq.comments ORDER BY created_at").fetchall()
 
-        tags = self._execute("SELECT id, name, description, usage_count FROM dogpark.tags ORDER BY name").fetchall()
-        question_tags = self._execute("SELECT question_id, tag_id FROM dogpark.question_tags").fetchall()
+        tags = self._execute("SELECT id, name, description, usage_count FROM acq.tags ORDER BY name").fetchall()
+        question_tags = self._execute("SELECT question_id, tag_id FROM acq.question_tags").fetchall()
 
         return {
             "questions": [json.loads(r[0]) for r in questions],
@@ -961,7 +1007,7 @@ class PostgresStore:
             q = Question.model_validate(q_data)
             self._execute(
                 """
-                INSERT INTO dogpark.questions (id, data, status, created_at, updated_at)
+                INSERT INTO acq.questions (id, data, status, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, status = EXCLUDED.status,
                     created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at
@@ -976,7 +1022,7 @@ class PostgresStore:
             )
             tag_text = " ".join(q_tag_map.get(q.id, []))
             self._execute(
-                "UPDATE dogpark.questions SET search_vector ="
+                "UPDATE acq.questions SET search_vector ="
                 " to_tsvector('english', %s || ' ' || %s || ' ' || %s) WHERE id = %s",
                 (q.title, q.body, tag_text, q.id),
             )
@@ -986,7 +1032,7 @@ class PostgresStore:
             a = Answer.model_validate(a_data)
             self._execute(
                 """
-                INSERT INTO dogpark.answers (id, question_id, data, status, created_at, updated_at)
+                INSERT INTO acq.answers (id, question_id, data, status, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE SET question_id = EXCLUDED.question_id, data = EXCLUDED.data,
                     status = EXCLUDED.status, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at
@@ -1001,7 +1047,7 @@ class PostgresStore:
                 ),
             )
             self._execute(
-                "UPDATE dogpark.answers SET search_vector = to_tsvector('english', %s) WHERE id = %s",
+                "UPDATE acq.answers SET search_vector = to_tsvector('english', %s) WHERE id = %s",
                 (a.body, a.id),
             )
             count += 1
@@ -1009,7 +1055,7 @@ class PostgresStore:
         for t_data in data.get("tags", []):
             self._execute(
                 """
-                INSERT INTO dogpark.tags (id, name, description, usage_count)
+                INSERT INTO acq.tags (id, name, description, usage_count)
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description,
                     usage_count = EXCLUDED.usage_count
@@ -1020,14 +1066,14 @@ class PostgresStore:
 
         for qt_data in data.get("question_tags", []):
             self._execute(
-                "INSERT INTO dogpark.question_tags (question_id, tag_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                "INSERT INTO acq.question_tags (question_id, tag_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                 (qt_data["question_id"], qt_data["tag_id"]),
             )
 
         for v_data in data.get("votes", []):
             self._execute(
                 """
-                INSERT INTO dogpark.votes (id, target_id, target_type, voter_id, voter_type, value, created_at)
+                INSERT INTO acq.votes (id, target_id, target_type, voter_id, voter_type, value, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING
                 """,
@@ -1047,7 +1093,7 @@ class PostgresStore:
             c = Comment.model_validate(c_data)
             self._execute(
                 """
-                INSERT INTO dogpark.comments (id, parent_id, parent_type, data, status, created_at)
+                INSERT INTO acq.comments (id, parent_id, parent_type, data, status, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE SET parent_id = EXCLUDED.parent_id, parent_type = EXCLUDED.parent_type,
                     data = EXCLUDED.data, status = EXCLUDED.status, created_at = EXCLUDED.created_at

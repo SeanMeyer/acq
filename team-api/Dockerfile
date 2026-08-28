@@ -1,8 +1,15 @@
 # --- Stage 1: Build UI ---
 FROM node:22-slim AS ui-build
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# CI=true keeps pnpm non-interactive; it otherwise aborts when it wants to
+# confirm removing a modules directory and finds no TTY.
+ENV CI=true
+RUN corepack enable
 WORKDIR /app
-COPY team-ui/package.json team-ui/pnpm-lock.yaml ./
+COPY team-ui/package.json team-ui/pnpm-lock.yaml team-ui/pnpm-workspace.yaml ./
+# Resolve pnpm from package.json's "packageManager" field so the Docker build,
+# CI, and local installs all use one pinned version. An unpinned "pnpm@latest"
+# is what previously broke this build when pnpm 11 changed its behaviour.
+RUN corepack install
 RUN pnpm install --frozen-lockfile
 COPY team-ui/ .
 ENV VITE_API_BASE=""
@@ -13,7 +20,7 @@ FROM python:3.12.11-slim
 
 COPY --from=ghcr.io/astral-sh/uv:0.9.22 /uv /uvx /bin/
 
-RUN apt-get update && apt-get install -y --no-install-recommends daemontools libpq-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -40,6 +47,7 @@ USER app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# The app honours PORT and defaults to 8000.
 EXPOSE 8000
 
-CMD ["envdir", "/etc/datadog/secrets", "/app/team-api/.venv/bin/acq-team-api"]
+CMD ["/app/team-api/.venv/bin/acq-team-api"]

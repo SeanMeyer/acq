@@ -10,11 +10,44 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from acq_shared.models import Answer, Comment, EditHistory, Question, Tag, Vote
-from acq_shared.scoring import rank_answers, search_score, text_relevance_score
+from acq_shared.scoring import (
+    DUPLICATE_THRESHOLD,
+    duplicate_similarity,
+    rank_answers,
+    search_score,
+    text_relevance_score,
+)
 from acq_shared.sqlite_schema import create_tables
+
+
+def _fts_or_query(text: str) -> str:
+    """Build an FTS5 MATCH expression that ORs the words of *text*.
+
+    FTS5 treats space-separated bare terms as an implicit AND, so passing a
+    multi-word title straight through demands that *every* word appear in the
+    row. Candidate retrieval wants the opposite: any overlapping word makes a
+    row worth scoring, and the caller ranks what comes back. Postgres builds
+    its tsquery with ``|`` for the same reason, so ORing here is also what
+    keeps the two backends returning the same candidates.
+
+    Each term is double-quoted so punctuation cannot be parsed as FTS5
+    operator syntax, with embedded double quotes doubled to escape them.
+    Returns "" when *text* has no usable words; callers must treat that as
+    "no candidates" rather than passing it to MATCH.
+    """
+    words = [w.replace('"', '""') for w in text.split() if w.strip()]
+    return " OR ".join(f'"{w}"' for w in words)
+
+
+# Upper bound on rows pulled from FTS before absolute scoring. ORing the terms
+# of a title means one common word can match a large slice of a mature corpus,
+# and each candidate then costs two further queries to hydrate. Only the best
+# three survive, so taking the most text-relevant candidates and stopping is
+# enough, and it keeps the cost independent of corpus size.
+_CANDIDATE_LIMIT = 50
 
 
 class SqliteStore:
@@ -159,7 +192,9 @@ class SqliteStore:
             return None
         return Question.model_validate_json(row[0])
 
-    def edit_question(self, question_id: str, new_body: str, edited_by: str, edited_by_type: str) -> Question | None:
+    def edit_question(
+        self, question_id: str, new_body: str, edited_by: str, edited_by_type: Literal["agent", "human"]
+    ) -> Question | None:
         q = self.get_question(question_id)
         if q is None:
             return None
@@ -306,7 +341,9 @@ class SqliteStore:
             return None
         return Answer.model_validate_json(row[0])
 
-    def edit_answer(self, answer_id: str, new_body: str, edited_by: str, edited_by_type: str) -> Answer | None:
+    def edit_answer(
+        self, answer_id: str, new_body: str, edited_by: str, edited_by_type: Literal["agent", "human"]
+    ) -> Answer | None:
         a = self.get_answer(answer_id)
         if a is None:
             return None
@@ -610,8 +647,9 @@ class SqliteStore:
         """FTS5 + tag Jaccard search returning ranked question threads."""
         query_tags = set(tags or [])
 
-        words = query.strip().split()
-        fts_query = " OR ".join(f'"{w}"' for w in words if w)
+        fts_query = _fts_or_query(query)
+        if not fts_query:
+            return []
         try:
             fts_rows = self._conn.execute(
                 "SELECT entity_id, entity_type, question_id, rank FROM search_index WHERE search_index MATCH ? ORDER BY rank",
@@ -707,44 +745,40 @@ class SqliteStore:
         return results
 
     def find_similar_questions(self, title: str, tag_names: list[str]) -> list[dict[str, Any]]:
-        """FTS5 on title field, Jaccard on tags, threshold 0.5, return top 3."""
+        """Find questions that may be duplicates of *title*, best 3 first.
+
+        FTS5 only narrows the candidate set; ranking and admission use the
+        absolute ``duplicate_similarity`` measure, so a lone weak text match
+        cannot register as a duplicate on text alone.
+        """
         query_tags = set(tag_names)
+
+        fts_query = _fts_or_query(title)
+        if not fts_query:
+            return []
 
         try:
             fts_rows = self._conn.execute(
-                "SELECT entity_id, entity_type, question_id, rank FROM search_index WHERE search_index MATCH ? AND entity_type = 'question' ORDER BY rank",
-                (title,),
+                "SELECT question_id FROM search_index WHERE search_index MATCH ? AND entity_type = 'question' "
+                "ORDER BY rank LIMIT ?",
+                (fts_query, _CANDIDATE_LIMIT),
             ).fetchall()
         except sqlite3.OperationalError:
             return []
 
-        if not fts_rows:
-            return []
-
-        raw_ranks = [r[3] for r in fts_rows]
-        min_rank = min(raw_ranks)
-        max_rank = max(raw_ranks)
-        rank_range = max_rank - min_rank if max_rank != min_rank else 1.0
-
         scored = []
-        for entity_id, entity_type, question_id, raw_rank in fts_rows:
+        for (question_id,) in fts_rows:
             q = self.get_question(question_id)
             if q is None:
                 continue
 
-            normalized_rank = 1.0 - (raw_rank - min_rank) / rank_range
-
-            q_tags = self._get_question_tag_names(question_id)
-            if query_tags or q_tags:
-                intersection = len(query_tags & q_tags)
-                union = len(query_tags | q_tags)
-                jaccard = intersection / union if union > 0 else 0.0
-            else:
-                jaccard = 0.0
-
-            similarity = 0.5 * normalized_rank + 0.5 * jaccard
-
-            if similarity >= 0.5:
+            similarity = duplicate_similarity(
+                query_title=title,
+                candidate_title=q.title,
+                query_tags=query_tags,
+                candidate_tags=self._get_question_tag_names(question_id),
+            )
+            if similarity >= DUPLICATE_THRESHOLD:
                 scored.append((similarity, q))
 
         scored.sort(key=lambda x: x[0], reverse=True)

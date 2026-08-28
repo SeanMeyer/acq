@@ -34,13 +34,13 @@ def store(request):
 
         conn = psycopg2.connect(dsn)
         cur = conn.cursor()
-        cur.execute("DROP SCHEMA IF EXISTS dogpark CASCADE")
+        cur.execute("DROP SCHEMA IF EXISTS acq CASCADE")
         conn.commit()
         cur.close()
         s = PostgresStore(conn)
         yield s
         cur = conn.cursor()
-        cur.execute("DROP SCHEMA IF EXISTS dogpark CASCADE")
+        cur.execute("DROP SCHEMA IF EXISTS acq CASCADE")
         conn.commit()
         cur.close()
         s.close()
@@ -477,10 +477,10 @@ class TestSearch:
         """A search for a tag name should find questions even if the tag
         doesn't appear in the title or body."""
         q = _make_question(title="Build fails on CI", body="The pipeline errors out.")
-        store.create_question(q, ["howler", "ci-pipeline"])
+        store.create_question(q, ["toolchain", "ci-pipeline"])
         a = _make_answer(q.id, supervised=True)
         store.create_answer(a)
-        results = store.search("howler")
+        results = store.search("toolchain")
         assert len(results) >= 1
         assert results[0]["question"].id == q.id
 
@@ -560,6 +560,86 @@ class TestFindSimilar:
 
     def test_no_similar_returns_empty(self, store):
         results = store.find_similar_questions("something totally different", [])
+        assert results == []
+
+    def test_weak_single_word_overlap_is_not_a_duplicate(self, store):
+        """A question sharing one incidental word is not a duplicate.
+
+        Regression test: similarity used to be derived from the full-text
+        rank, which is min-max normalised across the matched set. A lone
+        match therefore normalised to the maximum and cleared the threshold,
+        so an unrelated question that happened to share a single word blocked
+        creation until the caller retried with force_create.
+        """
+        q = _make_question(title="How to configure nginx upstream timeouts")
+        store.create_question(q, ["nginx"])
+
+        results = store.find_similar_questions("nginx", ["kubernetes"])
+        assert results == []
+
+    def test_same_title_is_a_duplicate_without_shared_tags(self, store):
+        """Matching titles alone are enough; tags are only a bonus."""
+        q = _make_question(title="How to configure nginx upstream timeouts")
+        store.create_question(q, ["nginx"])
+
+        results = store.find_similar_questions("How to configure nginx upstream timeouts", [])
+        assert len(results) == 1
+        assert results[0]["question"].id == q.id
+
+    def test_short_query_inside_longer_title_is_not_a_duplicate(self, store):
+        """A brief query contained in a much longer title is not the same question."""
+        q = _make_question(title="How to configure nginx upstream timeouts on staging hosts")
+        store.create_question(q, ["nginx"])
+
+        results = store.find_similar_questions("configure nginx", [])
+        assert results == []
+
+    def test_non_ascii_identical_title_is_a_duplicate(self, store):
+        """A non-Latin title must still be comparable.
+
+        Regression test: the tokenizer used an ASCII-only pattern, so a title
+        with no Latin characters produced an empty token set on both sides and
+        two identical questions scored 0.0 similarity — meaning duplicates in
+        those languages could never be detected at all.
+        """
+        title = "Почему сервис отклоняет развёртывание"
+        q = _make_question(title=title)
+        store.create_question(q, ["deploys"])
+
+        results = store.find_similar_questions(title, ["deploys"])
+        assert len(results) == 1
+        assert results[0]["question"].id == q.id
+
+    def test_reworded_duplicate_is_surfaced_for_judgement(self, store):
+        """A duplicate asked in different words must still reach the caller.
+
+        The candidate list is consumed by an agent that decides for itself
+        whether a candidate really asks its question, so recall matters more
+        than precision here: a candidate that is returned and rejected costs
+        one extra call, whereas one that is never returned is invisible and
+        the agent files a duplicate without ever knowing.
+        """
+        q = _make_question(title="fixing nginx 502 bad gateway")
+        store.create_question(q, ["nginx"])
+
+        results = store.find_similar_questions("how do I fix nginx 502 errors", ["nginx"])
+        assert len(results) == 1
+        assert results[0]["question"].id == q.id
+
+    def test_shared_filler_words_and_tag_are_not_enough(self, store):
+        """Two unrelated questions must not match on filler words alone.
+
+        Both titles are phrased as questions and carry the same tag, so they
+        share "how", "do", "i" and "the" and nothing else. Counting those as
+        agreement made unrelated questions look similar, since a matching tag
+        already supplies most of the score on its own.
+        """
+        q = _make_question(title="How do I restart the postgres replication service after a failover")
+        store.create_question(q, ["infra"])
+
+        results = store.find_similar_questions(
+            "How do I configure the nginx load balancer for zero downtime deploys", ["infra"]
+        )
         assert results == []
 
 

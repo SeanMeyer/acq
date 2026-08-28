@@ -1,0 +1,44 @@
+# Keep the build context clean. Without this, `COPY team-ui/ .` overwrites the
+# node_modules installed inside the image with the host's (wrong platform),
+# which makes the UI build fail.
+
+.git
+.github
+.worktrees
+
+# Node
+node_modules/
+.svelte-kit/
+.vite/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Local env and secrets — the image sets what it needs explicitly.
+.env
+.env.*
+
+# Local databases
+*.db
+*.sqlite3
+
+# Editor / agent scratch
+.vscode/
+.idea/
+.claude/
+CLAUDE.local.md
+opencode.json
+
+# Docs and specs are not needed to build or run the service.
+docs/
+openspec/
+*.md
+!README.md

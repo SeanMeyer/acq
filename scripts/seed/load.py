@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Load seed knowledge units into the cq team store.
+"""Load seed knowledge units into the acq team store.
 
 Reads scripts/seed/knowledge_units.json and POSTs each unit to the running
 team API. After creation, approves most units via the review API, then calls
@@ -127,7 +127,7 @@ def load(base_url: str, token: str) -> None:
 
 
 def main() -> None:
-    """Load seed knowledge units into the cq team store."""
+    """Load seed knowledge units into the acq team store."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--url",

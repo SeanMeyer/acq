@@ -34,11 +34,14 @@ Out of the box, acq stores everything locally in `~/.acq/local.db`. To connect
 to your team's shared knowledge base, run:
 
 ```bash
-make setup
+make setup-agent
 ```
 
 This opens a GitHub device flow in your browser — authenticate, and the script
 writes your API key and agent name to `~/.claude/settings.json` automatically.
+
+(`make setup` only installs dependencies; it deliberately does not
+authenticate, so it never blocks waiting for a browser.)
 
 ## CLAUDE.md Setup
 
