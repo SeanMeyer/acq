@@ -5,6 +5,39 @@ services:
       dockerfile: team-api/Dockerfile
     ports:
       - "8742:8742"
+    # Bring the container back after a crash, a Docker daemon restart, or a host
+    # reboot, so a local instance stays available without being started by hand.
+    # "unless-stopped" rather than "always": Docker persists the manually-stopped
+    # marker across a reboot, so an explicit `docker compose stop` stays stopped.
+    restart: unless-stopped
+    healthcheck:
+      # There is no curl in the slim runtime image, but the app's own interpreter
+      # always is. PORT is read here rather than hardcoded so this can never
+      # drift from the port pinned below.
+      test:
+        - CMD
+        - /app/team-api/.venv/bin/python
+        - -c
+        - import os,urllib.request;urllib.request.urlopen(f"http://127.0.0.1:{os.environ.get('PORT','8000')}/health",timeout=3)
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+      # SCOPE, so nobody over-trusts this. Two limits:
+      #
+      # 1. Diagnostic only. `restart:` above reacts to the main process *exiting*.
+      #    Plain Compose has no restart-on-unhealthy; that is Swarm-only. A
+      #    hung-but-alive process is therefore reported, not repaired. Acting on
+      #    it needs an external actuator (a host-level supervisor polling
+      #    `docker inspect`, or an autoheal sidecar — note the latter requires
+      #    exposing the Docker socket to a container).
+      #
+      # 2. Shallow. /health returns a static payload and touches neither SQLite
+      #    nor auth (the health() handler in team_api/app.py). This proves the
+      #    web server answers, not that the app works. Handlers are sync `def`,
+      #    so they share a thread pool with /health: total pool exhaustion is
+      #    caught, but a partial stall that still leaves a thread free for
+      #    /health is not.
     volumes:
       - acq-data:/data
       - ./scripts:/app/scripts:ro
