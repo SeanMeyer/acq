@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from acq_shared.store import Store
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-
-from acq_shared.store import Store
 
 from .auth import get_current_user
 from .deps import get_store
@@ -61,6 +60,11 @@ def review_queue(
 
 # ------------------------------------------------------------------
 # Approve / reject
+#
+# Rejection is also the soft-delete mechanism for answers and comments:
+# nothing is removed, the row just stops being visible, and approving it
+# again restores it. Both therefore accept content in any status other than
+# the one being applied.
 # ------------------------------------------------------------------
 
 
@@ -74,7 +78,7 @@ def approve_content(
     if result is None:
         raise HTTPException(status_code=404, detail="Content not found")
     if result is False:
-        raise HTTPException(status_code=409, detail="Content already reviewed")
+        raise HTTPException(status_code=409, detail="Content is already approved")
     return {"id": content_id, "status": "approved"}
 
 
@@ -88,7 +92,7 @@ def reject_content(
     if result is None:
         raise HTTPException(status_code=404, detail="Content not found")
     if result is False:
-        raise HTTPException(status_code=409, detail="Content already reviewed")
+        raise HTTPException(status_code=409, detail="Content is already rejected")
     return {"id": content_id, "status": "rejected"}
 
 
@@ -117,7 +121,7 @@ def review_stats(
 
 
 # ------------------------------------------------------------------
-# Edit question / answer
+# Edit question / answer / comment
 # ------------------------------------------------------------------
 
 
@@ -125,14 +129,33 @@ class EditBodyRequest(BaseModel):
     body: str
 
 
+class EditQuestionRequest(BaseModel):
+    """A partial update. Every omitted field is left untouched.
+
+    ``tags``, when present, replaces the question's whole tag set rather than
+    adding to it, so the client always sends the full list it wants.
+    """
+
+    body: str | None = None
+    title: str | None = None
+    tags: list[str] | None = None
+
+
 @router.put("/questions/{question_id}")
 def edit_question(
     question_id: str,
-    request: EditBodyRequest,
+    request: EditQuestionRequest,
     user: str = Depends(get_current_user),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
-    result = store.edit_question(question_id, request.body, user, "human")
+    result = store.edit_question(
+        question_id,
+        request.body,
+        user,
+        "human",
+        new_title=request.title,
+        new_tags=request.tags,
+    )
     if result is None:
         raise HTTPException(status_code=404, detail="Question not found")
     return result.model_dump(mode="json")
@@ -149,6 +172,55 @@ def edit_answer(
     if result is None:
         raise HTTPException(status_code=404, detail="Answer not found")
     return result.model_dump(mode="json")
+
+
+@router.put("/comments/{comment_id}")
+def edit_comment(
+    comment_id: str,
+    request: EditBodyRequest,
+    user: str = Depends(get_current_user),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    result = store.edit_comment(comment_id, request.body, user, "human")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    return result.model_dump(mode="json")
+
+
+# ------------------------------------------------------------------
+# Delete / restore question
+#
+# Answers and comments reuse the reject and approve routes above; questions
+# have no review lifecycle, so they get their own pair.
+# ------------------------------------------------------------------
+
+
+@router.delete("/questions/{question_id}")
+def delete_question(
+    question_id: str,
+    _user: str = Depends(get_current_user),
+    store: Store = Depends(get_store),
+) -> dict[str, str]:
+    result = store.delete_question(question_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    if result is False:
+        raise HTTPException(status_code=409, detail="Question is already deleted")
+    return {"id": question_id, "status": "deleted"}
+
+
+@router.post("/questions/{question_id}/restore")
+def restore_question(
+    question_id: str,
+    _user: str = Depends(get_current_user),
+    store: Store = Depends(get_store),
+) -> dict[str, str]:
+    result = store.restore_question(question_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    if result is False:
+        raise HTTPException(status_code=409, detail="Question is not deleted")
+    return {"id": question_id, "status": "open"}
 
 
 # ------------------------------------------------------------------
@@ -206,3 +278,12 @@ def answer_history(
     store: Store = Depends(get_store),
 ) -> list[dict[str, Any]]:
     return [h.model_dump(mode="json") for h in store.get_answer_history(answer_id)]
+
+
+@router.get("/comments/{comment_id}/history")
+def comment_history(
+    comment_id: str,
+    _user: str = Depends(get_current_user),
+    store: Store = Depends(get_store),
+) -> list[dict[str, Any]]:
+    return [h.model_dump(mode="json") for h in store.get_comment_history(comment_id)]

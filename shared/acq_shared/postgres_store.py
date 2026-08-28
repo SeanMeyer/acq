@@ -177,6 +177,17 @@ class PostgresStore:
     # ------------------------------------------------------------------
 
     def get_or_create_tag(self, name: str) -> Tag:
+        tag = self._get_or_create_tag(name)
+        self._conn.commit()
+        return tag
+
+    def _get_or_create_tag(self, name: str) -> Tag:
+        """Resolve a tag, creating it if new, without committing.
+
+        Kept separate from the public method so a caller that is midway
+        through a larger unit of work can resolve tags without flushing its
+        own half-finished writes.
+        """
         tag = Tag(name=name)
         cur = self._execute(
             "SELECT id, name, description, usage_count FROM acq.tags WHERE name = %s",
@@ -189,7 +200,6 @@ class PostgresStore:
             "INSERT INTO acq.tags (id, name, description, usage_count) VALUES (%s, %s, %s, %s)",
             (tag.id, tag.name, tag.description, tag.usage_count),
         )
-        self._conn.commit()
         return tag
 
     def merge_tags(self, source_id: str, target_id: str) -> None:
@@ -248,7 +258,7 @@ class PostgresStore:
                 question.updated_at.isoformat(),
             ),
         )
-        tags = [self.get_or_create_tag(name) for name in tag_names]
+        tags = [self._get_or_create_tag(name) for name in tag_names]
         for tag in tags:
             self._execute(
                 "INSERT INTO acq.question_tags (question_id, tag_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
@@ -272,16 +282,20 @@ class PostgresStore:
             return None
         return Question.model_validate_json(row[0])
 
-    def edit_question(
-        self, question_id: str, new_body: str, edited_by: str, edited_by_type: Literal["agent", "human"]
-    ) -> Question | None:
-        q = self.get_question(question_id)
-        if q is None:
-            return None
+    def _record_edit(
+        self,
+        target_id: str,
+        target_type: Literal["question", "question_title", "answer", "comment"],
+        previous_body: str,
+        new_body: str,
+        edited_by: str,
+        edited_by_type: Literal["agent", "human"],
+    ) -> None:
+        """Append one append-only edit_history row. The caller commits."""
         history = EditHistory(
-            target_id=question_id,
-            target_type="question",
-            previous_body=q.body,
+            target_id=target_id,
+            target_type=target_type,
+            previous_body=previous_body,
             new_body=new_body,
             edited_by=edited_by,
             edited_by_type=edited_by_type,
@@ -299,8 +313,65 @@ class PostgresStore:
                 history.edited_at.isoformat(),
             ),
         )
+
+    def _set_question_tags(self, question_id: str, tag_names: list[str]) -> None:
+        """Replace a question's tag set with *tag_names*. The caller commits.
+
+        usage_count is recomputed from question_tags rather than incremented
+        and decremented, so repeated tag edits cannot make it drift.
+        """
+        desired = {self._get_or_create_tag(name).id for name in tag_names}
+        cur = self._execute("SELECT tag_id FROM acq.question_tags WHERE question_id = %s", (question_id,))
+        current = {r[0] for r in cur.fetchall()}
+        for tag_id in current - desired:
+            self._execute(
+                "DELETE FROM acq.question_tags WHERE question_id = %s AND tag_id = %s",
+                (question_id, tag_id),
+            )
+        for tag_id in desired - current:
+            self._execute(
+                "INSERT INTO acq.question_tags (question_id, tag_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (question_id, tag_id),
+            )
+        for tag_id in current | desired:
+            count = self._execute("SELECT COUNT(*) FROM acq.question_tags WHERE tag_id = %s", (tag_id,)).fetchone()[0]
+            self._execute("UPDATE acq.tags SET usage_count = %s WHERE id = %s", (count, tag_id))
+
+    def edit_question(
+        self,
+        question_id: str,
+        new_body: str | None,
+        edited_by: str,
+        edited_by_type: Literal["agent", "human"],
+        new_title: str | None = None,
+        new_tags: list[str] | None = None,
+    ) -> Question | None:
+        """Update a question's body, title, and/or tag set.
+
+        Every field is optional; ``None`` means "leave unchanged", so a caller
+        can retitle a question without resubmitting its body. Body and title
+        changes are appended to edit_history under the target types
+        ``question`` and ``question_title``. Tag changes are not audited,
+        matching the MVP decision to record body edits only.
+        """
+        q = self.get_question(question_id)
+        if q is None:
+            return None
+
+        updates: dict[str, Any] = {}
+        if new_body is not None and new_body != q.body:
+            self._record_edit(question_id, "question", q.body, new_body, edited_by, edited_by_type)
+            updates["body"] = new_body
+        if new_title is not None and new_title != q.title:
+            self._record_edit(question_id, "question_title", q.title, new_title, edited_by, edited_by_type)
+            updates["title"] = new_title
+        if new_tags is not None:
+            self._set_question_tags(question_id, new_tags)
+        if not updates and new_tags is None:
+            return q
+
         now = datetime.now(UTC)
-        updated = q.model_copy(update={"body": new_body, "updated_at": now})
+        updated = q.model_copy(update={**updates, "updated_at": now})
         self._execute(
             "UPDATE acq.questions SET data = %s, updated_at = %s WHERE id = %s",
             (updated.model_dump_json(), now.isoformat(), question_id),
@@ -341,11 +412,54 @@ class PostgresStore:
 
     def get_question_history(self, question_id: str) -> list[EditHistory]:
         cur = self._execute(
-            "SELECT id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at FROM acq.edit_history WHERE target_id = %s AND target_type = 'question' ORDER BY edited_at ASC",
+            "SELECT id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at FROM acq.edit_history WHERE target_id = %s AND target_type IN ('question', 'question_title') ORDER BY edited_at ASC",
             (question_id,),
         )
         rows = cur.fetchall()
         return [_row_to_edit_history(r) for r in rows]
+
+    def delete_question(self, question_id: str) -> bool | None:
+        """Soft-delete a question by moving it to the 'deleted' status.
+
+        Nothing is destroyed: the question, its answers, comments, votes, and
+        edit history all stay in the database, and the read paths filter on
+        status instead.
+
+        Returns None when no such question exists and False when it is already
+        deleted, matching approve_content/reject_content so the routes can tell
+        404 from 409 without a second lookup.
+        """
+        q = self.get_question(question_id)
+        if q is None:
+            return None
+        if q.status == "deleted":
+            return False
+        self._write_question_status(q, "deleted")
+        return True
+
+    def restore_question(self, question_id: str) -> bool | None:
+        """Undo delete_question, returning the question to 'open'.
+
+        A question that was 'resolved' before deletion comes back 'open',
+        because the pre-deletion status is not retained. Returns None when no
+        such question exists and False when it is not deleted.
+        """
+        q = self.get_question(question_id)
+        if q is None:
+            return None
+        if q.status != "deleted":
+            return False
+        self._write_question_status(q, "open")
+        return True
+
+    def _write_question_status(self, q: Question, status: str) -> None:
+        now = datetime.now(UTC)
+        updated = q.model_copy(update={"status": status, "updated_at": now})
+        self._execute(
+            "UPDATE acq.questions SET data = %s, status = %s, updated_at = %s WHERE id = %s",
+            (updated.model_dump_json(), status, now.isoformat(), q.id),
+        )
+        self._conn.commit()
 
     def list_questions(
         self,
@@ -361,6 +475,9 @@ class PostgresStore:
         if status is not None:
             where_clauses.append("q.status = %s")
             params.append(status)
+        else:
+            # Soft-deleted questions are hidden unless asked for by name.
+            where_clauses.append("q.status <> 'deleted'")
         if tag is not None:
             join = " JOIN acq.question_tags qt ON q.id = qt.question_id JOIN acq.tags t ON qt.tag_id = t.id"
             where_clauses.append("t.name = %s")
@@ -489,6 +606,35 @@ class PostgresStore:
         self._conn.commit()
         return comment
 
+    def get_comment(self, comment_id: str) -> Comment | None:
+        cur = self._execute("SELECT data FROM acq.comments WHERE id = %s", (comment_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return Comment.model_validate_json(row[0])
+
+    def edit_comment(
+        self, comment_id: str, new_body: str, edited_by: str, edited_by_type: Literal["agent", "human"]
+    ) -> Comment | None:
+        c = self.get_comment(comment_id)
+        if c is None:
+            return None
+        self._record_edit(comment_id, "comment", c.body, new_body, edited_by, edited_by_type)
+        updated = c.model_copy(update={"body": new_body})
+        self._execute(
+            "UPDATE acq.comments SET data = %s WHERE id = %s",
+            (updated.model_dump_json(), comment_id),
+        )
+        self._conn.commit()
+        return updated
+
+    def get_comment_history(self, comment_id: str) -> list[EditHistory]:
+        cur = self._execute(
+            "SELECT id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at FROM acq.edit_history WHERE target_id = %s AND target_type = 'comment' ORDER BY edited_at ASC",
+            (comment_id,),
+        )
+        return [_row_to_edit_history(r) for r in cur.fetchall()]
+
     # ------------------------------------------------------------------
     # Votes
     # ------------------------------------------------------------------
@@ -607,55 +753,44 @@ class PostgresStore:
     # Moderation
     # ------------------------------------------------------------------
 
-    def approve_content(self, content_id: str) -> bool:
-        for table in ("answers", "comments"):
-            cur = self._execute(f"SELECT data, status FROM acq.{table} WHERE id = %s", (content_id,))
-            row = cur.fetchone()
-            if row is not None:
-                if row[1] != "pending":
-                    return False
-                if table == "answers":
-                    obj = Answer.model_validate_json(row[0])
-                    updated = obj.model_copy(update={"status": "approved"})
-                    self._execute(
-                        "UPDATE acq.answers SET data = %s, status = 'approved' WHERE id = %s",
-                        (updated.model_dump_json(), content_id),
-                    )
-                else:
-                    obj = Comment.model_validate_json(row[0])
-                    updated = obj.model_copy(update={"status": "approved"})
-                    self._execute(
-                        "UPDATE acq.comments SET data = %s, status = 'approved' WHERE id = %s",
-                        (updated.model_dump_json(), content_id),
-                    )
-                self._conn.commit()
-                return True
-        return False
+    def approve_content(self, content_id: str) -> bool | None:
+        """Make an answer or comment visible, whether pending or rejected.
 
-    def reject_content(self, content_id: str) -> bool:
-        for table in ("answers", "comments"):
+        Accepting rejected content is what makes rejection reversible, so this
+        doubles as the restore path for soft-deleted answers and comments.
+        """
+        return self._set_content_status(content_id, "approved")
+
+    def reject_content(self, content_id: str) -> bool | None:
+        """Hide an answer or comment, whether pending or already approved.
+
+        Rejection is the soft-delete mechanism: the row is kept and only its
+        status changes, so restoring it later is a status change back.
+        """
+        return self._set_content_status(content_id, "rejected")
+
+    def _set_content_status(self, content_id: str, new_status: str) -> bool | None:
+        """Move an answer or comment to *new_status*.
+
+        Returns None when no such content exists and False when it already has
+        that status, which is the distinction the routes turn into 404 versus
+        409.
+        """
+        for table, cls in (("answers", Answer), ("comments", Comment)):
             cur = self._execute(f"SELECT data, status FROM acq.{table} WHERE id = %s", (content_id,))
             row = cur.fetchone()
-            if row is not None:
-                if row[1] != "pending":
-                    return False
-                if table == "answers":
-                    obj = Answer.model_validate_json(row[0])
-                    updated = obj.model_copy(update={"status": "rejected"})
-                    self._execute(
-                        "UPDATE acq.answers SET data = %s, status = 'rejected' WHERE id = %s",
-                        (updated.model_dump_json(), content_id),
-                    )
-                else:
-                    obj = Comment.model_validate_json(row[0])
-                    updated = obj.model_copy(update={"status": "rejected"})
-                    self._execute(
-                        "UPDATE acq.comments SET data = %s, status = 'rejected' WHERE id = %s",
-                        (updated.model_dump_json(), content_id),
-                    )
-                self._conn.commit()
-                return True
-        return False
+            if row is None:
+                continue
+            if row[1] == new_status:
+                return False
+            updated = cls.model_validate_json(row[0]).model_copy(update={"status": new_status})
+            self._execute(
+                f"UPDATE acq.{table} SET data = %s, status = %s WHERE id = %s",
+                (updated.model_dump_json(), new_status, content_id),
+            )
+            self._conn.commit()
+            return True
+        return None
 
     # ------------------------------------------------------------------
     # Querying
@@ -671,47 +806,54 @@ class PostgresStore:
             "comments": [Comment.model_validate_json(r[0]) for r in comment_rows],
         }
 
-    def get_question_thread(self, question_id: str, include_pending: bool = False) -> dict[str, Any] | None:
+    def get_question_thread(
+        self, question_id: str, include_pending: bool = False, include_deleted: bool = False
+    ) -> dict[str, Any] | None:
+        """Assemble a question with its ranked answers and their comments.
+
+        *include_pending* adds answers still awaiting review. *include_deleted*
+        additionally returns soft-deleted questions along with rejected answers
+        and comments; only the human curation UI passes it, so agent-facing
+        reads never see deleted content.
+        """
         q = self.get_question(question_id)
-        if q is None:
+        if q is None or (q.status == "deleted" and not include_deleted):
             return None
 
+        answer_statuses = ["approved"]
         if include_pending:
-            cur = self._execute(
-                "SELECT data FROM acq.answers WHERE question_id = %s AND status IN ('approved', 'pending')",
-                (question_id,),
-            )
-            answer_rows = cur.fetchall()
-            all_answers = [Answer.model_validate_json(r[0]) for r in answer_rows]
-            approved = [a for a in all_answers if a.status == "approved"]
-            pending = [a for a in all_answers if a.status == "pending"]
-            ranked = rank_answers(approved, q.pinned_answer_id) + pending
-        else:
-            cur = self._execute(
-                "SELECT data FROM acq.answers WHERE question_id = %s AND status = 'approved'",
-                (question_id,),
-            )
-            answer_rows = cur.fetchall()
-            ranked = rank_answers(
-                [Answer.model_validate_json(r[0]) for r in answer_rows],
-                q.pinned_answer_id,
-            )
+            answer_statuses.append("pending")
+        if include_deleted:
+            answer_statuses.append("rejected")
+        # Pending comments belong to the review queue rather than the thread,
+        # so only soft-deleted ones join, letting the UI offer a restore.
+        comment_statuses = ["approved", "rejected"] if include_deleted else ["approved"]
 
         cur = self._execute(
-            "SELECT data FROM acq.comments WHERE parent_id = %s AND parent_type = 'question' AND status = 'approved'",
-            (question_id,),
+            "SELECT data FROM acq.answers WHERE question_id = %s AND status = ANY(%s)",
+            (question_id, answer_statuses),
         )
-        comment_rows = cur.fetchall()
-        q_comments = [Comment.model_validate_json(r[0]) for r in comment_rows]
+        all_answers = [Answer.model_validate_json(r[0]) for r in cur.fetchall()]
+        # Only approved answers are ranked against each other; pending and
+        # rejected ones trail behind so ranking stays a statement about the
+        # answers a reader is meant to weigh.
+        ranked = rank_answers([a for a in all_answers if a.status == "approved"], q.pinned_answer_id)
+        ranked += [a for a in all_answers if a.status == "pending"]
+        ranked += [a for a in all_answers if a.status == "rejected"]
+
+        cur = self._execute(
+            "SELECT data FROM acq.comments WHERE parent_id = %s AND parent_type = 'question' AND status = ANY(%s)",
+            (question_id, comment_statuses),
+        )
+        q_comments = [Comment.model_validate_json(r[0]) for r in cur.fetchall()]
 
         answer_threads = []
         for answer in ranked:
             cur = self._execute(
-                "SELECT data FROM acq.comments WHERE parent_id = %s AND parent_type = 'answer' AND status = 'approved'",
-                (answer.id,),
+                "SELECT data FROM acq.comments WHERE parent_id = %s AND parent_type = 'answer' AND status = ANY(%s)",
+                (answer.id, comment_statuses),
             )
-            a_comment_rows = cur.fetchall()
-            a_comments = [Comment.model_validate_json(r[0]) for r in a_comment_rows]
+            a_comments = [Comment.model_validate_json(r[0]) for r in cur.fetchall()]
             answer_threads.append({"answer": answer, "comments": a_comments})
 
         tag_names = self._get_question_tag_names(question_id)
@@ -757,6 +899,9 @@ class PostgresStore:
                 SELECT question_id, ts_rank(search_vector, to_tsquery('english', %s)) AS rank
                 FROM acq.answers
                 WHERE search_vector @@ to_tsquery('english', %s)
+                  -- Exclude soft-deleted answers only. Whether a pending
+                  -- answer should steer search predates soft-delete.
+                  AND status <> 'rejected'
                 """,
                 (tsquery_str, tsquery_str),
             )
@@ -789,7 +934,7 @@ class PostgresStore:
         scored: list[tuple[float, str, list[str]]] = []
         for question_id, raw_rank in best_rank_per_question.items():
             q = self.get_question(question_id)
-            if q is None:
+            if q is None or q.status == "deleted":
                 continue
 
             normalized_rank = _normalized_rank(raw_rank, min_rank, max_rank)
@@ -885,7 +1030,7 @@ class PostgresStore:
         scored = []
         for (question_id,) in fts_rows:
             q = self.get_question(question_id)
-            if q is None:
+            if q is None or q.status == "deleted":
                 continue
 
             similarity = duplicate_similarity(
@@ -921,12 +1066,12 @@ class PostgresStore:
         )
 
     def get_status(self) -> dict[str, Any]:
-        total_questions = self._execute("SELECT COUNT(*) FROM acq.questions").fetchone()[0]
+        total_questions = self._execute("SELECT COUNT(*) FROM acq.questions WHERE status <> 'deleted'").fetchone()[0]
         total_answers = self._execute("SELECT COUNT(*) FROM acq.answers WHERE status = 'approved'").fetchone()[0]
         total_tags = self._execute("SELECT COUNT(*) FROM acq.tags").fetchone()[0]
         total_votes = self._execute("SELECT COUNT(*) FROM acq.votes").fetchone()[0]
         unanswered = self._execute(
-            "SELECT COUNT(DISTINCT q.id) FROM acq.questions q LEFT JOIN acq.answers a ON a.question_id = q.id AND a.status = 'approved' WHERE a.id IS NULL"
+            "SELECT COUNT(DISTINCT q.id) FROM acq.questions q LEFT JOIN acq.answers a ON a.question_id = q.id AND a.status = 'approved' WHERE a.id IS NULL AND q.status <> 'deleted'"
         ).fetchone()[0]
         pending_answers = self._execute("SELECT COUNT(*) FROM acq.answers WHERE status = 'pending'").fetchone()[0]
         pending_comments = self._execute("SELECT COUNT(*) FROM acq.comments WHERE status = 'pending'").fetchone()[0]

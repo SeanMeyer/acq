@@ -20,9 +20,11 @@
   const content = $derived(item.content);
   const answer = $derived(isAnswer ? item.content as Answer : null);
 
-  async function saveEdit(body: string) {
+  async function saveEdit(patch: { body: string }) {
     if (isAnswer) {
-      await api.editAnswer(item.content.id, body);
+      await api.editAnswer(item.content.id, patch.body);
+    } else {
+      await api.editComment(item.content.id, patch.body);
     }
     onEditSaved?.();
   }

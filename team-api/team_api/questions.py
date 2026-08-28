@@ -102,7 +102,11 @@ def question_thread(
     user: str = Depends(get_current_user),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
-    thread = store.get_question_thread(question_id, include_pending=True)
+    # include_deleted: the curation UI must be able to open a soft-deleted
+    # question in order to offer a restore. Agent-facing reads never do this.
+    thread = store.get_question_thread(
+        question_id, include_pending=True, include_deleted=True
+    )
     if thread is None:
         raise HTTPException(status_code=404, detail="Question not found")
 

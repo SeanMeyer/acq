@@ -89,17 +89,29 @@ export const api = {
   reviewStats: () =>
     request<ReviewStats>('/review/stats'),
 
-  editQuestion: (id: string, body: string) =>
-    request(`/questions/${id}`, { method: 'PUT', body: JSON.stringify({ body }) }),
+  editQuestion: (id: string, patch: { body?: string; title?: string; tags?: string[] }) =>
+    request(`/questions/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
 
   editAnswer: (id: string, body: string) =>
     request(`/answers/${id}`, { method: 'PUT', body: JSON.stringify({ body }) }),
+
+  editComment: (id: string, body: string) =>
+    request(`/comments/${id}`, { method: 'PUT', body: JSON.stringify({ body }) }),
+
+  deleteQuestion: (id: string) =>
+    request<{ id: string; status: string }>(`/questions/${id}`, { method: 'DELETE' }),
+
+  restoreQuestion: (id: string) =>
+    request<{ id: string; status: string }>(`/questions/${id}/restore`, { method: 'POST' }),
 
   questionHistory: (id: string) =>
     request(`/questions/${id}/history`),
 
   answerHistory: (id: string) =>
     request(`/answers/${id}/history`),
+
+  commentHistory: (id: string) =>
+    request(`/comments/${id}/history`),
 
   pinAnswer: (questionId: string, answerId: string) =>
     request(`/questions/${questionId}/pin`, { method: 'PUT', body: JSON.stringify({ answer_id: answerId }) }),

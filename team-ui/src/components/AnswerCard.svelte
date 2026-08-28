@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AnswerThread } from '$lib/types';
+  import type { AnswerThread, Comment } from '$lib/types';
   import { timeAgo } from '$lib/utils';
   import Markdown from './Markdown.svelte';
 
@@ -11,6 +11,12 @@
     onVote = (_v: 1 | -1) => {},
     onApprove = () => {},
     onReject = () => {},
+    onEdit,
+    onDelete,
+    onRestore,
+    onCommentEdit,
+    onCommentDelete,
+    onCommentRestore,
   }: {
     thread: AnswerThread;
     isPinned?: boolean;
@@ -19,12 +25,41 @@
     onVote?: (value: 1 | -1) => void;
     onApprove?: () => void;
     onReject?: () => void;
+    onEdit?: () => void;
+    onDelete?: () => void;
+    onRestore?: () => void;
+    onCommentEdit?: (comment: Comment) => void;
+    onCommentDelete?: (comment: Comment) => void;
+    onCommentRestore?: (comment: Comment) => void;
   } = $props();
 
   const isPending = $derived(thread.answer.status === 'pending');
+  const isRejected = $derived(thread.answer.status === 'rejected');
+
+  // Two-press confirmation: first click arms, second click fires.
+  let armedDelete = $state(false);
+  let armedComment = $state<string | null>(null);
+
+  function pressDelete() {
+    if (armedDelete) {
+      armedDelete = false;
+      onDelete?.();
+    } else {
+      armedDelete = true;
+    }
+  }
+
+  function pressCommentDelete(comment: Comment) {
+    if (armedComment === comment.id) {
+      armedComment = null;
+      onCommentDelete?.(comment);
+    } else {
+      armedComment = comment.id;
+    }
+  }
 </script>
 
-<div class="border-b border-gray-100 last:border-b-0 {isPending ? 'opacity-60 bg-gray-50' : ''}">
+<div class="border-b border-gray-100 last:border-b-0 {isRejected ? 'opacity-50' : isPending ? 'opacity-60 bg-gray-50' : ''}">
   <div class="flex gap-4 px-5 py-4">
     <!-- Vote controls -->
     <div class="flex-shrink-0 w-10 flex flex-col items-center pt-1 gap-0.5">
@@ -52,7 +87,7 @@
     </div>
 
     <div class="flex-1 min-w-0">
-      {#if isPinned || isPending}
+      {#if isPinned || isPending || isRejected}
         <div class="flex items-center gap-2 mb-2">
           {#if isPinned}
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
@@ -65,6 +100,11 @@
           {#if isPending}
             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
               Pending
+            </span>
+          {/if}
+          {#if isRejected}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
+              deleted
             </span>
           {/if}
         </div>
@@ -88,20 +128,47 @@
           {/if}
         </div>
 
-        {#if isPending}
-          <div class="flex items-center gap-2">
-            <button
-              onclick={onApprove}
-              class="px-2.5 py-1 text-xs font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors"
-            >
-              Approve
-            </button>
-            <button
-              onclick={onReject}
-              class="px-2.5 py-1 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors"
-            >
-              Reject
-            </button>
+        {#if isPending || onEdit || onDelete || onRestore}
+          <div class="flex items-center gap-3">
+            {#if isPending}
+              <button
+                onclick={onApprove}
+                class="px-2.5 py-1 text-xs font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors"
+              >
+                Approve
+              </button>
+              <button
+                onclick={onReject}
+                class="px-2.5 py-1 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors"
+              >
+                Reject
+              </button>
+            {/if}
+            {#if onEdit}
+              <button
+                onclick={() => onEdit?.()}
+                class="text-xs font-medium text-indigo-600 hover:text-indigo-700 transition-colors"
+              >
+                Edit
+              </button>
+            {/if}
+            {#if isRejected}
+              {#if onRestore}
+                <button
+                  onclick={() => onRestore?.()}
+                  class="text-xs font-medium text-indigo-600 hover:text-indigo-700 transition-colors"
+                >
+                  Restore
+                </button>
+              {/if}
+            {:else if onDelete}
+              <button
+                onclick={pressDelete}
+                class="text-xs font-medium text-red-600 hover:text-red-700 transition-colors"
+              >
+                {armedDelete ? 'Confirm delete?' : 'Delete'}
+              </button>
+            {/if}
           </div>
         {/if}
       </div>
@@ -110,7 +177,7 @@
         <div class="mt-3 pl-3 border-l-2 border-gray-100 space-y-2">
           {#each thread.comments as comment (comment.id)}
             <div class="text-xs">
-              <span class="text-gray-700">{comment.body}</span>
+              <span class="text-gray-700 {comment.status === 'rejected' ? 'line-through text-gray-400' : ''}">{comment.body}</span>
               <span class="text-gray-400 ml-1">
                 — {comment.created_by}
                 {#if comment.created_by_type === 'agent'}
@@ -118,6 +185,35 @@
                 {/if}
                 · {timeAgo(comment.created_at)}
               </span>
+              {#if onCommentEdit || onCommentDelete || onCommentRestore}
+                <span class="ml-2 inline-flex items-center gap-2">
+                  {#if onCommentEdit}
+                    <button
+                      onclick={() => onCommentEdit?.(comment)}
+                      class="font-medium text-indigo-600 hover:text-indigo-700 transition-colors"
+                    >
+                      Edit
+                    </button>
+                  {/if}
+                  {#if comment.status === 'rejected'}
+                    {#if onCommentRestore}
+                      <button
+                        onclick={() => onCommentRestore?.(comment)}
+                        class="font-medium text-indigo-600 hover:text-indigo-700 transition-colors"
+                      >
+                        Restore
+                      </button>
+                    {/if}
+                  {:else if onCommentDelete}
+                    <button
+                      onclick={() => pressCommentDelete(comment)}
+                      class="font-medium text-red-600 hover:text-red-700 transition-colors"
+                    >
+                      {armedComment === comment.id ? 'Confirm?' : 'Delete'}
+                    </button>
+                  {/if}
+                </span>
+              {/if}
             </div>
           {/each}
         </div>

@@ -99,6 +99,17 @@ class SqliteStore:
     # ------------------------------------------------------------------
 
     def get_or_create_tag(self, name: str) -> Tag:
+        tag = self._get_or_create_tag(name)
+        self._conn.commit()
+        return tag
+
+    def _get_or_create_tag(self, name: str) -> Tag:
+        """Resolve a tag, creating it if new, without committing.
+
+        Kept separate from the public method so a caller that is midway
+        through a larger unit of work can resolve tags without flushing its
+        own half-finished writes.
+        """
         tag = Tag(name=name)  # normalize via field_validator
         row = self._conn.execute(
             "SELECT id, name, description, usage_count FROM tags WHERE name = ?",
@@ -110,7 +121,6 @@ class SqliteStore:
             "INSERT INTO tags (id, name, description, usage_count) VALUES (?, ?, ?, ?)",
             (tag.id, tag.name, tag.description, tag.usage_count),
         )
-        self._conn.commit()
         return tag
 
     def merge_tags(self, source_id: str, target_id: str) -> None:
@@ -170,7 +180,7 @@ class SqliteStore:
                 question.updated_at.isoformat(),
             ),
         )
-        tags = [self.get_or_create_tag(name) for name in tag_names]
+        tags = [self._get_or_create_tag(name) for name in tag_names]
         for tag in tags:
             self._conn.execute(
                 "INSERT OR IGNORE INTO question_tags (question_id, tag_id) VALUES (?, ?)",
@@ -192,16 +202,20 @@ class SqliteStore:
             return None
         return Question.model_validate_json(row[0])
 
-    def edit_question(
-        self, question_id: str, new_body: str, edited_by: str, edited_by_type: Literal["agent", "human"]
-    ) -> Question | None:
-        q = self.get_question(question_id)
-        if q is None:
-            return None
+    def _record_edit(
+        self,
+        target_id: str,
+        target_type: Literal["question", "question_title", "answer", "comment"],
+        previous_body: str,
+        new_body: str,
+        edited_by: str,
+        edited_by_type: Literal["agent", "human"],
+    ) -> None:
+        """Append one append-only edit_history row. The caller commits."""
         history = EditHistory(
-            target_id=question_id,
-            target_type="question",
-            previous_body=q.body,
+            target_id=target_id,
+            target_type=target_type,
+            previous_body=previous_body,
             new_body=new_body,
             edited_by=edited_by,
             edited_by_type=edited_by_type,
@@ -219,22 +233,75 @@ class SqliteStore:
                 history.edited_at.isoformat(),
             ),
         )
+
+    def _set_question_tags(self, question_id: str, tag_names: list[str]) -> None:
+        """Replace a question's tag set with *tag_names*. The caller commits.
+
+        usage_count is recomputed from question_tags rather than incremented
+        and decremented, so repeated tag edits cannot make it drift.
+        """
+        desired = {self._get_or_create_tag(name).id for name in tag_names}
+        current = {
+            r[0]
+            for r in self._conn.execute(
+                "SELECT tag_id FROM question_tags WHERE question_id = ?", (question_id,)
+            ).fetchall()
+        }
+        for tag_id in current - desired:
+            self._conn.execute(
+                "DELETE FROM question_tags WHERE question_id = ? AND tag_id = ?",
+                (question_id, tag_id),
+            )
+        for tag_id in desired - current:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO question_tags (question_id, tag_id) VALUES (?, ?)",
+                (question_id, tag_id),
+            )
+        for tag_id in current | desired:
+            count = self._conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_id = ?", (tag_id,)).fetchone()[0]
+            self._conn.execute("UPDATE tags SET usage_count = ? WHERE id = ?", (count, tag_id))
+
+    def edit_question(
+        self,
+        question_id: str,
+        new_body: str | None,
+        edited_by: str,
+        edited_by_type: Literal["agent", "human"],
+        new_title: str | None = None,
+        new_tags: list[str] | None = None,
+    ) -> Question | None:
+        """Update a question's body, title, and/or tag set.
+
+        Every field is optional; ``None`` means "leave unchanged", so a caller
+        can retitle a question without resubmitting its body. Body and title
+        changes are appended to edit_history under the target types
+        ``question`` and ``question_title``. Tag changes are not audited,
+        matching the MVP decision to record body edits only.
+        """
+        q = self.get_question(question_id)
+        if q is None:
+            return None
+
+        updates: dict[str, Any] = {}
+        if new_body is not None and new_body != q.body:
+            self._record_edit(question_id, "question", q.body, new_body, edited_by, edited_by_type)
+            updates["body"] = new_body
+        if new_title is not None and new_title != q.title:
+            self._record_edit(question_id, "question_title", q.title, new_title, edited_by, edited_by_type)
+            updates["title"] = new_title
+        if new_tags is not None:
+            self._set_question_tags(question_id, new_tags)
+        if not updates and new_tags is None:
+            return q
+
         now = datetime.now(UTC)
-        updated = q.model_copy(update={"body": new_body, "updated_at": now})
+        updated = q.model_copy(update={**updates, "updated_at": now})
         self._conn.execute(
             "UPDATE questions SET data = ?, updated_at = ? WHERE id = ?",
             (updated.model_dump_json(), now.isoformat(), question_id),
         )
-        self._conn.execute(
-            "DELETE FROM search_index WHERE entity_id = ? AND entity_type = 'question'",
-            (question_id,),
-        )
-        tag_text = " ".join(sorted(self._get_question_tag_names(question_id)))
-        self._conn.execute(
-            "INSERT INTO search_index (entity_id, entity_type, question_id, title, body, tags)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (question_id, "question", question_id, updated.title, updated.body, tag_text),
-        )
+        # Reads the row written just above, so it must follow the UPDATE.
+        self._refresh_question_fts(question_id)
         self._conn.commit()
         return updated
 
@@ -264,10 +331,53 @@ class SqliteStore:
 
     def get_question_history(self, question_id: str) -> list[EditHistory]:
         rows = self._conn.execute(
-            "SELECT id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at FROM edit_history WHERE target_id = ? AND target_type = 'question' ORDER BY edited_at ASC",
+            "SELECT id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at FROM edit_history WHERE target_id = ? AND target_type IN ('question', 'question_title') ORDER BY edited_at ASC",
             (question_id,),
         ).fetchall()
         return [_row_to_edit_history(r) for r in rows]
+
+    def delete_question(self, question_id: str) -> bool | None:
+        """Soft-delete a question by moving it to the 'deleted' status.
+
+        Nothing is destroyed: the question, its answers, comments, votes, and
+        edit history all stay in the database, and the read paths filter on
+        status instead.
+
+        Returns None when no such question exists and False when it is already
+        deleted, matching approve_content/reject_content so the routes can tell
+        404 from 409 without a second lookup.
+        """
+        q = self.get_question(question_id)
+        if q is None:
+            return None
+        if q.status == "deleted":
+            return False
+        self._write_question_status(q, "deleted")
+        return True
+
+    def restore_question(self, question_id: str) -> bool | None:
+        """Undo delete_question, returning the question to 'open'.
+
+        A question that was 'resolved' before deletion comes back 'open',
+        because the pre-deletion status is not retained. Returns None when no
+        such question exists and False when it is not deleted.
+        """
+        q = self.get_question(question_id)
+        if q is None:
+            return None
+        if q.status != "deleted":
+            return False
+        self._write_question_status(q, "open")
+        return True
+
+    def _write_question_status(self, q: Question, status: str) -> None:
+        now = datetime.now(UTC)
+        updated = q.model_copy(update={"status": status, "updated_at": now})
+        self._conn.execute(
+            "UPDATE questions SET data = ?, status = ?, updated_at = ? WHERE id = ?",
+            (updated.model_dump_json(), status, now.isoformat(), q.id),
+        )
+        self._conn.commit()
 
     def list_questions(
         self,
@@ -283,6 +393,9 @@ class SqliteStore:
         if status is not None:
             where_clauses.append("q.status = ?")
             params.append(status)
+        else:
+            # Soft-deleted questions are hidden unless asked for by name.
+            where_clauses.append("q.status != 'deleted'")
         if tag is not None:
             join = " JOIN question_tags qt ON q.id = qt.question_id JOIN tags t ON qt.tag_id = t.id"
             where_clauses.append("t.name = ?")
@@ -412,6 +525,34 @@ class SqliteStore:
         self._conn.commit()
         return comment
 
+    def get_comment(self, comment_id: str) -> Comment | None:
+        row = self._conn.execute("SELECT data FROM comments WHERE id = ?", (comment_id,)).fetchone()
+        if row is None:
+            return None
+        return Comment.model_validate_json(row[0])
+
+    def edit_comment(
+        self, comment_id: str, new_body: str, edited_by: str, edited_by_type: Literal["agent", "human"]
+    ) -> Comment | None:
+        c = self.get_comment(comment_id)
+        if c is None:
+            return None
+        self._record_edit(comment_id, "comment", c.body, new_body, edited_by, edited_by_type)
+        updated = c.model_copy(update={"body": new_body})
+        self._conn.execute(
+            "UPDATE comments SET data = ? WHERE id = ?",
+            (updated.model_dump_json(), comment_id),
+        )
+        self._conn.commit()
+        return updated
+
+    def get_comment_history(self, comment_id: str) -> list[EditHistory]:
+        rows = self._conn.execute(
+            "SELECT id, target_id, target_type, previous_body, new_body, edited_by, edited_by_type, edited_at FROM edit_history WHERE target_id = ? AND target_type = 'comment' ORDER BY edited_at ASC",
+            (comment_id,),
+        ).fetchall()
+        return [_row_to_edit_history(r) for r in rows]
+
     # ------------------------------------------------------------------
     # Votes
     # ------------------------------------------------------------------
@@ -524,53 +665,44 @@ class SqliteStore:
     # Moderation
     # ------------------------------------------------------------------
 
-    def approve_content(self, content_id: str) -> bool:
-        for table in ("answers", "comments"):
-            row = self._conn.execute(f"SELECT data, status FROM {table} WHERE id = ?", (content_id,)).fetchone()
-            if row is not None:
-                if row[1] != "pending":
-                    return False
-                if table == "answers":
-                    obj = Answer.model_validate_json(row[0])
-                    updated = obj.model_copy(update={"status": "approved"})
-                    self._conn.execute(
-                        "UPDATE answers SET data = ?, status = 'approved' WHERE id = ?",
-                        (updated.model_dump_json(), content_id),
-                    )
-                else:
-                    obj = Comment.model_validate_json(row[0])
-                    updated = obj.model_copy(update={"status": "approved"})
-                    self._conn.execute(
-                        "UPDATE comments SET data = ?, status = 'approved' WHERE id = ?",
-                        (updated.model_dump_json(), content_id),
-                    )
-                self._conn.commit()
-                return True
-        return False
+    def approve_content(self, content_id: str) -> bool | None:
+        """Make an answer or comment visible, whether pending or rejected.
 
-    def reject_content(self, content_id: str) -> bool:
-        for table in ("answers", "comments"):
+        Accepting rejected content is what makes rejection reversible, so this
+        doubles as the restore path for soft-deleted answers and comments.
+        """
+        return self._set_content_status(content_id, "approved")
+
+    def reject_content(self, content_id: str) -> bool | None:
+        """Hide an answer or comment, whether pending or already approved.
+
+        Rejection is the soft-delete mechanism: the row is kept and only its
+        status changes, so restoring it later is a status change back.
+        """
+        return self._set_content_status(content_id, "rejected")
+
+    def _set_content_status(self, content_id: str, new_status: str) -> bool | None:
+        """Move an answer or comment to *new_status*.
+
+        Returns None when no such content exists and False when it already has
+        that status, which is the distinction the routes turn into 404 versus
+        409.
+        """
+        model = {"answers": Answer, "comments": Comment}
+        for table, cls in model.items():
             row = self._conn.execute(f"SELECT data, status FROM {table} WHERE id = ?", (content_id,)).fetchone()
-            if row is not None:
-                if row[1] != "pending":
-                    return False
-                if table == "answers":
-                    obj = Answer.model_validate_json(row[0])
-                    updated = obj.model_copy(update={"status": "rejected"})
-                    self._conn.execute(
-                        "UPDATE answers SET data = ?, status = 'rejected' WHERE id = ?",
-                        (updated.model_dump_json(), content_id),
-                    )
-                else:
-                    obj = Comment.model_validate_json(row[0])
-                    updated = obj.model_copy(update={"status": "rejected"})
-                    self._conn.execute(
-                        "UPDATE comments SET data = ?, status = 'rejected' WHERE id = ?",
-                        (updated.model_dump_json(), content_id),
-                    )
-                self._conn.commit()
-                return True
-        return False
+            if row is None:
+                continue
+            if row[1] == new_status:
+                return False
+            updated = cls.model_validate_json(row[0]).model_copy(update={"status": new_status})
+            self._conn.execute(
+                f"UPDATE {table} SET data = ?, status = ? WHERE id = ?",
+                (updated.model_dump_json(), new_status, content_id),
+            )
+            self._conn.commit()
+            return True
+        return None
 
     # ------------------------------------------------------------------
     # Querying
@@ -588,41 +720,56 @@ class SqliteStore:
             "comments": [Comment.model_validate_json(r[0]) for r in comment_rows],
         }
 
-    def get_question_thread(self, question_id: str, include_pending: bool = False) -> dict[str, Any] | None:
+    def get_question_thread(
+        self, question_id: str, include_pending: bool = False, include_deleted: bool = False
+    ) -> dict[str, Any] | None:
+        """Assemble a question with its ranked answers and their comments.
+
+        *include_pending* adds answers still awaiting review. *include_deleted*
+        additionally returns soft-deleted questions along with rejected answers
+        and comments; only the human curation UI passes it, so agent-facing
+        reads never see deleted content.
+        """
         q = self.get_question(question_id)
-        if q is None:
+        if q is None or (q.status == "deleted" and not include_deleted):
             return None
 
+        answer_statuses = ["approved"]
         if include_pending:
-            answer_rows = self._conn.execute(
-                "SELECT data FROM answers WHERE question_id = ? AND status IN ('approved', 'pending')",
-                (question_id,),
-            ).fetchall()
-            all_answers = [Answer.model_validate_json(r[0]) for r in answer_rows]
-            approved = [a for a in all_answers if a.status == "approved"]
-            pending = [a for a in all_answers if a.status == "pending"]
-            ranked = rank_answers(approved, q.pinned_answer_id) + pending
-        else:
-            answer_rows = self._conn.execute(
-                "SELECT data FROM answers WHERE question_id = ? AND status = 'approved'",
-                (question_id,),
-            ).fetchall()
-            ranked = rank_answers(
-                [Answer.model_validate_json(r[0]) for r in answer_rows],
-                q.pinned_answer_id,
-            )
+            answer_statuses.append("pending")
+        if include_deleted:
+            answer_statuses.append("rejected")
+        # Pending comments belong to the review queue rather than the thread,
+        # so only soft-deleted ones join, letting the UI offer a restore.
+        comment_statuses = ["approved", "rejected"] if include_deleted else ["approved"]
+        a_placeholders = ",".join("?" for _ in answer_statuses)
+        c_placeholders = ",".join("?" for _ in comment_statuses)
+
+        answer_rows = self._conn.execute(
+            f"SELECT data FROM answers WHERE question_id = ? AND status IN ({a_placeholders})",
+            (question_id, *answer_statuses),
+        ).fetchall()
+        all_answers = [Answer.model_validate_json(r[0]) for r in answer_rows]
+        # Only approved answers are ranked against each other; pending and
+        # rejected ones trail behind so ranking stays a statement about the
+        # answers a reader is meant to weigh.
+        ranked = rank_answers([a for a in all_answers if a.status == "approved"], q.pinned_answer_id)
+        ranked += [a for a in all_answers if a.status == "pending"]
+        ranked += [a for a in all_answers if a.status == "rejected"]
 
         comment_rows = self._conn.execute(
-            "SELECT data FROM comments WHERE parent_id = ? AND parent_type = 'question' AND status = 'approved'",
-            (question_id,),
+            "SELECT data FROM comments WHERE parent_id = ? AND parent_type = 'question'"
+            f" AND status IN ({c_placeholders})",
+            (question_id, *comment_statuses),
         ).fetchall()
         q_comments = [Comment.model_validate_json(r[0]) for r in comment_rows]
 
         answer_threads = []
         for answer in ranked:
             a_comment_rows = self._conn.execute(
-                "SELECT data FROM comments WHERE parent_id = ? AND parent_type = 'answer' AND status = 'approved'",
-                (answer.id,),
+                "SELECT data FROM comments WHERE parent_id = ? AND parent_type = 'answer'"
+                f" AND status IN ({c_placeholders})",
+                (answer.id, *comment_statuses),
             ).fetchall()
             a_comments = [Comment.model_validate_json(r[0]) for r in a_comment_rows]
             answer_threads.append({"answer": answer, "comments": a_comments})
@@ -658,6 +805,10 @@ class SqliteStore:
         except sqlite3.OperationalError:
             return []
 
+        # Drop matches on answers that are no longer visible. The FTS index is
+        # written at creation and never pruned, so a rejected (soft-deleted)
+        # answer keeps matching and would otherwise resurface its question.
+        fts_rows = self._filter_visible_matches(fts_rows)
         if not fts_rows:
             return []
 
@@ -677,7 +828,7 @@ class SqliteStore:
         scored: list[tuple[float, str, list[str]]] = []
         for question_id, raw_rank in best_rank_per_question.items():
             q = self.get_question(question_id)
-            if q is None:
+            if q is None or q.status == "deleted":
                 continue
 
             normalized_rank = 1.0 - (raw_rank - min_rank) / rank_range
@@ -769,7 +920,7 @@ class SqliteStore:
         scored = []
         for (question_id,) in fts_rows:
             q = self.get_question(question_id)
-            if q is None:
+            if q is None or q.status == "deleted":
                 continue
 
             similarity = duplicate_similarity(
@@ -783,6 +934,27 @@ class SqliteStore:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [{"question": q, "similarity": score} for score, q in scored[:3]]
+
+    def _filter_visible_matches(self, fts_rows: list[tuple]) -> list[tuple]:
+        """Drop full-text matches on soft-deleted answers.
+
+        Only rejected answers are removed, not pending ones. Whether an answer
+        awaiting review should steer search is a separate question that
+        predates soft-delete, and changing it here would quietly alter what
+        agents find.
+        """
+        answer_ids = [r[0] for r in fts_rows if r[1] == "answer"]
+        if not answer_ids:
+            return list(fts_rows)
+        placeholders = ",".join("?" for _ in answer_ids)
+        rejected = {
+            r[0]
+            for r in self._conn.execute(
+                f"SELECT id FROM answers WHERE id IN ({placeholders}) AND status = 'rejected'",
+                answer_ids,
+            ).fetchall()
+        }
+        return [r for r in fts_rows if r[1] != "answer" or r[0] not in rejected]
 
     def _get_question_tag_names(self, question_id: str) -> set[str]:
         rows = self._conn.execute(
@@ -808,12 +980,12 @@ class SqliteStore:
         )
 
     def get_status(self) -> dict[str, Any]:
-        total_questions = self._conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
+        total_questions = self._conn.execute("SELECT COUNT(*) FROM questions WHERE status != 'deleted'").fetchone()[0]
         total_answers = self._conn.execute("SELECT COUNT(*) FROM answers WHERE status = 'approved'").fetchone()[0]
         total_tags = self._conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
         total_votes = self._conn.execute("SELECT COUNT(*) FROM votes").fetchone()[0]
         unanswered = self._conn.execute(
-            "SELECT COUNT(DISTINCT q.id) FROM questions q LEFT JOIN answers a ON a.question_id = q.id AND a.status = 'approved' WHERE a.id IS NULL"
+            "SELECT COUNT(DISTINCT q.id) FROM questions q LEFT JOIN answers a ON a.question_id = q.id AND a.status = 'approved' WHERE a.id IS NULL AND q.status != 'deleted'"
         ).fetchone()[0]
         pending_answers = self._conn.execute("SELECT COUNT(*) FROM answers WHERE status = 'pending'").fetchone()[0]
         pending_comments = self._conn.execute("SELECT COUNT(*) FROM comments WHERE status = 'pending'").fetchone()[0]

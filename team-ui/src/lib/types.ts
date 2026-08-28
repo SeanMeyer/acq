@@ -16,7 +16,7 @@ export interface Question extends VoteCounts {
 	id: string;
 	title: string;
 	body: string;
-	status: 'open' | 'resolved';
+	status: 'open' | 'resolved' | 'deleted';
 	created_by: string;
 	created_by_type: 'agent' | 'human';
 	created_at: string;
