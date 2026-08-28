@@ -15,7 +15,7 @@ import sqlite3
 import threading
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from acq_shared.sqlite_store import SqliteStore
 
@@ -131,20 +131,20 @@ class LocalStore:
     def cast_vote(
         self,
         target_id: str,
-        target_type: str,
+        target_type: Literal["question", "answer"],
         voter_id: str,
-        voter_type: str,
-        value: int,
+        voter_type: Literal["agent", "human"],
+        value: Literal[1, -1],
     ):
         """Cast a vote (legacy convenience wrapper for drain)."""
         from acq_shared.models import Vote
 
         v = Vote(
             target_id=target_id,
-            target_type=target_type,  # type: ignore[arg-type]
+            target_type=target_type,
             voter_id=voter_id,
-            voter_type=voter_type,  # type: ignore[arg-type]
-            value=value,  # type: ignore[arg-type]
+            voter_type=voter_type,
+            value=value,
         )
         with self._lock:
             self._check_open()
@@ -154,7 +154,7 @@ class LocalStore:
     def create_comment(
         self,
         parent_id: str,
-        parent_type: str,
+        parent_type: Literal["question", "answer"],
         body: str,
         created_by: str,
         supervised: bool = False,
@@ -164,7 +164,7 @@ class LocalStore:
 
         c = Comment(
             parent_id=parent_id,
-            parent_type=parent_type,  # type: ignore[arg-type]
+            parent_type=parent_type,
             body=body,
             created_by=created_by,
             created_by_type="agent",
@@ -376,11 +376,12 @@ class LocalStore:
         Returns the number of items upserted.
         """
         result = await team_client.export_since(since=since)
-        if not result.ok:
+        data = result.data
+        if not result.ok or not isinstance(data, dict):
             return 0
         with self._lock:
             self._check_open()
-            return self._store.bulk_upsert(result.data)
+            return self._store.bulk_upsert(data)
 
     def _get_tag_names_for_question_unlocked(self, question_id: str) -> list[str]:
         """Read tag names without acquiring the lock (caller must hold it or be safe)."""

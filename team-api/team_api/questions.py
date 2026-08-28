@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -132,8 +132,8 @@ def question_thread(
 
 class VoteRequest(BaseModel):
     target_id: str
-    target_type: str  # "question" or "answer"
-    value: int  # 1 or -1
+    target_type: Literal["question", "answer"]
+    value: Literal[1, -1]
 
 
 @router.post("/questions/vote")

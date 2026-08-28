@@ -1,20 +1,34 @@
 #!/usr/bin/env python3
 """Set up acq agent authentication via GitHub device flow.
 
-Runs the GitHub device flow, exchanges the token for an acq agent key,
-and writes credentials to ~/.claude/settings.json.
+Runs the GitHub device flow, exchanges the resulting token for an acq agent
+key, and writes credentials to ~/.claude/settings.json.
+
+Two settings are specific to your deployment and have no sensible defaults:
+
+    --team-addr / ACQ_TEAM_ADDR
+        Base URL of your team API, e.g. https://acq.example.com
+
+    --client-id / ACQ_GITHUB_CLIENT_ID
+        Client ID of the GitHub OAuth app that deployment uses. The app must
+        have device flow enabled.
+
+Example:
+
+    ACQ_TEAM_ADDR=https://acq.example.com \\
+    ACQ_GITHUB_CLIENT_ID=Ov23li... \\
+    python scripts/setup-agent.py
 """
 
+import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
-# Configuration — no client secret needed for device flow.
-GITHUB_CLIENT_ID = "Ov23liDo2M8HH9cnPfTB"
-ACQ_TEAM_ADDR = "https://acq-team-api.us1.staging.dog"
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 
@@ -39,15 +53,15 @@ def _get_json(url: str, headers: dict | None = None) -> dict:
         return json.loads(resp.read())
 
 
-def start_device_flow() -> dict:
+def start_device_flow(client_id: str) -> dict:
     """Start GitHub device flow, return device_code, user_code, etc."""
     return _post_json(
         "https://github.com/login/device/code",
-        {"client_id": GITHUB_CLIENT_ID, "scope": "read:user"},
+        {"client_id": client_id, "scope": "read:user"},
     )
 
 
-def poll_for_token(device_code: str, interval: int) -> str:
+def poll_for_token(client_id: str, device_code: str, interval: int) -> str:
     """Poll GitHub until the user authorizes, return access token."""
     while True:
         time.sleep(interval)
@@ -55,7 +69,7 @@ def poll_for_token(device_code: str, interval: int) -> str:
             resp = _post_json(
                 "https://github.com/login/oauth/access_token",
                 {
-                    "client_id": GITHUB_CLIENT_ID,
+                    "client_id": client_id,
                     "device_code": device_code,
                     "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                 },
@@ -83,11 +97,11 @@ def poll_for_token(device_code: str, interval: int) -> str:
             sys.exit(1)
 
 
-def exchange_for_agent_key(github_token: str) -> dict:
+def exchange_for_agent_key(team_addr: str, github_token: str) -> dict:
     """Exchange GitHub token for acq agent key."""
     body = json.dumps({}).encode()
     req = Request(
-        f"{ACQ_TEAM_ADDR}/auth/agent-key",
+        f"{team_addr}/auth/agent-key",
         data=body,
         headers={
             "Authorization": f"Bearer {github_token}",
@@ -100,7 +114,7 @@ def exchange_for_agent_key(github_token: str) -> dict:
         return json.loads(resp.read())
 
 
-def write_settings(api_key: str, agent_name: str) -> None:
+def write_settings(team_addr: str, api_key: str, agent_name: str) -> None:
     """Merge acq credentials into ~/.claude/settings.json."""
     settings: dict = {}
     if SETTINGS_PATH.exists():
@@ -109,13 +123,45 @@ def write_settings(api_key: str, agent_name: str) -> None:
     env = settings.setdefault("env", {})
     env["ACQ_TEAM_API_KEY"] = api_key
     env["ACQ_AGENT_NAME"] = agent_name
-    env["ACQ_TEAM_ADDR"] = ACQ_TEAM_ADDR
+    env["ACQ_TEAM_ADDR"] = team_addr
 
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n")
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--team-addr",
+        default=os.environ.get("ACQ_TEAM_ADDR", ""),
+        help="Base URL of the team API (env: ACQ_TEAM_ADDR)",
+    )
+    parser.add_argument(
+        "--client-id",
+        default=os.environ.get("ACQ_GITHUB_CLIENT_ID", ""),
+        help="GitHub OAuth app client ID with device flow enabled (env: ACQ_GITHUB_CLIENT_ID)",
+    )
+    args = parser.parse_args()
+
+    missing = []
+    if not args.team_addr:
+        missing.append("--team-addr (or ACQ_TEAM_ADDR)")
+    if not args.client_id:
+        missing.append("--client-id (or ACQ_GITHUB_CLIENT_ID)")
+    if missing:
+        parser.error(
+            "missing required deployment settings: "
+            + ", ".join(missing)
+            + "\nThese are specific to your acq deployment; see the module docstring."
+        )
+
+    args.team_addr = args.team_addr.rstrip("/")
+    return args
+
+
 def main() -> None:
+    args = _parse_args()
+
     # Check if already configured.
     if SETTINGS_PATH.exists():
         try:
@@ -133,18 +179,18 @@ def main() -> None:
 
     # Step 1: Start device flow.
     try:
-        flow = start_device_flow()
+        flow = start_device_flow(args.client_id)
     except Exception as e:
         print(f"Failed to start device flow: {e}")
         sys.exit(1)
 
-    print(f"To authenticate, open this URL in your browser:")
+    print("To authenticate, open this URL in your browser:")
     print(f"  {flow['verification_uri']}\n")
     print(f"And enter this code: {flow['user_code']}\n")
     print("Waiting for authorization...")
 
     # Step 2: Poll for token.
-    github_token = poll_for_token(flow["device_code"], flow.get("interval", 5))
+    github_token = poll_for_token(args.client_id, flow["device_code"], flow.get("interval", 5))
 
     # Step 3: Get user info for display.
     gh_user = _get_json(
@@ -155,18 +201,18 @@ def main() -> None:
 
     # Step 4: Exchange for agent key.
     try:
-        agent_key = exchange_for_agent_key(github_token)
+        agent_key = exchange_for_agent_key(args.team_addr, github_token)
     except HTTPError as e:
         print(f"Failed to get agent key: {e}")
         sys.exit(1)
 
     # Step 5: Write to settings.
-    write_settings(agent_key["api_key"], agent_key["agent_name"])
+    write_settings(args.team_addr, agent_key["api_key"], agent_key["agent_name"])
 
     print(f"Agent key written to {SETTINGS_PATH}:")
     print(f"  ACQ_TEAM_API_KEY = {agent_key['api_key'][:12]}...")
     print(f"  ACQ_AGENT_NAME   = {agent_key['agent_name']}")
-    print(f"  ACQ_TEAM_ADDR    = {ACQ_TEAM_ADDR}")
+    print(f"  ACQ_TEAM_ADDR    = {args.team_addr}")
     print("\nYou're ready to use acq.")
 
 

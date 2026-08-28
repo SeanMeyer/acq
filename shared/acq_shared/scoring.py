@@ -1,10 +1,177 @@
 from __future__ import annotations
 
 import math
+import re
 
 from acq_shared.models import Answer, Question
 
 DEFAULT_HUMAN_VOTE_WEIGHT = 5
+
+# Minimum duplicate_similarity() for a stored question to be shown to the
+# caller as a possible duplicate.
+#
+# Tuned for recall, because the consumer is an agent that can judge for itself.
+# A candidate that turns out to be irrelevant costs the agent one extra call
+# (retry with force_create); a candidate never returned is invisible, and the
+# agent silently files a duplicate having never learned the earlier question
+# existed. Those costs are not symmetric, so err towards showing.
+#
+# Calibrated against a corpus of realistic title pairs: genuine duplicates
+# scored no lower than 0.40 and unrelated pairs no higher than 0.30, so this
+# sits in the middle of that gap rather than on either edge.
+DUPLICATE_THRESHOLD = 0.35
+
+# Word characters minus the underscore, so this covers CJK, Cyrillic, accented
+# Latin and so on. An ASCII-only pattern such as `[a-z0-9]+` would tokenise a
+# non-Latin title to nothing, and two identical such titles would then score
+# 0.0 similarity and never be recognised as duplicates.
+_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+# Question titles are mostly phrased as questions, so the same handful of
+# function words appears in nearly all of them. Left in, they inflate both the
+# intersection (unrelated titles "match" on "how"/"do"/"the") and the union
+# (real duplicates are diluted). Removing them sharpens both directions at
+# once. This is not a linguistic stopword list, just the filler that shows up
+# in how questions get worded.
+_STOPWORDS = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "this",
+        "that",
+        "these",
+        "those",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "do",
+        "does",
+        "did",
+        "doing",
+        "done",
+        "i",
+        "my",
+        "me",
+        "we",
+        "our",
+        "you",
+        "your",
+        "it",
+        "its",
+        "and",
+        "or",
+        "but",
+        "not",
+        "no",
+        "to",
+        "of",
+        "in",
+        "on",
+        "at",
+        "for",
+        "from",
+        "with",
+        "without",
+        "by",
+        "about",
+        "into",
+        "over",
+        "after",
+        "before",
+        "how",
+        "what",
+        "why",
+        "when",
+        "where",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "can",
+        "could",
+        "should",
+        "would",
+        "will",
+        "shall",
+        "may",
+        "might",
+        "must",
+        "if",
+        "then",
+        "than",
+        "as",
+        "so",
+        "such",
+        "very",
+        "just",
+        "only",
+        "also",
+    ]
+)
+
+
+def _tokenize(text: str) -> set[str]:
+    """Content words of *text*, lowercased.
+
+    Falls back to the unfiltered tokens when a title consists entirely of
+    filler ("How do I do this?"), so such a title still compares equal to
+    itself rather than collapsing to an empty set.
+    """
+    tokens = set(_TOKEN_RE.findall(text.casefold()))
+    content = tokens - _STOPWORDS
+    return content or tokens
+
+
+def jaccard(a: set[str], b: set[str]) -> float:
+    """Intersection over union. 0.0 when both sides are empty."""
+    union = a | b
+    if not union:
+        return 0.0
+    return len(a & b) / len(union)
+
+
+def duplicate_similarity(
+    *,
+    query_title: str,
+    candidate_title: str,
+    query_tags: set[str],
+    candidate_tags: set[str],
+) -> float:
+    """Absolute 0-1 similarity between two questions, for duplicate detection.
+
+    Deliberately independent of the full-text engine. Search rank is a
+    *relative* measure — it is min-max scaled across whatever the query
+    happened to match, so a single weak match normalises to the maximum and
+    looks identical to a perfect one. Judging "is this the same question"
+    needs an absolute measure, so this compares the titles directly.
+
+    Because both store backends call this, Postgres and SQLite necessarily
+    agree instead of drifting apart.
+
+    Title agreement dominates; shared tags are a smaller bonus. Jaccard
+    (rather than an overlap/containment ratio) is used on purpose: containment
+    would score a one-word query against a long title as a perfect match, so
+    every short question would look like a duplicate of the longest stored one.
+
+    This measure is meant to *rank and admit candidates*, not to deliver a
+    verdict. The caller is an agent that receives the candidates along with
+    their scores and decides whether any of them really asks its question, so
+    the threshold is deliberately permissive — see DUPLICATE_THRESHOLD.
+
+    Known limitations. There is no stemming, synonym expansion, or stopword
+    removal, so "widget" and "widgets" share no token and filler words inflate
+    the union. The effect is that heavily reworded duplicates score lower than
+    they deserve, which is why the threshold sits well below the level an
+    exact-title match reaches.
+    """
+    title_sim = jaccard(_tokenize(query_title), _tokenize(candidate_title))
+    tag_sim = jaccard(query_tags, candidate_tags)
+    return 0.7 * title_sim + 0.3 * tag_sim
 
 
 def weighted_vote_score(

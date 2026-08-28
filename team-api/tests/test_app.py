@@ -39,6 +39,12 @@ def _create_question(client: TestClient, **overrides: Any) -> dict[str, Any]:
     return resp.json()
 
 
+def _total_questions(client: TestClient) -> int:
+    resp = client.get("/status", headers=_agent_headers())
+    assert resp.status_code == 200
+    return resp.json()["total_questions"]
+
+
 def _create_and_approve_answer(
     client: TestClient, question_id: str, body: str = "Use max_size=10"
 ) -> dict[str, Any]:
@@ -152,6 +158,46 @@ class TestCreateQuestion:
         assert resp.status_code == 201
         body = resp.json()
         assert len(body["similar_questions"]) >= 1
+
+    def test_similar_candidates_withhold_creation_until_forced(
+        self, client: TestClient
+    ) -> None:
+        """Candidates are advice, and the caller decides.
+
+        Finding candidates must not create the question — the response exists
+        so the calling agent can judge whether any candidate really asks the
+        same thing. Re-sending with force_create is how it says "none of
+        these", and that must then create.
+        """
+        _create_question(client, title="connection pool max size configuration guide")
+
+        payload = {
+            "title": "connection pool max size configuration guide",
+            "body": "How to set pool size?",
+            "created_by": "agent-smith",
+            "tags": ["databases"],
+        }
+
+        resp = client.post("/questions", json=payload, headers=_agent_headers())
+        assert resp.status_code == 201
+        body = resp.json()
+        assert len(body["similar_questions"]) >= 1
+        # Every candidate carries a score so the agent can weigh it.
+        assert all("similarity" in c for c in body["similar_questions"])
+        # Nothing was created, so only the original exists.
+        assert body["question"].get("id") is None
+        assert _total_questions(client) == 1
+
+        forced = client.post(
+            "/questions",
+            json={**payload, "force_create": True},
+            headers=_agent_headers(),
+        )
+        assert forced.status_code == 201
+        forced_body = forced.json()
+        assert forced_body["question"]["id"].startswith("q_")
+        assert forced_body["similar_questions"] == []
+        assert _total_questions(client) == 2
 
     def test_create_question_with_tags(self, client: TestClient) -> None:
         r = _create_question(client, tags=["python", "fastapi"])

@@ -1,0 +1,4 @@
+# esbuild ships prebuilt binaries and needs its install script to run.
+# pnpm 11+ requires build scripts to be allowed explicitly.
+allowBuilds:
+  esbuild: true

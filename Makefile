@@ -14,13 +14,21 @@ help:
 	@echo "  make uninstall-opencode                      Remove global OpenCode install"
 	@echo "  make uninstall-opencode PROJECT=/path/to/app Remove from a specific project"
 	@echo ""
+	@echo "OMP (oh-my-pi):"
+	@echo "  make install-omp                             Install plugin + local team API wiring"
+	@echo "  make install-omp TEAM_ADDR=http://host:8742  Point at a specific team API"
+	@echo "  make install-omp LOCAL_ONLY=1                Install without any team API"
+	@echo "  make uninstall-omp                           Remove OMP install"
+	@echo ""
 	@echo "Development:"
-	@echo "  make setup     Install all dependencies"
-	@echo "  make test      Run all tests"
-	@echo "  make lint      Format, lint, and type-check all components"
+	@echo "  make setup        Install all dependencies"
+	@echo "  make setup-agent  Authenticate against a team API (needs TEAM_ADDR and CLIENT_ID)"
+	@echo "  make test         Run all tests"
+	@echo "  make lint         Format-check and lint Python components"
+	@echo "  make typecheck    Type-check the TypeScript UI"
 	@echo ""
 	@echo "Deploy:"
-	@echo "  make deploy    Deploy to Howler (staging)"
+	@echo "  make docker-build  Build the deployable Docker image"
 	@echo ""
 	@echo "Docker Compose:"
 	@echo "  make compose-up                              Build and start services"
@@ -34,8 +42,15 @@ setup:
 	(cd plugins/acq/server && uv sync --group dev)
 	(cd team-api && uv sync --group dev)
 	(cd team-ui && pnpm install $(if $(CI),--frozen-lockfile,))
-	@echo ""
-	python scripts/setup-agent.py
+
+# Separate from `setup` on purpose: this runs an interactive GitHub device
+# flow that blocks until a human authorizes it, so it must never be part of
+# dependency installation (it would hang CI and every fresh local setup).
+.PHONY: setup-agent
+setup-agent:
+	python scripts/setup-agent.py \
+		$(if $(TEAM_ADDR),--team-addr "$(TEAM_ADDR)",) \
+		$(if $(CLIENT_ID),--client-id "$(CLIENT_ID)",)
 
 .PHONY: install-claude
 install-claude:
@@ -61,6 +76,18 @@ else
 	@bash "$(CURDIR)/scripts/install-opencode.sh" uninstall
 endif
 
+.PHONY: install-omp
+install-omp:
+	@bash "$(CURDIR)/scripts/install-omp.sh" install \
+		$(if $(LOCAL_ONLY),--local-only,) \
+		$(if $(TEAM_ADDR),--team-addr "$(TEAM_ADDR)",) \
+		$(if $(API_KEY),--api-key "$(API_KEY)",) \
+		$(if $(AGENT_NAME),--agent-name "$(AGENT_NAME)",)
+
+.PHONY: uninstall-omp
+uninstall-omp:
+	@bash "$(CURDIR)/scripts/install-omp.sh" uninstall
+
 .PHONY: compose-up
 compose-up:
 	docker compose up --build
@@ -83,20 +110,15 @@ ifndef PASS
 endif
 	docker compose exec acq-team-api /app/team-api/.venv/bin/python /app/scripts/seed-users.py --username "$(USER)" --password "$(PASS)"
 
-HOWLER_SERVICE_ID ?= 222
-HOWLER_URL ?= https://howler.us1.staging.dog
+# Build the deployable image. The Dockerfile produces a single self-contained
+# image that serves both the API and the compiled review UI, so it can run on
+# any container host. Push it wherever you deploy.
+IMAGE ?= acq-team-api
+TAG ?= latest
 
-.PHONY: deploy
-deploy:
-	@tmpdir=$$(mktemp -d) && \
-	cp team-api/Dockerfile "$$tmpdir/Dockerfile" && \
-	cp -r shared team-api team-ui "$$tmpdir/" && \
-	tar czf /tmp/acq-deploy.tar.gz -C "$$tmpdir" . && \
-	rm -rf "$$tmpdir" && \
-	echo "Deploying to Howler (service $(HOWLER_SERVICE_ID))..." && \
-	curl -X POST "$(HOWLER_URL)/api/services/$(HOWLER_SERVICE_ID)/builds/" \
-		-F "build-context.tgz=@/tmp/acq-deploy.tar.gz" && \
-	rm -f /tmp/acq-deploy.tar.gz
+.PHONY: docker-build
+docker-build:
+	docker build -f team-api/Dockerfile -t "$(IMAGE):$(TAG)" .
 
 .PHONY: dev-api
 dev-api:
@@ -113,12 +135,17 @@ lock:
 	cd plugins/acq/server && UV_DEFAULT_INDEX= UV_INDEX= uv lock
 	cd team-api && UV_DEFAULT_INDEX= UV_INDEX= uv lock
 
-# Fail if any lock file contains internal-mirror URLs that CI can't reach.
+# Fail if any lock file references a package index other than public PyPI.
+# Lock files generated behind a private mirror are not resolvable by CI or by
+# anyone else cloning this repo.
 .PHONY: check-lockfiles
 check-lockfiles:
-	@if grep -rq 'depot-read-api-python' shared/uv.lock plugins/acq/server/uv.lock team-api/uv.lock 2>/dev/null; then \
-		echo "ERROR: lock files contain internal PyPI mirror URLs."; \
-		echo "Run 'make lock' to regenerate with public PyPI."; \
+	@bad=$$(grep -ho 'https://[^/"]*' shared/uv.lock plugins/acq/server/uv.lock team-api/uv.lock 2>/dev/null \
+		| sort -u | grep -v -e '^https://files.pythonhosted.org$$' -e '^https://pypi.org$$' || true); \
+	if [ -n "$$bad" ]; then \
+		echo "ERROR: lock files reference non-public package indexes:"; \
+		echo "$$bad" | sed 's/^/  /'; \
+		echo "Run 'make lock' to regenerate against public PyPI."; \
 		exit 1; \
 	fi
 

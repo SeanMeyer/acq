@@ -90,8 +90,15 @@ class TestListQuestions:
 
     def test_list_returns_questions(self, client: TestClient) -> None:
         token = _login(client)
-        _create_question(client, title="Question 1")
-        _create_question(client, title="Question 2")
+        # Genuinely different questions. Near-identical titles sharing a tag
+        # would be returned as duplicate candidates instead of created, which
+        # has nothing to do with what this test is checking.
+        _create_question(
+            client, title="How do I configure connection pooling?", tags=["databases"]
+        )
+        _create_question(
+            client, title="Why does the build cache keep missing?", tags=["ci"]
+        )
         resp = client.get("/api/questions", headers=_auth_header(token))
         assert resp.status_code == 200
         data = resp.json()

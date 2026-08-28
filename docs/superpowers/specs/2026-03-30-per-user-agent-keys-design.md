@@ -26,7 +26,7 @@ Authenticated as seanmeyer (Sean Meyer)
 Agent key written to ~/.claude/settings.json:
   ACQ_TEAM_API_KEY = acq_abc123...
   ACQ_AGENT_NAME   = seanmeyer-agent
-  ACQ_TEAM_ADDR    = https://acq-team-api.us1.staging.dog
+  ACQ_TEAM_ADDR    = https://acq.example.com
 
 You're ready to use acq.
 ```

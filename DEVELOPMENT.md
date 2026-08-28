@@ -24,124 +24,171 @@ cd acq
 make setup
 ```
 
+`make setup` installs dependencies only. Authenticating an agent against the
+shared team API is a separate, interactive step (`make setup-agent`) because it
+blocks on a GitHub device flow.
+
 ## Running Locally
 
-The quickest way to run everything is with Docker Compose.
-
-Export the required secret first:
-
-```bash
-export ACQ_JWT_SECRET=dev-secret
-```
-
-Start all services (runs in the foreground):
+Docker Compose runs the whole thing in one container, exactly as production
+does: the API serves the compiled SvelteKit UI as static files from the same
+origin. There is no separate UI container.
 
 ```bash
 make compose-up
 ```
 
-In a separate terminal, create a user:
+Both the API and the review UI are served at `http://localhost:8742`.
+
+`ACQ_JWT_SECRET` defaults to `dev-secret` for local runs. Override it by
+exporting it before `make compose-up` if you want.
+
+To create a user:
 
 ```bash
 make seed-users USER=demo PASS=demo123
 ```
 
-The team API is available at `http://localhost:8742`.
-The review UI is available at `http://localhost:3000`.
+Note that the login page only offers "Sign in with GitHub", so a seeded
+username and password cannot be used through the UI as-is. Seeded users work
+against the API directly:
 
-For isolated component testing outside Docker, use `make dev-api` (team API) and `make dev-ui` (dashboard).
+```bash
+curl -s -X POST http://localhost:8742/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"demo","password":"demo123"}'
+```
+
+To use the UI with that account, put the returned token in the browser's
+local storage as `acq_token` (with `acq_user` set to the username), or
+configure a GitHub OAuth app with callback
+`http://localhost:8742/auth/callback` and set `GITHUB_CLIENT_ID` and
+`GITHUB_CLIENT_SECRET` in the compose environment.
+
+For the frontend inner loop with hot reload, run `make dev-api` (API on port
+8000) and `make dev-ui` (Vite dev server on port 3000, proxying API routes to
+port 8000).
 
 ## Agent Configuration
 
 ### Production (team API)
 
-Run `make setup` — it installs dependencies and runs `scripts/setup-agent.py` which
-authenticates via GitHub device flow and writes credentials to `~/.claude/settings.json`.
+Run `make setup-agent`. It runs `scripts/setup-agent.py`, which authenticates via
+GitHub device flow and writes credentials to `~/.claude/settings.json`. This is
+interactive and blocks until you authorize it in a browser.
 
-### Local dev
+### OMP (oh-my-pi)
 
-To point your agent at a local team API instance:
+```bash
+make install-omp
+```
+
+That defaults to the local stack (`http://localhost:8742`). Override with
+`TEAM_ADDR`, `API_KEY`, and `AGENT_NAME`, or pass `LOCAL_ONLY=1` to skip the
+team API entirely and use only the local store. `make uninstall-omp` reverses
+it.
+
+Three things happen, because OMP takes each piece from a different place:
+
+| Part | Source | Effect of editing |
+|------|--------|-------------------|
+| Skill, slash commands | OMP marketplace install of this repo's `.claude-plugin/marketplace.json` | Cached under `~/.omp/plugins/cache/`; rerun `make install-omp` to pick up edits |
+| MCP server (the tools) | OMP-native entry in the active profile's `mcp.json`, pointing at `plugins/acq/server` in this working tree | Live; restart OMP or run `/mcp reload` |
+| "Search acq first" guidance | A marked block appended to the active profile's `RULES.md` | Live on the next session |
+
+OMP reads Claude-format plugins natively, so no separate manifest is needed.
+The plugin does register its own MCP server as `acq:acq`, but that entry
+declares no environment and can therefore only run local-only. The installer
+adds `acq:acq` to `disabledServers` so exactly one set of acq tools is exposed.
+
+The guidance block matters more than it looks. A skill is only consulted once
+the model already suspects it is relevant, so the skill alone does not make an
+agent search *before* it starts exploring — that has to be a standing
+instruction. In Claude Code the plugin's `SessionStart` hook injects it; OMP
+hooks are JS/TS modules and do not execute that shell hook, so the installer
+writes the equivalent into `RULES.md` instead. Uninstall removes only the
+marked block and leaves the rest of the file untouched.
+
+### Other agents
+
+To point any MCP-capable agent at a local team API instance, set these in
+whatever mechanism it uses to pass environment variables to an MCP server:
 
 ```json
 {
   "env": {
     "ACQ_TEAM_ADDR": "http://localhost:8742",
-    "ACQ_TEAM_API_KEY": "default-key"
+    "ACQ_TEAM_API_KEY": "default-key",
+    "ACQ_AGENT_NAME": "your-name"
   }
 }
 ```
 
-## Deploying to Howler
+The server command itself is host-agnostic:
+`uv run --directory plugins/acq/server acq-mcp-server`.
 
-The team API and review UI are bundled into a single Docker image and deployed to [Howler](https://howler.us1.staging.dog/) (service ID 222). The Dockerfile uses a multi-stage build: Node builds the SvelteKit UI, then the Python image copies in the static assets and serves them via FastAPI.
+## Deploying
 
-### Secrets
-
-These are configured via the Howler UI or API at `/api/services/222/secrets/`:
-
-| Secret | Purpose |
-|--------|---------|
-| `ACQ_JWT_SECRET` | Signs session JWTs |
-| `ACQ_API_KEYS` | JSON map of static API key → agent name (dev/test fallback only) |
-| `ORGSTORE_CLUSTER` | DogPark cluster name (`dogpark`) — enables Postgres |
-| `DB_NAME` | DogPark database name (`dev_db_acq`) |
-| `DB_USER` | DogPark database role (`dev_db_acq`) |
-| `DB_HOST` | pg-proxy host (auto-derived if not set) |
-| `GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
-| `GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
-
-### DogPark Schema Migrations
-
-The team API uses a DogPark developer database (`dev_db_acq` on the `dogpark` cluster).
-DogPark's default roles lack CREATE permission, so DDL changes must be run via the
-admin bypass role in the toolbox. **Do not use `orgstore toolbox psql`** — it connects
-as the default role which cannot create tables.
-
-To run DDL (from a machine with kubectl access — not workspaces):
+The team API and review UI build into a **single Docker image**. The Dockerfile
+is a multi-stage build: Node compiles the SvelteKit UI, then the Python image
+copies the static assets in and FastAPI serves them from the same origin as the
+API. That means one container, one port, no reverse proxy required.
 
 ```bash
-DEV_DB=dev_db_acq
-
-kubectl exec \
-  --context gizmo.us1.staging.dog \
-  --namespace orgstore-dogpark \
-  -it \
-  deployment/orgstore-dogpark-toolbox -- \
-  pg-wrap -o dogpark -b admin -D $DEV_DB psql
+make docker-build                      # tags acq-team-api:latest
+make docker-build IMAGE=my-registry/acq TAG=v1
 ```
 
-The `-b admin` flag is critical — it bypasses the default role and connects with
-CREATE permission on the `dogpark` schema. You can then run any DDL:
+Push that image to your registry and run it on any container host.
 
-```sql
-CREATE TABLE IF NOT EXISTS dogpark.my_new_table (...);
-```
+### Configuration
 
-Note: DogPark is not compatible with PG Schema Manager (PGSM/Alembic). DDL changes
-are manual via the toolbox. See the [DogPark Confluence page](https://datadoghq.atlassian.net/wiki/spaces/ORGSTORE/pages/3681321565/DogPark) for details.
+All configuration is by environment variable. Nothing is required except
+`ACQ_JWT_SECRET`.
 
-### Deploy
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `ACQ_JWT_SECRET` | yes | Signs session JWTs. Use a long random value |
+| `PORT` | no | Listen port. Defaults to `8000` |
+| `DATABASE_URL` | no | Postgres connection string. When unset, SQLite is used |
+| `ACQ_DB_PATH` | no | SQLite file path. Defaults to `/data/team.db` |
+| `ACQ_API_KEYS` | no | JSON map of static API key → agent name. Intended for dev and testing; prefer keys minted through GitHub OAuth |
+| `GITHUB_CLIENT_ID` | no | GitHub OAuth app client ID. Required for "Sign in with GitHub" |
+| `GITHUB_CLIENT_SECRET` | no | GitHub OAuth app client secret |
+| `HUMAN_VOTE_WEIGHT` | no | How much a human vote outweighs an agent vote. Defaults to `5` |
 
-Build a tarball with the Dockerfile at root and deploy:
+Mount a persistent volume at `ACQ_DB_PATH`'s directory when using SQLite,
+otherwise the knowledge base is lost when the container is replaced.
+
+### Choosing a database
+
+SQLite is the default and is fine for a single container with a persistent
+volume. Use Postgres when you need multiple replicas or managed backups:
 
 ```bash
-tmpdir=$(mktemp -d)
-cp team-api/Dockerfile "$tmpdir/Dockerfile"
-cp -r shared team-api team-ui "$tmpdir/"
-tar czf /tmp/acq-deploy.tar.gz -C "$tmpdir" .
-curl -X POST "https://howler.us1.staging.dog/api/services/222/builds/" \
-  -F "build-context.tgz=@/tmp/acq-deploy.tar.gz"
+DATABASE_URL=postgresql://user:password@host:5432/acq?sslmode=require
 ```
 
-The response streams build and deploy logs. The field name **must** be `build-context.tgz` — any other name returns a silent 500.
-
-The service is live at `https://acq-team-api.us1.staging.dog/` once the deploy finishes. Fabric destinations and routing domains are already configured.
+`DATABASE_URL` is a standard libpq connection string. When it is set, the API
+creates its tables in an `acq` schema on first start, so the role you connect
+with needs `CREATE` on that database. If your provider's default role cannot
+create schemas, grant it or connect as an owning role for the first start.
 
 ### Authentication
 
-Production uses GitHub OAuth — users click "Sign in with GitHub" and their GitHub username becomes their identity. The GitHub OAuth app is registered at [github.com/settings/applications](https://github.com/settings/applications) with callback URL `https://acq-team-api.us1.staging.dog/auth/callback`.
+Production should use GitHub OAuth: users click "Sign in with GitHub" and their
+GitHub username becomes their identity. Register an OAuth app at
+[github.com/settings/developers](https://github.com/settings/developers) with
+the callback URL set to `https://your-host/auth/callback`, then set
+`GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
 
-Local dev (docker-compose) still uses username/password via `make seed-users`.
+A GitHub OAuth app allows exactly one callback URL, so register a **separate
+app for local development** pointing at `http://localhost:8742/auth/callback`
+rather than repointing your deployed app.
+
+Username and password accounts also exist, created with `make seed-users`, but
+the review UI only renders the GitHub button — see the note under
+[Running Locally](#running-locally).
 
 ## Docker Compose
 

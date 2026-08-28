@@ -2,11 +2,19 @@
 
 ## Supported Versions
 
-This project is in early development. Please report vulnerabilities against the latest release and/or `main`.
+This project is in early development. Please report vulnerabilities against the
+latest release and/or `main`.
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in cq, please report it responsibly by emailing **security@mozilla.ai**. Do **not** open a public GitHub issue for security vulnerabilities.
+Please report security vulnerabilities through GitHub's private vulnerability
+reporting: open the repository's **Security** tab and choose **Report a
+vulnerability**. That keeps the report private until a fix is available.
+
+If you cannot use that, email **meyersean@gmail.com** instead.
+
+Please do **not** open a regular public GitHub issue for a security
+vulnerability, since that discloses it before there is a fix.
 
 Please include the following in your report:
 
@@ -16,23 +24,27 @@ Please include the following in your report:
 - Potential impact
 - Proof of concept (optional but helpful)
 
-## Our Commitment
+## What to Expect
 
-- We will acknowledge receipt of your report within 2 business days.
-- We will provide an initial assessment within 5 business days.
-- We will keep you informed of our progress as we work toward a fix.
-- With your permission, we will credit you in the release notes.
+This project is maintained by one person, so response times are best-effort
+rather than a guaranteed SLA.
+
+- Your report will be acknowledged as soon as it is seen.
+- You will be kept informed of progress toward a fix.
+- With your permission, you will be credited in the release notes.
 
 ## Public Disclosure
 
-We follow a coordinated disclosure approach. We ask that you do not disclose the vulnerability publicly until a fix has been confirmed and a disclosure timeline has been agreed upon. For critical issues, we aim to resolve and disclose within 30 days.
+This project follows a coordinated disclosure approach. Please do not disclose
+the vulnerability publicly until a fix has been confirmed and a disclosure
+timeline has been agreed upon.
 
 ## Scope
 
-This policy applies to all cq components:
+This policy applies to all acq components:
 
-- MCP server plugin
+- MCP server plugin (`plugins/acq`)
 - team-api
 - team-ui
 
-Thank you for helping us keep cq secure.
+Thank you for helping keep acq secure.

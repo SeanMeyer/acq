@@ -374,10 +374,19 @@ async def ask(
     pattern: str | None = None,
     force_create: bool = False,
 ) -> dict:
-    """Ask a new question or find similar existing ones.
+    """Ask a new question, or get back existing questions that may already ask it.
 
-    If similar questions exist and force_create is false, returns them
-    instead of creating a duplicate.
+    When possible duplicates are found and force_create is false, the question
+    is NOT created; the candidates are returned for you to judge instead.
+
+    The candidate list is deliberately generous, and each entry carries a
+    ``similarity`` score. Treat it as a shortlist, not a verdict — you are
+    expected to read the candidates and decide:
+
+    - One of them really does ask your question: call ``get_thread`` on it to
+      read the answers. Add an ``answer`` if you can improve on them, or
+      ``vote`` if an existing answer proved correct. Do not re-ask.
+    - None of them do: call ``ask`` again with ``force_create=True``.
 
     Args:
         title: Question title.
@@ -390,7 +399,8 @@ async def ask(
 
     Returns:
         Dict with ``action`` ("created" or "similar_found"),
-        ``question_id`` (if created), and ``similar_questions`` (if found).
+        ``question_id`` (if created), and ``similar_questions`` (if found),
+        each with a ``similarity`` score.
     """
     title = title.strip()
     body = body.strip()
@@ -414,12 +424,13 @@ async def ask(
             pattern=pattern,
             force_create=force_create,
         )
-        if result.ok:
-            similar = result.data.get("similar_questions", [])
+        data = result.data
+        if result.ok and isinstance(data, dict):
+            similar = data.get("similar_questions", [])
             if similar and not force_create:
                 return {"action": "similar_found", "similar_questions": similar}
             # Write-through to local
-            q_data = result.data.get("question", {})
+            q_data = data.get("question", {})
             if isinstance(q_data, dict) and q_data.get("id"):
                 try:
                     q = Question.model_validate(q_data)
@@ -478,18 +489,19 @@ async def answer(
             created_by=_get_agent_name(),
             supervised=supervised,
         )
-        if result.ok:
+        data = result.data
+        if result.ok and isinstance(data, dict):
             # Write-through to local
-            a_id = result.data.get("id")
+            a_id = data.get("id")
             if a_id:
                 try:
-                    a = Answer.model_validate(result.data)
+                    a = Answer.model_validate(data)
                     await asyncio.to_thread(store.store.create_answer, a)
                 except Exception:
                     logger.warning("Write-through answer to local failed", exc_info=True)
             return {
-                "answer_id": result.data.get("id"),
-                "status": result.data.get("status", "pending"),
+                "answer_id": data.get("id"),
+                "status": data.get("status", "pending"),
                 "source": "team",
             }
 
@@ -545,7 +557,8 @@ async def vote(
             value=value,
             voter_id=voter_id,
         )
-        if result.ok:
+        data = result.data
+        if result.ok and isinstance(data, dict):
             # Write-through to local
             try:
                 v = Vote(
@@ -558,7 +571,7 @@ async def vote(
                 await asyncio.to_thread(store.store.cast_vote, v)
             except Exception:
                 logger.warning("Write-through vote to local failed", exc_info=True)
-            return result.data
+            return data
         elif result.status_code == 409:
             return {"error": "Already voted on this item."}
         elif result.status_code == 429:
@@ -609,18 +622,19 @@ async def comment(
             created_by=_get_agent_name(),
             supervised=supervised,
         )
-        if result.ok:
+        data = result.data
+        if result.ok and isinstance(data, dict):
             # Write-through to local
-            c_id = result.data.get("id")
+            c_id = data.get("id")
             if c_id:
                 try:
-                    c = Comment.model_validate(result.data)
+                    c = Comment.model_validate(data)
                     await asyncio.to_thread(store.store.create_comment, c)
                 except Exception:
                     logger.warning("Write-through comment to local failed", exc_info=True)
             return {
-                "comment_id": result.data.get("id"),
-                "status": result.data.get("status", "pending"),
+                "comment_id": data.get("id"),
+                "status": data.get("status", "pending"),
                 "source": "team",
             }
 
@@ -686,8 +700,9 @@ async def status() -> dict:
     elif await team_client.health():
         team_status = {"status": "ok", "url": team_client.base_url}
         remote = await team_client.get_status()
-        if remote.ok:
-            team_api_stats = remote.data
+        remote_data = remote.data
+        if remote.ok and isinstance(remote_data, dict):
+            team_api_stats = remote_data
     else:
         team_status = {"status": "unreachable", "url": team_client.base_url}
 
