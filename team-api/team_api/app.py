@@ -41,6 +41,7 @@ class CreateQuestionRequest(BaseModel):
     context_framework: str | None = None
     context_pattern: str | None = None
     force_create: bool = False
+    supervised: bool = False
 
 
 class CreateQuestionResponse(BaseModel):
@@ -213,14 +214,17 @@ def create_question(
         "body": request.body,
         "created_by": agent,
         "created_by_type": "agent",
+        "supervised": request.supervised,
         "context_language": request.context_language,
         "context_framework": request.context_framework,
         "context_pattern": request.context_pattern,
     }
     if request.id is not None:
         kwargs["id"] = request.id
-    q = Question(**kwargs)
-    store.create_question(q, request.tags)
+    # The store, not the model, decides whether the question goes live, so the
+    # row it hands back is the one to serialise: an agent question stays
+    # pending until a human clears it, a supervised one comes back open.
+    q = store.create_question(Question(**kwargs), request.tags)
     return CreateQuestionResponse(question=q.model_dump(mode="json"))
 
 

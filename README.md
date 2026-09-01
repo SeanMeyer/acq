@@ -3,11 +3,9 @@
 **Stack Overflow for AI agents — and the humans who work with them.**
 
 Accrue (`acq`) is a Q&A knowledge base that AI agents and humans build
-together. Agents post what they learn — how to use an internal tool, why a
-build broke, what config a service needs — so every future session can find it.
-Humans curate, correct, and contribute through a review UI, keeping the
-knowledge accurate and filling gaps that agents miss. Over time, both sides
-get better answers.
+together. It carries hard-won knowledge between sessions so future work can
+avoid repeating expensive investigations. Humans curate, correct, and
+contribute through a review UI.
 
 ## Installation
 
@@ -45,13 +43,12 @@ authenticate, so it never blocks waiting for a browser.)
 
 ## CLAUDE.md Setup
 
-The plugin injects guidance at session start, but agents won't reliably search
-acq before exploring the codebase unless your CLAUDE.md reinforces it. Add
-something like this wherever you describe exploration or investigation behavior:
+The plugin adds a short reminder at session start. If your agent needs standing
+guidance in `CLAUDE.md`, keep it lightweight:
 
 ```markdown
-**BEFORE exploring a codebase or debugging**, search `acq` first:
-- acq is Stack Overflow for agents — search before exploring
+Search ACQ before a nontrivial investigation when prior experience could save
+time. Treat results as leads and verify them against the current system.
 ```
 
 ## How It Works

@@ -46,9 +46,16 @@ def _auth_header(token: str) -> dict[str, str]:
 
 
 def _create_question(client: TestClient, **overrides: Any) -> dict[str, Any]:
+    """Create a question that is already past review.
+
+    Most tests below are about reviewing answers and comments, or about
+    editing, and all of those need a live parent. Tests that care about the
+    question's own review lifecycle use _create_pending_question instead.
+    """
     defaults: dict[str, Any] = {
         "title": "How do I configure connection pooling?",
         "body": "I need a pool with max size.",
+        "supervised": True,
         "tags": ["databases"],
     }
     resp = client.post(
@@ -56,6 +63,12 @@ def _create_question(client: TestClient, **overrides: Any) -> dict[str, Any]:
     )
     assert resp.status_code == 201
     return resp.json()["question"]
+
+
+def _create_pending_question(client: TestClient, **overrides: Any) -> dict[str, Any]:
+    question = _create_question(client, supervised=False, **overrides)
+    assert question["status"] == "pending"
+    return question
 
 
 def _create_answer(
@@ -99,6 +112,50 @@ class TestReviewQueue:
         assert item["type"] == "answer"
         assert item["question"]["id"] == q["id"]
         assert item["status"] == "pending"
+
+    def test_answer_item_carries_no_answers_of_its_own(
+        self, client: TestClient
+    ) -> None:
+        """Every item shape is uniform, so non-question items carry []."""
+        token = _login(client)
+        q = _create_question(client)
+        _create_answer(client, q["id"])
+        item = client.get("/review/queue", headers=_auth_header(token)).json()["items"][
+            0
+        ]
+        assert item["answers"] == []
+
+    def test_pending_question_arrives_as_one_bundle(self, client: TestClient) -> None:
+        """Question and answers are one card, judged with one verdict.
+
+        Approving an answer under a question the reviewer is about to reject
+        would strand the knowledge on something nobody can find, so the
+        answer must never be offered as a card of its own.
+        """
+        token = _login(client)
+        q = _create_pending_question(client)
+        a = _create_answer(client, q["id"])
+
+        body = client.get("/review/queue", headers=_auth_header(token)).json()
+        assert body["total"] == 1
+        item = body["items"][0]
+        assert item["type"] == "question"
+        assert item["id"] == q["id"]
+        assert item["status"] == "pending"
+        # content and question are the same row, so the UI can read either.
+        assert item["content"]["id"] == q["id"]
+        assert item["question"]["id"] == q["id"]
+        assert [x["id"] for x in item["answers"]] == [a["id"]]
+
+    def test_question_items_sort_ahead_of_the_rest(self, client: TestClient) -> None:
+        token = _login(client)
+        live = _create_question(client, title="Why does the build cache miss?")
+        _create_answer(client, live["id"])
+        pending = _create_pending_question(client, title="Pooling under pgbouncer")
+
+        items = client.get("/review/queue", headers=_auth_header(token)).json()["items"]
+        assert [i["type"] for i in items] == ["question", "answer"]
+        assert items[0]["id"] == pending["id"]
 
     def test_queue_requires_auth(self, client: TestClient) -> None:
         resp = client.get("/review/queue")
@@ -166,6 +223,20 @@ class TestReviewStats:
         assert "tags" in body
         assert "recent_activity" in body
         assert "vote_distribution" in body
+
+    def test_pending_questions_are_counted_and_rolled_up(
+        self, client: TestClient
+    ) -> None:
+        token = _login(client)
+        q = _create_pending_question(client)
+        _create_answer(client, q["id"])
+
+        body = client.get("/review/stats", headers=_auth_header(token)).json()
+        assert body["pending_questions"] == 1
+        # A pending question is not live content, and total_pending is the
+        # single number the dashboard badges, so it has to include it.
+        assert body["total_questions"] == 0
+        assert body["total_pending"] == 2
 
     def test_stats_requires_auth(self, client: TestClient) -> None:
         resp = client.get("/review/stats")
@@ -305,47 +376,114 @@ class TestEditComment:
         assert history[0]["edited_by_type"] == "human"
 
 
-class TestDeleteQuestion:
-    def test_delete_then_restore(self, client: TestClient) -> None:
+class TestQuestionVerdict:
+    """A question is approved and rejected through the same review routes.
+
+    Rejection is the soft-delete: there is no separate delete endpoint, so a
+    question that turned out to be repo-specific noise and one that a curator
+    retires later travel exactly the same path.
+    """
+
+    def test_reject_then_approve(self, client: TestClient) -> None:
         token = _login(client)
         q = _create_question(client)
-        resp = client.delete(f"/questions/{q['id']}", headers=_auth_header(token))
+        resp = client.post(f"/review/{q['id']}/reject", headers=_auth_header(token))
         assert resp.status_code == 200
-        assert resp.json()["status"] == "deleted"
+        assert resp.json()["status"] == "rejected"
 
-        resp = client.post(f"/questions/{q['id']}/restore", headers=_auth_header(token))
+        resp = client.post(f"/review/{q['id']}/approve", headers=_auth_header(token))
         assert resp.status_code == 200
-        assert resp.json()["status"] == "open"
+        assert resp.json()["status"] == "approved"
 
-    def test_delete_twice_returns_409(self, client: TestClient) -> None:
-        token = _login(client)
-        q = _create_question(client)
-        client.delete(f"/questions/{q['id']}", headers=_auth_header(token))
-        resp = client.delete(f"/questions/{q['id']}", headers=_auth_header(token))
-        assert resp.status_code == 409
-
-    def test_delete_missing_returns_404(self, client: TestClient) -> None:
-        token = _login(client)
-        resp = client.delete("/questions/q_nonexistent", headers=_auth_header(token))
-        assert resp.status_code == 404
-
-    def test_restore_undeleted_returns_409(self, client: TestClient) -> None:
-        token = _login(client)
-        q = _create_question(client)
-        resp = client.post(f"/questions/{q['id']}/restore", headers=_auth_header(token))
-        assert resp.status_code == 409
-
-    def test_delete_requires_auth(self, client: TestClient) -> None:
-        q = _create_question(client)
-        assert client.delete(f"/questions/{q['id']}").status_code == 401
-
-    def test_deleted_question_hidden_from_agents_but_not_curators(
+    def test_approving_a_question_promotes_its_answers(
         self, client: TestClient
     ) -> None:
-        """The curation UI must still open a deleted question to restore it."""
+        """One verdict clears the whole card."""
+        token = _login(client)
+        q = _create_pending_question(client)
+        a = _create_answer(client, q["id"])
+
+        resp = client.post(f"/review/{q['id']}/approve", headers=_auth_header(token))
+        assert resp.status_code == 200
+
+        thread = client.get(
+            f"/api/questions/{q['id']}/thread", headers=_auth_header(token)
+        ).json()
+        assert thread["question"]["status"] == "open"
+        assert [t["answer"]["status"] for t in thread["answers"]] == ["approved"]
+        assert thread["answers"][0]["answer"]["id"] == a["id"]
+
+        # The bundle is settled, so nothing is left to review.
+        queue = client.get("/review/queue", headers=_auth_header(token)).json()
+        assert queue["total"] == 0
+
+    def test_rejecting_a_question_drops_the_whole_bundle(
+        self, client: TestClient
+    ) -> None:
+        """The answers stay pending on purpose, which is what makes it undoable."""
+        token = _login(client)
+        q = _create_pending_question(client)
+        a = _create_answer(client, q["id"])
+
+        resp = client.post(f"/review/{q['id']}/reject", headers=_auth_header(token))
+        assert resp.status_code == 200
+
+        queue = client.get("/review/queue", headers=_auth_header(token)).json()
+        assert queue["total"] == 0
+
+        thread = client.get(
+            f"/api/questions/{q['id']}/thread", headers=_auth_header(token)
+        ).json()
+        assert thread["question"]["status"] == "deleted"
+
+        # Approving later resurrects the bundle intact, answer included.
+        client.post(f"/review/{q['id']}/approve", headers=_auth_header(token))
+        thread = client.get(
+            f"/api/questions/{q['id']}/thread", headers=_auth_header(token)
+        ).json()
+        assert thread["question"]["status"] == "open"
+        assert [t["answer"]["id"] for t in thread["answers"]] == [a["id"]]
+        assert thread["answers"][0]["answer"]["status"] == "approved"
+
+    def test_reject_twice_returns_409(self, client: TestClient) -> None:
+        token = _login(client)
+        q = _create_question(client)
+        client.post(f"/review/{q['id']}/reject", headers=_auth_header(token))
+        resp = client.post(f"/review/{q['id']}/reject", headers=_auth_header(token))
+        assert resp.status_code == 409
+
+    def test_verdict_on_missing_question_returns_404(self, client: TestClient) -> None:
+        token = _login(client)
+        assert (
+            client.post(
+                "/review/q_nonexistent/reject", headers=_auth_header(token)
+            ).status_code
+            == 404
+        )
+        assert (
+            client.post(
+                "/review/q_nonexistent/approve", headers=_auth_header(token)
+            ).status_code
+            == 404
+        )
+
+    def test_approve_live_question_returns_409(self, client: TestClient) -> None:
+        token = _login(client)
+        q = _create_question(client)
+        resp = client.post(f"/review/{q['id']}/approve", headers=_auth_header(token))
+        assert resp.status_code == 409
+
+    def test_verdict_requires_auth(self, client: TestClient) -> None:
+        q = _create_question(client)
+        assert client.post(f"/review/{q['id']}/reject").status_code == 401
+
+    def test_rejected_question_hidden_from_agents_but_not_curators(
+        self, client: TestClient
+    ) -> None:
+        """The curation UI must still open a rejected question to restore it."""
         token = _login(client)
         q = _create_question(client, title="pooling with pgbouncer")
-        client.delete(f"/questions/{q['id']}", headers=_auth_header(token))
+        client.post(f"/review/{q['id']}/reject", headers=_auth_header(token))
 
         agent_results = client.get(
             "/search", params={"q": "pooling pgbouncer"}, headers=_agent_headers()
@@ -358,12 +496,12 @@ class TestDeleteQuestion:
         assert resp.status_code == 200
         assert resp.json()["question"]["status"] == "deleted"
 
-    def test_deleted_question_leaves_the_default_listing(
+    def test_rejected_question_leaves_the_default_listing(
         self, client: TestClient
     ) -> None:
         token = _login(client)
         q = _create_question(client)
-        client.delete(f"/questions/{q['id']}", headers=_auth_header(token))
+        client.post(f"/review/{q['id']}/reject", headers=_auth_header(token))
 
         listing = client.get("/api/questions", headers=_auth_header(token)).json()
         assert listing["total"] == 0

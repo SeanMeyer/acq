@@ -26,6 +26,31 @@ def review_queue(
 ) -> dict[str, Any]:
     queue = store.pending_queue()
     items: list[dict[str, Any]] = []
+    # Questions come first, and each one arrives as a bundle: the pending
+    # question plus the answers filed under it. The reviewer's verdict covers
+    # the whole card, because approving an answer whose question was rejected
+    # would leave the knowledge hanging off something nobody can reach. The
+    # store enforces the other half of that rule — answers under a question
+    # that is not yet live are never offered as standalone items, so they can
+    # only ever be reviewed here, inside the bundle.
+    for question in queue["questions"]:
+        thread = store.get_question_thread(question.id, include_pending=True)
+        answers = thread["answers"] if thread else []
+        serialised = question.model_dump(mode="json")
+        items.append(
+            {
+                "id": question.id,
+                "type": "question",
+                # content and question are the same row for a question item.
+                # The duplication is deliberate: it gives the UI one item
+                # shape for all three types, so the card that renders the
+                # parent question never has to special-case which key to read.
+                "content": serialised,
+                "question": serialised,
+                "answers": [t["answer"].model_dump(mode="json") for t in answers],
+                "status": question.status,
+            }
+        )
     for answer in queue["answers"]:
         question = store.get_question(answer.question_id)
         items.append(
@@ -34,24 +59,28 @@ def review_queue(
                 "type": "answer",
                 "content": answer.model_dump(mode="json"),
                 "question": question.model_dump(mode="json") if question else None,
+                "answers": [],
                 "status": answer.status,
             }
         )
     for comment in queue["comments"]:
         # For comments on answers, find the parent question
-        question = None
+        parent_question = None
         if comment.parent_type == "answer":
             parent_answer = store.get_answer(comment.parent_id)
             if parent_answer:
-                question = store.get_question(parent_answer.question_id)
+                parent_question = store.get_question(parent_answer.question_id)
         elif comment.parent_type == "question":
-            question = store.get_question(comment.parent_id)
+            parent_question = store.get_question(comment.parent_id)
         items.append(
             {
                 "id": comment.id,
                 "type": "comment",
                 "content": comment.model_dump(mode="json"),
-                "question": question.model_dump(mode="json") if question else None,
+                "question": (
+                    parent_question.model_dump(mode="json") if parent_question else None
+                ),
+                "answers": [],
                 "status": comment.status,
             }
         )
@@ -61,10 +90,21 @@ def review_queue(
 # ------------------------------------------------------------------
 # Approve / reject
 #
-# Rejection is also the soft-delete mechanism for answers and comments:
+# One pair of routes covers all three content types, and the id prefix tells
+# the store which one it is looking at.
+#
+# For answers and comments, rejection doubles as the soft-delete mechanism:
 # nothing is removed, the row just stops being visible, and approving it
 # again restores it. Both therefore accept content in any status other than
 # the one being applied.
+#
+# For a question the verdict is atomic over the whole review card. Approving
+# opens the question and promotes its pending answers in the same
+# transaction. Rejecting only marks the question deleted and deliberately
+# leaves those answers pending: a rejected question is invisible and the
+# pending queue refuses to surface answers under a question that is not live,
+# so they are already unreachable, and leaving them untouched is what keeps
+# the rejection reversible by a later approve.
 # ------------------------------------------------------------------
 
 
@@ -111,8 +151,9 @@ def review_stats(
     return {
         "total_questions": status["total_questions"],
         "total_answers": status["total_answers"],
-        "total_pending": status["pending"],
+        "total_pending": status["pending"] + status["pending_questions"],
         "total_unanswered": status["unanswered"],
+        "pending_questions": status["pending_questions"],
         "tags": [t.model_dump() for t in tag_rows],
         "total_votes": status["total_votes"],
         "recent_activity": [],
@@ -185,42 +226,6 @@ def edit_comment(
     if result is None:
         raise HTTPException(status_code=404, detail="Comment not found")
     return result.model_dump(mode="json")
-
-
-# ------------------------------------------------------------------
-# Delete / restore question
-#
-# Answers and comments reuse the reject and approve routes above; questions
-# have no review lifecycle, so they get their own pair.
-# ------------------------------------------------------------------
-
-
-@router.delete("/questions/{question_id}")
-def delete_question(
-    question_id: str,
-    _user: str = Depends(get_current_user),
-    store: Store = Depends(get_store),
-) -> dict[str, str]:
-    result = store.delete_question(question_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Question not found")
-    if result is False:
-        raise HTTPException(status_code=409, detail="Question is already deleted")
-    return {"id": question_id, "status": "deleted"}
-
-
-@router.post("/questions/{question_id}/restore")
-def restore_question(
-    question_id: str,
-    _user: str = Depends(get_current_user),
-    store: Store = Depends(get_store),
-) -> dict[str, str]:
-    result = store.restore_question(question_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Question not found")
-    if result is False:
-        raise HTTPException(status_code=409, detail="Question is not deleted")
-    return {"id": question_id, "status": "open"}
 
 
 # ------------------------------------------------------------------

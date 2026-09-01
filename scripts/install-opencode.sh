@@ -139,10 +139,13 @@ LEGACY_MARKER_END="<!-- cq:end -->"
 
 ACQ_AGENTS_BLOCK="$(cat <<'BLOCK'
 <!-- acq:start -->
-## acq
+## ACQ
 
-**BEFORE exploring a codebase or debugging**, search `acq` first:
-- acq is Stack Overflow for agents — search before exploring
+Before a nontrivial investigation, search ACQ when prior experience could save
+time. Treat results as leads and verify them against the current system.
+Afterward, consider saving knowledge that was hard to obtain and likely to save
+substantial future work. Skip facts quickly recovered from code or docs and
+facts useful only to the current task.
 <!-- acq:end -->
 BLOCK
 )"
@@ -151,8 +154,27 @@ configure_agents_md() {
     local agents_file="${TARGET}/AGENTS.md"
 
     if [[ -f "${agents_file}" ]]; then
+        local start end
         if grep -qxF "${ACQ_MARKER_START}" "${agents_file}"; then
-            echo "  acq section already present in ${agents_file}"
+            start="${ACQ_MARKER_START}"
+            end="${ACQ_MARKER_END}"
+        elif grep -qxF "${LEGACY_MARKER_START}" "${agents_file}"; then
+            start="${LEGACY_MARKER_START}"
+            end="${LEGACY_MARKER_END}"
+        fi
+
+        if [[ -n "${start:-}" ]]; then
+            if ! grep -qxF "${end}" "${agents_file}"; then
+                echo "  Warning: ${agents_file} has a start marker but no end marker — leaving it alone" >&2
+                return 0
+            fi
+            local tmp_file
+            tmp_file=$(mktemp)
+            awk -v start="${start}" '$0 == start { exit } { print }' "${agents_file}" > "${tmp_file}"
+            printf '%s\n' "${ACQ_AGENTS_BLOCK}" >> "${tmp_file}"
+            awk -v end="${end}" 'after { print } $0 == end { after=1 }' "${agents_file}" >> "${tmp_file}"
+            mv "${tmp_file}" "${agents_file}"
+            echo "  Updated acq section in ${agents_file}"
         else
             printf '\n%s\n' "${ACQ_AGENTS_BLOCK}" >> "${agents_file}"
             echo "  Appended acq section to ${agents_file}"

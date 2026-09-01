@@ -102,8 +102,10 @@ def question_thread(
     user: str = Depends(get_current_user),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
-    # include_deleted: the curation UI must be able to open a soft-deleted
-    # question in order to offer a restore. Agent-facing reads never do this.
+    # include_pending and include_deleted both matter to the curation UI and
+    # to nothing else: it must open a question still awaiting review in order
+    # to judge it, and a soft-deleted one in order to offer a restore.
+    # Agent-facing reads never pass either, so neither is ever visible to them.
     thread = store.get_question_thread(
         question_id, include_pending=True, include_deleted=True
     )
@@ -190,13 +192,18 @@ def create_question(
     user: str = Depends(get_current_user),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
-    q = Question(
-        title=request.title,
-        body=request.body,
-        created_by=user,
-        created_by_type="human",
+    # The store promotes human-authored questions straight to open, so
+    # serialise the row it returns rather than the model, which still carries
+    # the pending default.
+    q = store.create_question(
+        Question(
+            title=request.title,
+            body=request.body,
+            created_by=user,
+            created_by_type="human",
+        ),
+        request.tags,
     )
-    store.create_question(q, request.tags)
     return {"question": q.model_dump(mode="json")}
 
 

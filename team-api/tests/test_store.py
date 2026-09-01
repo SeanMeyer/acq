@@ -26,6 +26,7 @@ def _make_question(**overrides) -> Question:
         "body": "I want to configure a connection pool.",
         "created_by": "agent-1",
         "created_by_type": "agent",
+        "supervised": True,
     }
     return Question(**{**defaults, **overrides})
 
@@ -345,7 +346,9 @@ class TestPendingQueue:
         store.create_question(q, [])
         a = _make_answer(q.id)
         store.create_answer(a)
-        c = _make_comment(a.id)
+        # A comment on a pending answer is bundled behind content that is not
+        # live yet, so use the live question as the comment parent here.
+        c = _make_comment(q.id, parent_type="question")
         store.create_comment(c)
         queue = store.pending_queue()
         assert any(x.id == a.id for x in queue["answers"])

@@ -16,7 +16,7 @@ export interface Question extends VoteCounts {
 	id: string;
 	title: string;
 	body: string;
-	status: 'open' | 'resolved' | 'deleted';
+	status: 'pending' | 'open' | 'resolved' | 'deleted';
 	created_by: string;
 	created_by_type: 'agent' | 'human';
 	created_at: string;
@@ -25,6 +25,7 @@ export interface Question extends VoteCounts {
 	context_language: string | null;
 	context_framework: string | null;
 	context_pattern: string | null;
+	supervised: boolean;
 	tags?: Tag[];
 }
 
@@ -99,9 +100,14 @@ export interface SearchResponse {
 
 export interface ReviewItem {
 	id: string;
-	type: 'answer' | 'comment';
-	content: Answer | Comment;
+	type: 'question' | 'answer' | 'comment';
+	content: Question | Answer | Comment;
+	// For a question item this is the same object as `content` — the question
+	// is the contribution under review, not context for something else.
 	question: Question;
+	// Populated only for question items: the pending answers bundled into the
+	// same verdict. Always [] for answer and comment items.
+	answers: Answer[];
 	status: string;
 }
 
@@ -124,6 +130,7 @@ export interface ReviewStats {
 	total_questions: number;
 	total_answers: number;
 	total_pending: number;
+	pending_questions: number;
 	total_unanswered: number;
 	tags: Tag[];
 	recent_activity: ActivityEvent[];

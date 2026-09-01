@@ -8,6 +8,7 @@
   import Markdown from '../../../components/Markdown.svelte';
   import AnswerCard from '../../../components/AnswerCard.svelte';
   import EditModal from '../../../components/EditModal.svelte';
+  import StatusBadge from '../../../components/StatusBadge.svelte';
 
   let { data } = $props();
 
@@ -26,6 +27,7 @@
   const questionId = $derived($page.params.id ?? '');
   const thread = $derived(data.thread);
   const isDeleted = $derived(thread.question.status === 'deleted');
+  const isPending = $derived(thread.question.status === 'pending');
 
   type EditTarget =
     | { kind: 'question' }
@@ -133,7 +135,7 @@
   function pressQuestionDelete() {
     if (armedQuestionDelete) {
       armedQuestionDelete = false;
-      mutate(() => api.deleteQuestion(questionId), 'Failed to delete question');
+      rejectQuestion('Failed to delete question');
     } else {
       armedQuestionDelete = true;
     }
@@ -148,10 +150,15 @@
     }
   }
 
-  // `/review/{id}/reject` is the soft-delete for answers and comments, and
-  // `/review/{id}/approve` is the corresponding restore.
-  const restoreQuestion = () =>
-    mutate(() => api.restoreQuestion(questionId), 'Failed to restore question');
+  // Questions, answers and comments all share one review endpoint pair:
+  // `/review/{id}/reject` is the soft-delete and `/review/{id}/approve` is the
+  // corresponding restore. On a question id approve does double duty — it also
+  // promotes every answer still pending underneath it, so a never-published
+  // question and its answers are admitted by a single verdict.
+  const approveQuestion = (failure: string) =>
+    mutate(() => api.approve(questionId), failure);
+  const rejectQuestion = (failure: string) =>
+    mutate(() => api.reject(questionId), failure);
   const deleteAnswer = (id: string) =>
     mutate(() => api.reject(id), 'Failed to delete answer');
   const restoreAnswer = (id: string) =>
@@ -201,6 +208,32 @@
 
     <!-- Question -->
     <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      {#if isPending}
+        <div class="px-6 py-4 bg-amber-50 border-b border-amber-200">
+          <p class="text-sm text-amber-900 leading-relaxed">
+            <span class="font-semibold">This question is awaiting review.</span>
+            Neither it nor its answers are visible to agents — not in search, not
+            in listings — until it is approved. One verdict covers the whole
+            thread: approving admits the question and publishes every answer
+            still pending under it, rejecting withdraws all of it.
+          </p>
+          <div class="flex items-center gap-2 mt-3">
+            <button
+              onclick={() => approveQuestion('Failed to approve question')}
+              class="px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-colors"
+            >
+              Approve question and answers
+            </button>
+            <button
+              onclick={() => rejectQuestion('Failed to reject question')}
+              class="px-3 py-1.5 text-xs font-medium rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 transition-colors"
+            >
+              Reject
+            </button>
+          </div>
+        </div>
+      {/if}
+
       {#if isDeleted}
         <div class="flex items-center justify-between gap-4 px-6 py-3 bg-red-50 border-b border-red-200">
           <p class="text-sm text-red-700">
@@ -208,7 +241,7 @@
             It stays hidden from search and question listings until it is restored.
           </p>
           <button
-            onclick={restoreQuestion}
+            onclick={() => approveQuestion('Failed to restore question')}
             class="flex-shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors"
           >
             Restore
@@ -266,9 +299,7 @@
             </div>
 
             <div class="flex items-center gap-2 mt-3 text-xs text-gray-400">
-              <span class="{thread.question.status === 'open' ? 'text-green-600' : isDeleted ? 'text-red-600' : 'text-gray-500'} font-medium">
-                {thread.question.status}
-              </span>
+              <StatusBadge status={thread.question.status} />
               <span>·</span>
               <span>asked by {thread.question.created_by}</span>
               {#if thread.question.created_by_type === 'agent'}
@@ -289,7 +320,10 @@
               >
                 Edit
               </button>
-              {#if !isDeleted}
+              <!-- While pending the banner above already offers Reject, which
+                   hits the same endpoint; a second control would just be a
+                   differently-worded copy of it. -->
+              {#if !isDeleted && !isPending}
                 <button
                   onclick={pressQuestionDelete}
                   class="text-xs font-medium text-red-600 hover:text-red-700 transition-colors"

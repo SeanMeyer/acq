@@ -98,12 +98,6 @@ export const api = {
   editComment: (id: string, body: string) =>
     request(`/comments/${id}`, { method: 'PUT', body: JSON.stringify({ body }) }),
 
-  deleteQuestion: (id: string) =>
-    request<{ id: string; status: string }>(`/questions/${id}`, { method: 'DELETE' }),
-
-  restoreQuestion: (id: string) =>
-    request<{ id: string; status: string }>(`/questions/${id}/restore`, { method: 'POST' }),
-
   questionHistory: (id: string) =>
     request(`/questions/${id}/history`),
 

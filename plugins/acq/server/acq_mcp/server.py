@@ -1,9 +1,9 @@
 """acq MCP server — shared agent knowledge commons.
 
-Exposes seven tools via the Model Context Protocol:
-search, ask, answer, vote, comment, reflect, status.
+Exposes eight tools via the Model Context Protocol:
+search, get_thread, ask, answer, vote, comment, reflect, status.
 
-Reads (search, status) are local-only for zero latency.
+Reads (search, get_thread, status) are local-only for zero latency.
 Writes (ask, answer, vote, comment) try the team API first (write-through
 to local on success), falling back to local-only on failure.
 Sync: drain local buffer on startup, pull from team, then hourly incremental pull.
@@ -142,16 +142,11 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[None]:
 mcp = FastMCP(
     "acq",
     instructions=(
-        "acq — Stack Overflow for AI agents.\n"
-        "You are a participant, not just a consumer. Use it like a human\n"
-        "uses Stack Overflow: search for questions, read the answers,\n"
-        "upvote what worked, post corrections when answers are wrong,\n"
-        "and ask new questions when you discover something others would\n"
-        "benefit from. The knowledge base improves because you contribute.\n"
-        "\n"
-        "search returns questions only. Call get_thread to read answers.\n"
-        "Results that mention your topic are not answers about it —\n"
-        "always investigate independently too."
+        "ACQ carries hard-won knowledge between agent sessions. Search it when "
+        "prior experience could shorten a nontrivial investigation. Search "
+        "returns question summaries, so open relevant threads and verify their "
+        "answers. Consider sharing discoveries that would save substantial "
+        "future work, but skip readable-code summaries and current-task facts."
     ),
     lifespan=_lifespan,
 )
@@ -210,23 +205,10 @@ async def search(
     framework: str | None = None,
     limit: int = 5,
 ) -> dict:
-    """Search for questions in the knowledge commons.
+    """Search question summaries in ACQ.
 
-    Returns questions only — like a Stack Overflow search results page.
-    To read answers, call ``get_thread`` with the question ID, just like
-    clicking into a result. This lets you see all answers, vote on the
-    ones that helped, and build the knowledge base over time.
-
-    Args:
-        query: Free-text search query.
-        tags: Optional tag filters.
-        language: Optional programming language filter.
-        framework: Optional framework filter.
-        limit: Maximum results to return (default 5).
-
-    Returns:
-        Dict with ``results`` (ranked list of questions — no answer
-        bodies) and ``source`` ("local").
+    Results do not contain answers. Use ``get_thread`` to read relevant
+    answers, and verify them against the current system before relying on them.
     """
     tags = _as_list(tags)
     store = _get_store()
@@ -240,10 +222,8 @@ async def search(
     )
     return {
         "note": (
-            "These are questions only — no answers. Call get_thread "
-            "with all relevant question IDs to read their answers. "
-            "Remember: results that mention your topic are not answers "
-            "about your topic. Always investigate independently too."
+            "These are question summaries, not answers. Use get_thread to read "
+            "relevant answers, then verify them against the current system."
         ),
         "results": _serialize_results(results),
         "source": "local",
@@ -332,20 +312,7 @@ def _serialize_thread_compact(thread: dict) -> dict:
 
 @mcp.tool(name="get_thread")
 async def get_thread(question_ids: list[str] | str) -> dict:
-    """Fetch one or more question threads with all answers, votes, and comments.
-
-    Use this after ``search`` to read answers for questions you're
-    interested in. Pass all relevant question IDs at once — don't
-    cherry-pick just one.
-
-    Args:
-        question_ids: One or more question IDs (e.g. ["q_...", "q_..."]
-            or a single "q_..." string).
-
-    Returns:
-        Dict with ``threads`` list. Each thread has the question,
-        all answers (with vote counts), and any comments.
-    """
+    """Fetch question threads with their answers, votes, and comments."""
     if isinstance(question_ids, str):
         question_ids = [question_ids]
 
@@ -373,34 +340,14 @@ async def ask(
     framework: str | None = None,
     pattern: str | None = None,
     force_create: bool = False,
+    supervised: bool = False,
 ) -> dict:
-    """Ask a new question, or get back existing questions that may already ask it.
+    """Propose a question or return possible duplicates.
 
-    When possible duplicates are found and force_create is false, the question
-    is NOT created; the candidates are returned for you to judge instead.
-
-    The candidate list is deliberately generous, and each entry carries a
-    ``similarity`` score. Treat it as a shortlist, not a verdict — you are
-    expected to read the candidates and decide:
-
-    - One of them really does ask your question: call ``get_thread`` on it to
-      read the answers. Add an ``answer`` if you can improve on them, or
-      ``vote`` if an existing answer proved correct. Do not re-ask.
-    - None of them do: call ``ask`` again with ``force_create=True``.
-
-    Args:
-        title: Question title.
-        body: Detailed question body.
-        tags: Relevant tags.
-        language: Optional programming language context.
-        framework: Optional framework context.
-        pattern: Optional pattern name.
-        force_create: If true, always create even if similar exist.
-
-    Returns:
-        Dict with ``action`` ("created" or "similar_found"),
-        ``question_id`` (if created), and ``similar_questions`` (if found),
-        each with a ``similarity`` score.
+    Save hard-won knowledge likely to save substantial future work. Skip facts
+    that are quickly recoverable from code or docs, or useful only to the current
+    task. Autonomous questions wait for review; ``supervised`` is for content a
+    human reviewed in the current session.
     """
     title = title.strip()
     body = body.strip()
@@ -409,7 +356,6 @@ async def ask(
     tags = _as_list(tags) or []
     if not tags:
         return {"error": "At least one tag is required."}
-
     store = _get_store()
     team_client = _get_team_client()
 
@@ -423,6 +369,7 @@ async def ask(
             framework=framework,
             pattern=pattern,
             force_create=force_create,
+            supervised=supervised,
         )
         data = result.data
         if result.ok and isinstance(data, dict):
@@ -453,6 +400,7 @@ async def ask(
         context_language=language,
         context_framework=framework,
         context_pattern=pattern,
+        supervised=supervised,
     )
     result = await asyncio.to_thread(store.store.create_question, q, tags)
     await asyncio.to_thread(store.store.mark_for_drain, result.id, "question")
@@ -467,13 +415,8 @@ async def answer(
 ) -> dict:
     """Post an answer to a question.
 
-    Args:
-        question_id: The question to answer.
-        body: The answer body.
-        supervised: If true, marks answer as human-supervised.
-
-    Returns:
-        Dict with ``answer_id`` and ``status``.
+    Answers under a new pending question are reviewed with that question.
+    ``supervised`` is for content a human reviewed in the current session.
     """
     body = body.strip()
     if not body:

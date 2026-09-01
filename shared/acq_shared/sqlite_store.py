@@ -170,6 +170,14 @@ class SqliteStore:
     # ------------------------------------------------------------------
 
     def create_question(self, question: Question, tag_names: list[str]) -> Question:
+        # Agent-authored questions enter the review queue; human-authored ones
+        # and those asked under supervision go live at once. Mirrors what
+        # create_answer does with answer.supervised. This cannot live in a
+        # model_post_init hook: that hook re-runs on every
+        # model_validate_json, so it would resurrect a rejected question on
+        # every read.
+        if question.status == "pending" and (question.created_by_type == "human" or question.supervised):
+            question = question.model_copy(update={"status": "open"})
         self._conn.execute(
             "INSERT INTO questions (id, data, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
             (
@@ -336,40 +344,6 @@ class SqliteStore:
         ).fetchall()
         return [_row_to_edit_history(r) for r in rows]
 
-    def delete_question(self, question_id: str) -> bool | None:
-        """Soft-delete a question by moving it to the 'deleted' status.
-
-        Nothing is destroyed: the question, its answers, comments, votes, and
-        edit history all stay in the database, and the read paths filter on
-        status instead.
-
-        Returns None when no such question exists and False when it is already
-        deleted, matching approve_content/reject_content so the routes can tell
-        404 from 409 without a second lookup.
-        """
-        q = self.get_question(question_id)
-        if q is None:
-            return None
-        if q.status == "deleted":
-            return False
-        self._write_question_status(q, "deleted")
-        return True
-
-    def restore_question(self, question_id: str) -> bool | None:
-        """Undo delete_question, returning the question to 'open'.
-
-        A question that was 'resolved' before deletion comes back 'open',
-        because the pre-deletion status is not retained. Returns None when no
-        such question exists and False when it is not deleted.
-        """
-        q = self.get_question(question_id)
-        if q is None:
-            return None
-        if q.status != "deleted":
-            return False
-        self._write_question_status(q, "open")
-        return True
-
     def _write_question_status(self, q: Question, status: str) -> None:
         now = datetime.now(UTC)
         updated = q.model_copy(update={"status": status, "updated_at": now})
@@ -394,8 +368,10 @@ class SqliteStore:
             where_clauses.append("q.status = ?")
             params.append(status)
         else:
-            # Soft-deleted questions are hidden unless asked for by name.
-            where_clauses.append("q.status != 'deleted'")
+            # Questions awaiting review and soft-deleted ones are both hidden
+            # unless asked for by name; status='pending' is how the curation
+            # UI lists the review queue.
+            where_clauses.append("q.status NOT IN ('deleted', 'pending')")
         if tag is not None:
             join = " JOIN question_tags qt ON q.id = qt.question_id JOIN tags t ON qt.tag_id = t.id"
             where_clauses.append("t.name = ?")
@@ -666,15 +642,16 @@ class SqliteStore:
     # ------------------------------------------------------------------
 
     def approve_content(self, content_id: str) -> bool | None:
-        """Make an answer or comment visible, whether pending or rejected.
+        """Make a question, answer, or comment visible, whether pending or rejected.
 
         Accepting rejected content is what makes rejection reversible, so this
-        doubles as the restore path for soft-deleted answers and comments.
+        doubles as the restore path for soft-deleted questions, answers, and
+        comments.
         """
         return self._set_content_status(content_id, "approved")
 
     def reject_content(self, content_id: str) -> bool | None:
-        """Hide an answer or comment, whether pending or already approved.
+        """Hide a question, answer, or comment, whether pending or already live.
 
         Rejection is the soft-delete mechanism: the row is kept and only its
         status changes, so restoring it later is a status change back.
@@ -682,12 +659,20 @@ class SqliteStore:
         return self._set_content_status(content_id, "rejected")
 
     def _set_content_status(self, content_id: str, new_status: str) -> bool | None:
-        """Move an answer or comment to *new_status*.
+        """Move a question, answer, or comment to *new_status*.
 
         Returns None when no such content exists and False when it already has
         that status, which is the distinction the routes turn into 404 versus
         409.
         """
+        # Questions are resolved first and separately: their verdict covers the
+        # answers filed under them, which the answer/comment loop knows nothing
+        # about. Id prefixes make the three namespaces disjoint, so checking
+        # questions up front cannot shadow an answer or comment.
+        row = self._conn.execute("SELECT data FROM questions WHERE id = ?", (content_id,)).fetchone()
+        if row is not None:
+            return self._review_question(Question.model_validate_json(row[0]), new_status)
+
         model = {"answers": Answer, "comments": Comment}
         for table, cls in model.items():
             row = self._conn.execute(f"SELECT data, status FROM {table} WHERE id = ?", (content_id,)).fetchone()
@@ -704,18 +689,77 @@ class SqliteStore:
             return True
         return None
 
+    def _review_question(self, q: Question, new_status: str) -> bool:
+        """Apply one approve/reject verdict to a question and its answers.
+
+        A new question is reviewed as a single card together with the answers
+        filed under it, so approving promotes every answer still pending in the
+        same transaction.
+
+        Rejection deliberately leaves those answers pending. A rejected
+        question is invisible, and pending_queue refuses to surface answers
+        whose parent question is not live, so its pending answers are already
+        unreachable. Leaving them pending is what makes the reject reversible:
+        a later approve promotes them normally. Cascading the rejection onto
+        the answer rows would make approve and reject asymmetric and
+        unrecoverable.
+        """
+        if new_status == "approved":
+            # 'resolved' is a live status too, so an approve there is a no-op
+            # rather than a demotion back to 'open'.
+            if q.status in ("open", "resolved"):
+                return False
+            rows = self._conn.execute(
+                "SELECT id, data FROM answers WHERE question_id = ? AND status = 'pending'",
+                (q.id,),
+            ).fetchall()
+            for answer_id, data_json in rows:
+                promoted = Answer.model_validate_json(data_json).model_copy(update={"status": "approved"})
+                self._conn.execute(
+                    "UPDATE answers SET data = ?, status = 'approved' WHERE id = ?",
+                    (promoted.model_dump_json(), answer_id),
+                )
+            # Commits the answer promotions above along with the question row.
+            self._write_question_status(q, "open")
+            return True
+
+        if q.status == "deleted":
+            return False
+        self._write_question_status(q, "deleted")
+        return True
+
     # ------------------------------------------------------------------
     # Querying
     # ------------------------------------------------------------------
 
     def pending_queue(self) -> dict[str, list[Any]]:
+        """Content awaiting a human verdict, oldest first within each kind.
+
+        Answers and comments are filtered on parent liveness. An answer under a
+        pending or rejected question is not a review card of its own: the
+        question is judged as one unit together with its answers. Without that
+        filter, rejecting a question would strand its answers in the queue as
+        orphan cards with no context to judge them by.
+        """
+        question_rows = self._conn.execute(
+            "SELECT data FROM questions WHERE status = 'pending' ORDER BY created_at ASC"
+        ).fetchall()
         answer_rows = self._conn.execute(
-            "SELECT data FROM answers WHERE status = 'pending' ORDER BY created_at ASC"
+            "SELECT a.data FROM answers a JOIN questions q ON q.id = a.question_id"
+            " WHERE a.status = 'pending' AND q.status IN ('open', 'resolved')"
+            " ORDER BY a.created_at ASC"
         ).fetchall()
         comment_rows = self._conn.execute(
-            "SELECT data FROM comments WHERE status = 'pending' ORDER BY created_at ASC"
+            "SELECT c.data FROM comments c WHERE c.status = 'pending' AND ("
+            "  (c.parent_type = 'question' AND EXISTS ("
+            "     SELECT 1 FROM questions q WHERE q.id = c.parent_id AND q.status IN ('open', 'resolved')))"
+            "  OR (c.parent_type = 'answer' AND EXISTS ("
+            "     SELECT 1 FROM answers a JOIN questions q ON q.id = a.question_id"
+            "     WHERE a.id = c.parent_id AND a.status = 'approved' AND q.status IN ('open', 'resolved')))"
+            ") ORDER BY c.created_at ASC"
         ).fetchall()
         return {
+            "questions": [Question.model_validate_json(r[0]) for r in question_rows],
             "answers": [Answer.model_validate_json(r[0]) for r in answer_rows],
             "comments": [Comment.model_validate_json(r[0]) for r in comment_rows],
         }
@@ -725,13 +769,17 @@ class SqliteStore:
     ) -> dict[str, Any] | None:
         """Assemble a question with its ranked answers and their comments.
 
-        *include_pending* adds answers still awaiting review. *include_deleted*
+        *include_pending* adds answers still awaiting review, and is also what
+        lets a question that is itself still awaiting review be read at all —
+        only the review queue and the curation UI pass it. *include_deleted*
         additionally returns soft-deleted questions along with rejected answers
         and comments; only the human curation UI passes it, so agent-facing
         reads never see deleted content.
         """
         q = self.get_question(question_id)
         if q is None or (q.status == "deleted" and not include_deleted):
+            return None
+        if q.status == "pending" and not include_pending:
             return None
 
         answer_statuses = ["approved"]
@@ -828,7 +876,10 @@ class SqliteStore:
         scored: list[tuple[float, str, list[str]]] = []
         for question_id, raw_rank in best_rank_per_question.items():
             q = self.get_question(question_id)
-            if q is None or q.status == "deleted":
+            # The FTS index is written at creation and never pruned, so a
+            # question that is soft-deleted or still awaiting review keeps
+            # matching and has to be dropped here.
+            if q is None or q.status in ("deleted", "pending"):
                 continue
 
             normalized_rank = 1.0 - (raw_rank - min_rank) / rank_range
@@ -920,6 +971,10 @@ class SqliteStore:
         scored = []
         for (question_id,) in fts_rows:
             q = self.get_question(question_id)
+            # Questions still awaiting review stay eligible as duplicates on
+            # purpose. They are invisible to search, so hiding them here too
+            # would let agents refile the same question over and over while
+            # the first one waits in the queue.
             if q is None or q.status == "deleted":
                 continue
 
@@ -980,13 +1035,19 @@ class SqliteStore:
         )
 
     def get_status(self) -> dict[str, Any]:
-        total_questions = self._conn.execute("SELECT COUNT(*) FROM questions WHERE status != 'deleted'").fetchone()[0]
+        # A question still awaiting review is not part of the corpus yet, so
+        # the headline counts treat it like a deleted one and it is reported
+        # separately as pending_questions instead.
+        total_questions = self._conn.execute(
+            "SELECT COUNT(*) FROM questions WHERE status NOT IN ('deleted', 'pending')"
+        ).fetchone()[0]
         total_answers = self._conn.execute("SELECT COUNT(*) FROM answers WHERE status = 'approved'").fetchone()[0]
         total_tags = self._conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
         total_votes = self._conn.execute("SELECT COUNT(*) FROM votes").fetchone()[0]
         unanswered = self._conn.execute(
-            "SELECT COUNT(DISTINCT q.id) FROM questions q LEFT JOIN answers a ON a.question_id = q.id AND a.status = 'approved' WHERE a.id IS NULL AND q.status != 'deleted'"
+            "SELECT COUNT(DISTINCT q.id) FROM questions q LEFT JOIN answers a ON a.question_id = q.id AND a.status = 'approved' WHERE a.id IS NULL AND q.status NOT IN ('deleted', 'pending')"
         ).fetchone()[0]
+        pending_questions = self._conn.execute("SELECT COUNT(*) FROM questions WHERE status = 'pending'").fetchone()[0]
         pending_answers = self._conn.execute("SELECT COUNT(*) FROM answers WHERE status = 'pending'").fetchone()[0]
         pending_comments = self._conn.execute("SELECT COUNT(*) FROM comments WHERE status = 'pending'").fetchone()[0]
         return {
@@ -995,6 +1056,7 @@ class SqliteStore:
             "total_tags": total_tags,
             "total_votes": total_votes,
             "unanswered": unanswered,
+            "pending_questions": pending_questions,
             "pending": pending_answers + pending_comments,
         }
 

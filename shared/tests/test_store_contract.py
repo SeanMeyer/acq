@@ -47,11 +47,19 @@ def store(request):
 
 
 def _make_question(**overrides) -> Question:
+    """Build a question that lands live, so tests can read it straight back.
+
+    Agent questions enter the review queue by default, which would make almost
+    every test in this file assert against an invisible row. These fixtures
+    represent content that is already live unless a test says otherwise.
+    """
     defaults = dict(
         title="Why does webpack 5 fail?",
         body="Getting Module not found error for stream.",
         created_by="agent-1",
         created_by_type="agent",
+        status="open",
+        supervised=True,
         context_language="typescript",
         context_framework="nextjs",
     )
@@ -97,6 +105,37 @@ class TestCreateQuestion:
         assert fetched is not None
         assert fetched.id == q.id
         assert fetched.body == q.body
+
+
+class TestQuestionReviewLifecycle:
+    def test_agent_question_waits_for_review(self, store):
+        q = _make_question(status="pending", supervised=False)
+        stored = store.create_question(q, [])
+
+        assert stored.status == "pending"
+        assert store.list_questions()[1] == 0
+        assert store.get_question_thread(q.id) is None
+        assert store.get_question_thread(q.id, include_pending=True) is not None
+        assert [item.id for item in store.pending_queue()["questions"]] == [q.id]
+
+    def test_human_question_goes_live(self, store):
+        q = _make_question(status="pending", supervised=False, created_by_type="human")
+        assert store.create_question(q, []).status == "open"
+
+    def test_approving_question_promotes_bundled_answers(self, store):
+        q = _make_question(status="pending", supervised=False)
+        store.create_question(q, [])
+        answer = _make_answer(q.id, supervised=False)
+        store.create_answer(answer)
+
+        queue = store.pending_queue()
+        assert [item.id for item in queue["questions"]] == [q.id]
+        assert queue["answers"] == []
+
+        assert store.approve_content(q.id) is True
+        assert store.get_question(q.id).status == "open"
+        assert store.get_answer(answer.id).status == "approved"
+        assert store.pending_queue()["questions"] == []
 
 
 class TestGetQuestion:
@@ -146,60 +185,69 @@ class TestEditQuestion:
         assert [r["question"].id for r in results] == [q.id]
 
 
-class TestDeleteQuestion:
-    def test_delete_sets_deleted_status(self, store):
+class TestRejectQuestion:
+    """Rejecting a question is the soft-delete; approving it is the restore."""
+
+    def test_reject_sets_deleted_status(self, store):
         q = _make_question()
         store.create_question(q, [])
-        assert store.delete_question(q.id) is True
+        assert store.reject_content(q.id) is True
         assert store.get_question(q.id).status == "deleted"
 
-    def test_delete_is_idempotent_guarded(self, store):
+    def test_reject_is_idempotent_guarded(self, store):
         q = _make_question()
         store.create_question(q, [])
-        store.delete_question(q.id)
-        assert store.delete_question(q.id) is False
+        store.reject_content(q.id)
+        assert store.reject_content(q.id) is False
 
-    def test_delete_missing_returns_none(self, store):
-        """None means "no such question" and False means "already deleted".
+    def test_reject_missing_returns_none(self, store):
+        """None means "no such content" and False means "already deleted".
 
-        Same split as approve_content/reject_content, so the routes can answer
-        404 versus 409 from one call.
+        The routes turn that split into 404 versus 409, so collapsing both to
+        False would make every 404 branch unreachable.
         """
-        assert store.delete_question("q_none") is None
+        assert store.reject_content("q_none") is None
 
-    def test_restore_missing_returns_none(self, store):
-        assert store.restore_question("q_none") is None
+    def test_approve_missing_question_returns_none(self, store):
+        assert store.approve_content("q_none") is None
 
-    def test_restore_returns_question_to_open(self, store):
+    def test_approve_returns_question_to_open(self, store):
         q = _make_question()
         store.create_question(q, [])
-        store.delete_question(q.id)
-        assert store.restore_question(q.id) is True
+        store.reject_content(q.id)
+        assert store.approve_content(q.id) is True
         assert store.get_question(q.id).status == "open"
 
-    def test_restore_requires_deleted(self, store):
+    def test_approve_live_question_returns_false(self, store):
         q = _make_question()
         store.create_question(q, [])
-        assert store.restore_question(q.id) is False
+        assert store.approve_content(q.id) is False
+
+    def test_approve_resolved_question_returns_false(self, store):
+        """'resolved' is live, so approving must not demote it back to open."""
+        q = _make_question(status="resolved")
+        store.create_question(q, [])
+        assert store.approve_content(q.id) is False
+        assert store.get_question(q.id).status == "resolved"
 
     def test_deleted_question_drops_out_of_search(self, store):
         q = _make_question(title="webpack stream polyfill error")
         store.create_question(q, ["webpack"])
         assert store.search("webpack stream")
-        store.delete_question(q.id)
+        store.reject_content(q.id)
         assert store.search("webpack stream") == []
 
     def test_deleted_question_hidden_from_thread_by_default(self, store):
         q = _make_question()
         store.create_question(q, [])
-        store.delete_question(q.id)
+        store.reject_content(q.id)
         assert store.get_question_thread(q.id) is None
         assert store.get_question_thread(q.id, include_deleted=True) is not None
 
     def test_deleted_question_hidden_from_list(self, store):
         q = _make_question()
         store.create_question(q, [])
-        store.delete_question(q.id)
+        store.reject_content(q.id)
         items, total = store.list_questions()
         assert total == 0
         items, total = store.list_questions(status="deleted")
@@ -209,14 +257,14 @@ class TestDeleteQuestion:
         q = _make_question(title="webpack stream polyfill error")
         store.create_question(q, ["webpack"])
         assert store.find_similar_questions("webpack stream polyfill error", ["webpack"])
-        store.delete_question(q.id)
+        store.reject_content(q.id)
         assert store.find_similar_questions("webpack stream polyfill error", ["webpack"]) == []
 
-    def test_restore_makes_question_searchable_again(self, store):
+    def test_approve_makes_question_searchable_again(self, store):
         q = _make_question(title="webpack stream polyfill error")
         store.create_question(q, ["webpack"])
-        store.delete_question(q.id)
-        store.restore_question(q.id)
+        store.reject_content(q.id)
+        store.approve_content(q.id)
         assert [r["question"].id for r in store.search("webpack stream")] == [q.id]
 
 

@@ -88,8 +88,13 @@ class LocalStore:
         language: str | None = None,
         framework: str | None = None,
         pattern: str | None = None,
+        supervised: bool = True,
     ):
-        """Create a question (legacy convenience wrapper for drain)."""
+        """Create a question through the legacy live-content wrapper.
+
+        The agent-facing ``ask`` path constructs pending questions directly.
+        This wrapper keeps its historical create-and-publish behavior.
+        """
         from acq_shared.models import Question
 
         q = Question(
@@ -100,11 +105,14 @@ class LocalStore:
             context_language=language,
             context_framework=framework,
             context_pattern=pattern,
+            supervised=supervised,
         )
         with self._lock:
             self._check_open()
-            self._store.create_question(q, tags)
-        return q
+            # Return what the store returns, not the object built above: the store
+            # promotes a supervised question to "open" via model_copy, so the local
+            # instance still says "pending".
+            return self._store.create_question(q, tags)
 
     def create_answer(
         self,
@@ -310,6 +318,9 @@ class LocalStore:
                         framework=q.context_framework,
                         pattern=q.context_pattern,
                         force_create=True,
+                        # Preserve human supervision across an offline drain so
+                        # the team store does not demote a live local question.
+                        supervised=q.supervised,
                     )
                     if result.ok:
                         self._store.clear_drain(eid)

@@ -26,10 +26,14 @@ def _agent_headers() -> dict[str, str]:
 
 
 def _create_question(client: TestClient, **overrides: Any) -> dict[str, Any]:
+    # supervised: most tests here are about search, voting or answers, and
+    # need a live question to hang those off. The pending-by-default path is
+    # exercised deliberately in TestQuestionAdmission below.
     defaults: dict[str, Any] = {
         "title": "How do I configure connection pooling?",
         "body": "I need to set up a pool with a max size.",
         "created_by": "agent-smith",
+        "supervised": True,
         "tags": ["databases"],
     }
     resp = client.post(
@@ -132,7 +136,11 @@ class TestCreateQuestion:
     def test_create_question_requires_api_key(self, client: TestClient) -> None:
         resp = client.post(
             "/questions",
-            json={"title": "test", "body": "test body", "created_by": "agent"},
+            json={
+                "title": "test",
+                "body": "test body",
+                "created_by": "agent",
+            },
         )
         assert resp.status_code == 401
 
@@ -175,6 +183,7 @@ class TestCreateQuestion:
             "title": "connection pool max size configuration guide",
             "body": "How to set pool size?",
             "created_by": "agent-smith",
+            "supervised": True,
             "tags": ["databases"],
         }
 
@@ -202,6 +211,55 @@ class TestCreateQuestion:
     def test_create_question_with_tags(self, client: TestClient) -> None:
         r = _create_question(client, tags=["python", "fastapi"])
         assert r["question"]["id"].startswith("q_")
+
+
+class TestQuestionReview:
+    def test_agent_question_starts_pending(self, client: TestClient) -> None:
+        resp = client.post(
+            "/questions",
+            json={
+                "title": "Why does a supposedly identical projection break?",
+                "body": "Column names matched and it still broke.",
+                "tags": ["databases"],
+            },
+            headers=_agent_headers(),
+        )
+        assert resp.status_code == 201
+        assert resp.json()["question"]["status"] == "pending"
+
+    def test_supervised_question_goes_live(self, client: TestClient) -> None:
+        resp = client.post(
+            "/questions",
+            json={
+                "title": "Why does a supposedly identical projection break?",
+                "body": "Column names matched and it still broke.",
+                "supervised": True,
+                "tags": ["databases"],
+            },
+            headers=_agent_headers(),
+        )
+        assert resp.status_code == 201
+        assert resp.json()["question"]["status"] == "open"
+
+    def test_pending_question_is_invisible_to_agents(self, client: TestClient) -> None:
+        resp = client.post(
+            "/questions",
+            json={
+                "title": "obscure pgbouncer prepared statement failure mode",
+                "body": "Only reproducible under transaction pooling.",
+                "tags": ["databases"],
+            },
+            headers=_agent_headers(),
+        )
+        assert resp.json()["question"]["status"] == "pending"
+        assert _total_questions(client) == 0
+
+        results = client.get(
+            "/search",
+            params={"q": "pgbouncer prepared statement"},
+            headers=_agent_headers(),
+        ).json()
+        assert results == []
 
 
 class TestCreateAnswer:

@@ -48,7 +48,7 @@
     <!-- Filters -->
     <div class="flex items-center gap-3 mb-4">
       <div class="flex items-center bg-white border border-gray-200 rounded-lg overflow-hidden text-sm">
-        {#each [['', 'All'], ['open', 'Open'], ['resolved', 'Resolved'], ['deleted', 'Deleted']] as [value, label] (value)}
+        {#each [['', 'All'], ['pending', 'Pending'], ['open', 'Open'], ['resolved', 'Resolved'], ['deleted', 'Deleted']] as [value, label] (value)}
           <button
             onclick={() => setFilter('status', value)}
             class="px-3 py-1.5 font-medium transition-colors

@@ -17,12 +17,23 @@ def _make_id(prefix: str) -> str:
 
 
 class Question(BaseModel):
+    """A question, with a review lifecycle mirroring the one on Answer.
+
+    Agent-authored questions start at "pending" and are invisible to every
+    read path until a human approves them. The promotion of human-authored and
+    supervised questions to "open" deliberately lives in the store's
+    create_question, not in a model_post_init hook: model_post_init re-runs on
+    every model_validate_json, so promoting there would resurrect a rejected
+    question on every single read.
+    """
+
     id: str = Field(default_factory=lambda: _make_id("q_"))
     title: str
     body: str
-    status: Literal["open", "resolved", "deleted"] = "open"
+    status: Literal["pending", "open", "resolved", "deleted"] = "pending"
     created_by: str
     created_by_type: Literal["agent", "human"]
+    supervised: bool = False
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
     pinned_answer_id: str | None = None
