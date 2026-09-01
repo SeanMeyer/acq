@@ -4,18 +4,27 @@
   let {
     title,
     initialBody,
+    initialTitle,
+    initialTags,
     onSave,
     onClose,
   }: {
     title: string;
     initialBody: string;
-    onSave: (body: string) => Promise<void>;
+    initialTitle?: string;
+    initialTags?: string[];
+    onSave: (patch: { body: string; title?: string; tags?: string[] }) => Promise<void>;
     onClose: () => void;
   } = $props();
+
+  const editTitle = $derived(initialTitle !== undefined);
+  const editTags = $derived(initialTags !== undefined);
 
   // The modal owns the edit buffer independently from the parent prop.
   // untrack breaks the reactive chain so Svelte won't warn about stale capture.
   let body = $state(untrack(() => initialBody));
+  let titleValue = $state(untrack(() => initialTitle ?? ''));
+  let tagsValue = $state(untrack(() => (initialTags ?? []).join(', ')));
   let saving = $state(false);
   let error = $state('');
 
@@ -23,7 +32,15 @@
     saving = true;
     error = '';
     try {
-      await onSave(body);
+      const patch: { body: string; title?: string; tags?: string[] } = { body };
+      if (editTitle) patch.title = titleValue;
+      if (editTags) {
+        patch.tags = tagsValue
+          .split(',')
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0);
+      }
+      await onSave(patch);
       onClose();
     } catch (e) {
       error = e instanceof Error ? e.message : 'Save failed';
@@ -67,15 +84,40 @@
       </button>
     </div>
 
-    <div class="px-6 py-4">
+    <div class="px-6 py-4 space-y-3">
+      {#if editTitle}
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1" for="edit-modal-title">Title</label>
+          <input
+            id="edit-modal-title"
+            type="text"
+            bind:value={titleValue}
+            class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+            placeholder="Question title..."
+          />
+        </div>
+      {/if}
       <textarea
         bind:value={body}
         rows={12}
         class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-y"
         placeholder="Content body..."
       ></textarea>
+      {#if editTags}
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1" for="edit-modal-tags">Tags</label>
+          <input
+            id="edit-modal-tags"
+            type="text"
+            bind:value={tagsValue}
+            class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+            placeholder="comma, separated, tags"
+          />
+          <p class="mt-1 text-xs text-gray-400">Comma-separated. Saving replaces the full tag set.</p>
+        </div>
+      {/if}
       {#if error}
-        <p class="mt-2 text-sm text-red-600">{error}</p>
+        <p class="text-sm text-red-600">{error}</p>
       {/if}
     </div>
 

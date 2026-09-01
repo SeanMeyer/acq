@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS questions (
@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS comments (
     parent_type TEXT NOT NULL,
     data TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS votes (
@@ -124,6 +125,10 @@ def create_tables(conn: sqlite3.Connection) -> None:
         conn.execute("DROP TABLE IF EXISTS search_index")
 
     conn.executescript(_DDL)
+
+    if 0 < current_version < 4:
+        conn.execute("ALTER TABLE comments ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+        conn.execute("UPDATE comments SET updated_at = created_at WHERE updated_at = ''")
 
     existing = conn.execute("SELECT version FROM schema_version").fetchone()
     if existing is None:

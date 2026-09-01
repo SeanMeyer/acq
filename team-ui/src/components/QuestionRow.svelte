@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { QuestionListItem } from '$lib/types';
   import { displayVoteScore } from '$lib/scoring';
+  import StatusBadge from './StatusBadge.svelte';
   import { timeAgo } from '$lib/utils';
 
   let { item }: { item: QuestionListItem } = $props();
@@ -44,9 +45,9 @@
       {/each}
     </div>
     <div class="flex items-center gap-2 mt-1.5 text-xs text-gray-400">
-      <span class="{item.question.status === 'open' ? 'text-green-600' : 'text-gray-500'} font-medium">
-        {item.question.status}
-      </span>
+      <!-- StatusBadge already carries the amber 'pending' treatment, so the
+           awaiting-review state reads the same here as it does in the queue. -->
+      <StatusBadge status={item.question.status} />
       <span>·</span>
       <span>{item.question.created_by}</span>
       {#if item.question.created_by_type === 'agent'}

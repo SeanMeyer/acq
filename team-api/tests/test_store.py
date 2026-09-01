@@ -26,6 +26,7 @@ def _make_question(**overrides) -> Question:
         "body": "I want to configure a connection pool.",
         "created_by": "agent-1",
         "created_by_type": "agent",
+        "supervised": True,
     }
     return Question(**{**defaults, **overrides})
 
@@ -345,7 +346,9 @@ class TestPendingQueue:
         store.create_question(q, [])
         a = _make_answer(q.id)
         store.create_answer(a)
-        c = _make_comment(a.id)
+        # A comment on a pending answer is bundled behind content that is not
+        # live yet, so use the live question as the comment parent here.
+        c = _make_comment(q.id, parent_type="question")
         store.create_comment(c)
         queue = store.pending_queue()
         assert any(x.id == a.id for x in queue["answers"])
@@ -472,7 +475,7 @@ class TestGetStatus:
         status = store.get_status()
         assert status["unanswered"] == 1
 
-    def test_pending_count_includes_answers_and_comments(
+    def test_pending_count_matches_visible_review_cards(
         self, store: SqliteStore
     ) -> None:
         q = _make_question()
@@ -482,7 +485,9 @@ class TestGetStatus:
         c = _make_comment(a.id)  # pending
         store.create_comment(c)
         status = store.get_status()
-        assert status["pending"] == 2
+        # The answer is reviewable. Its comment is hidden until the answer is
+        # approved, so reporting two pending cards would overstate the queue.
+        assert status["pending"] == 1
 
 
 class TestUserManagement:

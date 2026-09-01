@@ -184,15 +184,11 @@ RULES_MARKER_END="<!-- acq:end -->"
 
 read -r -d '' RULES_BLOCK <<'BLOCK' || true
 <!-- acq:start -->
-Before exploring a codebase, investigating an error, or researching how a tool
-or service works, search `acq` first using the `acq_search` tool. acq is a Q&A
-knowledge base built by earlier agent sessions and may already hold the answer,
-which saves rediscovering it. Search before exploring, not after. Treat a hit
-as a lead to verify, never as a substitute for checking the actual code.
-
-After resolving something non-obvious, record it: `acq_ask` to post the
-question, then `acq_answer` with what actually worked. Upvote with `acq_vote`
-when an existing answer proved correct.
+Before a nontrivial investigation, search ACQ when prior experience could save
+time. Treat results as leads and verify them against the current system.
+Afterward, consider saving knowledge that was hard to obtain and likely to save
+substantial future work. Skip facts quickly recovered from code or docs and
+facts useful only to the current task.
 <!-- acq:end -->
 BLOCK
 
@@ -201,7 +197,17 @@ configure_rules() {
     mkdir -p "${AGENT_DIR}"
 
     if [[ -f "${rules_file}" ]] && grep -qxF "${RULES_MARKER_START}" "${rules_file}"; then
-        echo "  acq guidance already present in ${rules_file}"
+        if ! grep -qxF "${RULES_MARKER_END}" "${rules_file}"; then
+            echo "  Warning: ${rules_file} has an acq start marker but no end marker — leaving it alone" >&2
+            return 0
+        fi
+        local tmp_file
+        tmp_file=$(mktemp)
+        awk -v start="${RULES_MARKER_START}" '$0 == start { exit } { print }' "${rules_file}" > "${tmp_file}"
+        printf '%s\n' "${RULES_BLOCK}" >> "${tmp_file}"
+        awk -v end="${RULES_MARKER_END}" 'after { print } $0 == end { after=1 }' "${rules_file}" >> "${tmp_file}"
+        mv "${tmp_file}" "${rules_file}"
+        echo "  Updated acq guidance in ${rules_file}"
         return 0
     fi
 

@@ -335,3 +335,45 @@ class TestDrainToTeam:
         # Content stays in local (read replica), only drain queue is cleared
         assert len(store.all_votes()) == 1
         assert len(store.all_comments()) == 1
+
+
+class TestPullFromTeam:
+    @staticmethod
+    def _export(next_since: str | None = "server-cursor") -> dict:
+        data = {
+            "questions": [],
+            "answers": [],
+            "tags": [],
+            "question_tags": [],
+            "votes": [],
+            "comments": [],
+        }
+        if next_since is not None:
+            data["next_since"] = next_since
+        return data
+
+    async def test_returns_server_cursor_on_empty_success(self, store: LocalStore) -> None:
+        mock_client = MagicMock()
+        mock_client.export_since = AsyncMock(return_value=ApiResult.success(self._export("server-cursor")))
+
+        result = await store.pull_from_team(mock_client, since="previous-cursor")
+
+        assert result is not None
+        assert result.count == 0
+        assert result.next_since == "server-cursor"
+        mock_client.export_since.assert_awaited_once_with(since="previous-cursor")
+
+    async def test_failure_is_distinct_from_empty_success(self, store: LocalStore) -> None:
+        mock_client = MagicMock()
+        mock_client.export_since = AsyncMock(return_value=ApiResult(error="unreachable", warnings=["unreachable"]))
+
+        assert await store.pull_from_team(mock_client) is None
+
+    async def test_old_server_does_not_create_client_cursor(self, store: LocalStore) -> None:
+        mock_client = MagicMock()
+        mock_client.export_since = AsyncMock(return_value=ApiResult.success(self._export(next_since=None)))
+
+        result = await store.pull_from_team(mock_client)
+
+        assert result is not None
+        assert result.next_since is None

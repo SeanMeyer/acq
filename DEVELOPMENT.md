@@ -101,13 +101,12 @@ The plugin does register its own MCP server as `acq:acq`, but that entry
 declares no environment and can therefore only run local-only. The installer
 adds `acq:acq` to `disabledServers` so exactly one set of acq tools is exposed.
 
-The guidance block matters more than it looks. A skill is only consulted once
-the model already suspects it is relevant, so the skill alone does not make an
-agent search *before* it starts exploring — that has to be a standing
-instruction. In Claude Code the plugin's `SessionStart` hook injects it; OMP
-hooks are JS/TS modules and do not execute that shell hook, so the installer
-writes the equivalent into `RULES.md` instead. Uninstall removes only the
-marked block and leaves the rest of the file untouched.
+The guidance block is intentionally short. A skill is loaded only after the
+model decides it is relevant, so a small standing reminder helps ACQ come to
+mind before a nontrivial investigation. Claude Code receives it from the
+`SessionStart` hook. OMP hooks do not execute that shell hook, so the installer
+writes the equivalent into `RULES.md`. Reinstalling refreshes the marked block,
+and uninstall removes it without touching the surrounding file.
 
 ### Other agents
 

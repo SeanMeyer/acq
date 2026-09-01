@@ -1,13 +1,12 @@
 #!/bin/bash
-# SessionStart hook: inject acq usage guidance into the session context.
-# This ensures every agent session understands what acq is and how to
-# evaluate search results, without requiring CLAUDE.md configuration.
+# SessionStart hook: add the small amount of standing guidance needed before
+# the model has decided whether to load the full ACQ skill.
 
 cat <<'EOF'
 {
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "The acq plugin provides a Q&A knowledge store from prior agent sessions. Search returns questions only — call get_thread with all relevant question IDs to read answers. Results that mention your topic are not answers about your topic — always investigate independently too. Do not let acq results narrow your investigation."
+    "additionalContext": "Search ACQ before a nontrivial investigation when prior experience could save time. Search returns questions only, so open relevant threads to read answers. Treat answers as leads and verify them against the current system."
   }
 }
 EOF
