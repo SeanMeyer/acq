@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Literal
@@ -25,6 +26,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path.home() / ".acq" / "local.db"
+
+
+@dataclass(frozen=True)
+class PullResult:
+    """The outcome of one successful team export."""
+
+    count: int
+    next_since: str | None
 
 
 class LocalStore:
@@ -381,18 +390,24 @@ class LocalStore:
 
         return drained
 
-    async def pull_from_team(self, team_client: TeamClient, since: str | None = None) -> int:
-        """Pull content from team API and upsert into local store.
+    async def pull_from_team(self, team_client: TeamClient, since: str | None = None) -> PullResult | None:
+        """Pull content from the team API.
 
-        Returns the number of items upserted.
+        ``None`` means the request failed. A successful response returns its
+        server-issued cursor even when it contained no changed records, so the
+        scheduler never has to substitute its own clock.
         """
         result = await team_client.export_since(since=since)
         data = result.data
         if not result.ok or not isinstance(data, dict):
-            return 0
+            return None
+        next_since = data.get("next_since")
+        if not isinstance(next_since, str):
+            next_since = None
         with self._lock:
             self._check_open()
-            return self._store.bulk_upsert(data)
+            count = self._store.bulk_upsert(data)
+        return PullResult(count=count, next_since=next_since)
 
     def _get_tag_names_for_question_unlocked(self, question_id: str) -> list[str]:
         """Read tag names without acquiring the lock (caller must hold it or be safe)."""

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from acq_mcp import server
 from acq_mcp.server import (
     _do_drain,
     _do_pull,
+    _periodic_pull,
     answer,
     ask,
     comment,
@@ -469,6 +471,7 @@ class TestPullSync:
             "question_tags": [],
             "votes": [],
             "comments": [],
+            "next_since": "server-cursor-1",
         }
         mock = _make_mock_team_client(
             health=True,
@@ -476,8 +479,9 @@ class TestPullSync:
         )
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
-        await _do_pull()
+        cursor = await _do_pull()
 
+        assert cursor == "server-cursor-1"
         mock.export_since.assert_called_once_with(since=None)
 
         # Verify the local store now has the question
@@ -499,6 +503,45 @@ class TestPullSync:
         await _do_pull()
 
         mock.export_since.assert_not_called()
+
+    async def test_periodic_pull_keeps_cursor_after_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        empty_export = {
+            "questions": [],
+            "answers": [],
+            "tags": [],
+            "question_tags": [],
+            "votes": [],
+            "comments": [],
+            "next_since": "server-cursor-2",
+        }
+        mock = _make_mock_team_client()
+        mock.export_since = AsyncMock(
+            side_effect=[
+                ApiResult(error="unreachable", warnings=["unreachable"]),
+                ApiResult.success(empty_export),
+                ApiResult.success({**empty_export, "next_since": "server-cursor-3"}),
+            ]
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        sleeps = 0
+
+        async def fake_sleep(_seconds: int) -> None:
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps == 4:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(server.asyncio, "sleep", fake_sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            await _periodic_pull("server-cursor-1")
+
+        assert mock.export_since.await_args_list == [
+            call(since="server-cursor-1"),
+            call(since="server-cursor-1"),
+            call(since="server-cursor-2"),
+        ]
 
 
 class TestEndToEnd:

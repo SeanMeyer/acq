@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -312,7 +313,14 @@ def export_data(
     _agent: str = Depends(get_agent_identity),
     store: Store = Depends(get_store),
 ) -> dict:
-    return store.export_since(since=since)
+    # The server owns updated_at, so it must also own the synchronization
+    # cursor. A client-generated cursor can skip changes when its host clock is
+    # ahead of this one. Capture before reading so changes made during or after
+    # the export remain newer than the returned boundary.
+    next_since = datetime.now(UTC).isoformat()
+    data = store.export_since(since=since)
+    data["next_since"] = next_since
+    return data
 
 
 # ------------------------------------------------------------------

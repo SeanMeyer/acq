@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +72,19 @@ class TestHealth:
         # Health is always unauthenticated.
         resp = client.get("/health")
         assert resp.status_code == 200
+
+
+class TestExport:
+    def test_export_returns_server_cursor(self, client: TestClient) -> None:
+        before = datetime.now(UTC)
+        response = client.get("/export", headers=_agent_headers())
+        after = datetime.now(UTC)
+
+        assert response.status_code == 200
+        body = response.json()
+        cursor = datetime.fromisoformat(body["next_since"])
+        assert before <= cursor <= after
+        assert body["questions"] == []
 
 
 class TestStatus:
