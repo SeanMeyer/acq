@@ -569,7 +569,7 @@ class PostgresStore:
 
     def create_comment(self, comment: Comment) -> Comment:
         self._execute(
-            "INSERT INTO acq.comments (id, parent_id, parent_type, data, status, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+            "INSERT INTO acq.comments (id, parent_id, parent_type, data, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (
                 comment.id,
                 comment.parent_id,
@@ -577,6 +577,7 @@ class PostgresStore:
                 comment.model_dump_json(),
                 comment.status,
                 comment.created_at.isoformat(),
+                comment.updated_at.isoformat(),
             ),
         )
         self._conn.commit()
@@ -596,10 +597,11 @@ class PostgresStore:
         if c is None:
             return None
         self._record_edit(comment_id, "comment", c.body, new_body, edited_by, edited_by_type)
-        updated = c.model_copy(update={"body": new_body})
+        now = datetime.now(UTC)
+        updated = c.model_copy(update={"body": new_body, "updated_at": now})
         self._execute(
-            "UPDATE acq.comments SET data = %s WHERE id = %s",
-            (updated.model_dump_json(), comment_id),
+            "UPDATE acq.comments SET data = %s, updated_at = %s WHERE id = %s",
+            (updated.model_dump_json(), now.isoformat(), comment_id),
         )
         self._conn.commit()
         return updated
@@ -769,10 +771,11 @@ class PostgresStore:
                 continue
             if row[1] == new_status:
                 return False
-            updated = cls.model_validate_json(row[0]).model_copy(update={"status": new_status})
+            now = datetime.now(UTC)
+            updated = cls.model_validate_json(row[0]).model_copy(update={"status": new_status, "updated_at": now})
             self._execute(
-                f"UPDATE acq.{table} SET data = %s, status = %s WHERE id = %s",
-                (updated.model_dump_json(), new_status, content_id),
+                f"UPDATE acq.{table} SET data = %s, status = %s, updated_at = %s WHERE id = %s",
+                (updated.model_dump_json(), new_status, now.isoformat(), content_id),
             )
             self._conn.commit()
             return True
@@ -781,34 +784,36 @@ class PostgresStore:
     def _review_question(self, q: Question, new_status: str) -> bool:
         """Apply one approve/reject verdict to a question and its answers.
 
-        A new question is reviewed as a single card together with the answers
-        filed under it, so approving promotes every answer still pending in the
-        same transaction.
+        A new pending question is reviewed as a single card together with the
+        answers filed under it, so approving that card promotes every pending
+        answer in the same transaction. Restoring a previously deleted question
+        only restores the question; otherwise an unrelated answer submitted
+        while it was deleted could be published without review.
 
-        Rejection deliberately leaves those answers pending. A rejected
-        question is invisible, and pending_queue refuses to surface answers
-        whose parent question is not live, so its pending answers are already
-        unreachable. Leaving them pending is what makes the reject reversible:
-        a later approve promotes them normally. Cascading the rejection onto
-        the answer rows would make approve and reject asymmetric and
-        unrecoverable.
+        Rejection leaves bundled answers pending and unreachable while their
+        parent is deleted. If the question is restored, those answers enter the
+        ordinary answer queue instead of being silently approved.
         """
         if new_status == "approved":
             # 'resolved' is a live status too, so an approve there is a no-op
             # rather than a demotion back to 'open'.
             if q.status in ("open", "resolved"):
                 return False
-            cur = self._execute(
-                "SELECT id, data FROM acq.answers WHERE question_id = %s AND status = 'pending'",
-                (q.id,),
-            )
-            for answer_id, data_json in cur.fetchall():
-                promoted = Answer.model_validate_json(data_json).model_copy(update={"status": "approved"})
-                self._execute(
-                    "UPDATE acq.answers SET data = %s, status = 'approved' WHERE id = %s",
-                    (promoted.model_dump_json(), answer_id),
+            if q.status == "pending":
+                now = datetime.now(UTC)
+                cur = self._execute(
+                    "SELECT id, data FROM acq.answers WHERE question_id = %s AND status = 'pending'",
+                    (q.id,),
                 )
-            # Commits the answer promotions above along with the question row.
+                for answer_id, data_json in cur.fetchall():
+                    promoted = Answer.model_validate_json(data_json).model_copy(
+                        update={"status": "approved", "updated_at": now}
+                    )
+                    self._execute(
+                        "UPDATE acq.answers SET data = %s, status = 'approved', updated_at = %s WHERE id = %s",
+                        (promoted.model_dump_json(), now.isoformat(), answer_id),
+                    )
+            # Commits any answer promotions above along with the question row.
             self._write_question_status(q, "open")
             return True
 
@@ -1138,8 +1143,20 @@ class PostgresStore:
             "SELECT COUNT(DISTINCT q.id) FROM acq.questions q LEFT JOIN acq.answers a ON a.question_id = q.id AND a.status = 'approved' WHERE a.id IS NULL AND q.status NOT IN ('deleted', 'pending')"
         ).fetchone()[0]
         pending_questions = self._execute("SELECT COUNT(*) FROM acq.questions WHERE status = 'pending'").fetchone()[0]
-        pending_answers = self._execute("SELECT COUNT(*) FROM acq.answers WHERE status = 'pending'").fetchone()[0]
-        pending_comments = self._execute("SELECT COUNT(*) FROM acq.comments WHERE status = 'pending'").fetchone()[0]
+        # Match pending_queue(): the dashboard count describes review cards,
+        # not hidden children bundled under a pending or deleted question.
+        pending_answers = self._execute(
+            "SELECT COUNT(*) FROM acq.answers a JOIN acq.questions q ON q.id = a.question_id"
+            " WHERE a.status = 'pending' AND q.status IN ('open', 'resolved')"
+        ).fetchone()[0]
+        pending_comments = self._execute(
+            "SELECT COUNT(*) FROM acq.comments c WHERE c.status = 'pending' AND ("
+            " (c.parent_type = 'question' AND EXISTS (SELECT 1 FROM acq.questions q"
+            "   WHERE q.id = c.parent_id AND q.status IN ('open', 'resolved')))"
+            " OR (c.parent_type = 'answer' AND EXISTS (SELECT 1 FROM acq.answers a"
+            "   JOIN acq.questions q ON q.id = a.question_id WHERE a.id = c.parent_id"
+            "   AND a.status = 'approved' AND q.status IN ('open', 'resolved'))))"
+        ).fetchone()[0]
         return {
             "total_questions": total_questions,
             "total_answers": total_answers,
@@ -1155,33 +1172,61 @@ class PostgresStore:
     # ------------------------------------------------------------------
 
     def export_since(self, since: str | None = None) -> dict:
+        """Export published content and moderation updates after *since*.
+
+        Pending questions and their children stay server-side until approval.
+        Besides avoiding orphan rows, this lets older clients synchronize while
+        a mixed-version deployment is in progress because they never receive
+        the new ``pending`` question status.
+        """
         if since:
             questions = self._execute(
-                "SELECT data FROM acq.questions WHERE created_at >= %s ORDER BY created_at",
+                "SELECT data FROM acq.questions WHERE status != 'pending' AND updated_at >= %s ORDER BY updated_at",
                 (since,),
             ).fetchall()
             answers = self._execute(
-                "SELECT data FROM acq.answers WHERE created_at >= %s ORDER BY created_at",
-                (since,),
+                "SELECT a.data FROM acq.answers a JOIN acq.questions q ON q.id = a.question_id"
+                " WHERE q.status != 'pending' AND (a.updated_at >= %s OR q.updated_at >= %s)"
+                " ORDER BY a.updated_at",
+                (since, since),
             ).fetchall()
             votes = self._execute(
                 "SELECT id, target_id, target_type, voter_id, voter_type, value, created_at FROM acq.votes WHERE created_at >= %s ORDER BY created_at",
                 (since,),
             ).fetchall()
             comments = self._execute(
-                "SELECT data FROM acq.comments WHERE created_at >= %s ORDER BY created_at",
-                (since,),
+                "SELECT c.data FROM acq.comments c LEFT JOIN acq.answers a"
+                " ON c.parent_type = 'answer' AND a.id = c.parent_id"
+                " JOIN acq.questions q ON q.id = CASE WHEN c.parent_type = 'question'"
+                " THEN c.parent_id ELSE a.question_id END WHERE q.status != 'pending'"
+                " AND (c.updated_at >= %s OR q.updated_at >= %s OR a.updated_at >= %s)"
+                " ORDER BY c.updated_at",
+                (since, since, since),
             ).fetchall()
         else:
-            questions = self._execute("SELECT data FROM acq.questions ORDER BY created_at").fetchall()
-            answers = self._execute("SELECT data FROM acq.answers ORDER BY created_at").fetchall()
+            questions = self._execute(
+                "SELECT data FROM acq.questions WHERE status != 'pending' ORDER BY created_at"
+            ).fetchall()
+            answers = self._execute(
+                "SELECT a.data FROM acq.answers a JOIN acq.questions q ON q.id = a.question_id"
+                " WHERE q.status != 'pending' ORDER BY a.created_at"
+            ).fetchall()
             votes = self._execute(
                 "SELECT id, target_id, target_type, voter_id, voter_type, value, created_at FROM acq.votes ORDER BY created_at"
             ).fetchall()
-            comments = self._execute("SELECT data FROM acq.comments ORDER BY created_at").fetchall()
+            comments = self._execute(
+                "SELECT c.data FROM acq.comments c LEFT JOIN acq.answers a"
+                " ON c.parent_type = 'answer' AND a.id = c.parent_id"
+                " JOIN acq.questions q ON q.id = CASE WHEN c.parent_type = 'question'"
+                " THEN c.parent_id ELSE a.question_id END"
+                " WHERE q.status != 'pending' ORDER BY c.created_at"
+            ).fetchall()
 
         tags = self._execute("SELECT id, name, description, usage_count FROM acq.tags ORDER BY name").fetchall()
-        question_tags = self._execute("SELECT question_id, tag_id FROM acq.question_tags").fetchall()
+        question_tags = self._execute(
+            "SELECT qt.question_id, qt.tag_id FROM acq.question_tags qt JOIN acq.questions q"
+            " ON q.id = qt.question_id WHERE q.status != 'pending'"
+        ).fetchall()
 
         return {
             "questions": [json.loads(r[0]) for r in questions],
@@ -1304,10 +1349,11 @@ class PostgresStore:
             c = Comment.model_validate(c_data)
             self._execute(
                 """
-                INSERT INTO acq.comments (id, parent_id, parent_type, data, status, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO acq.comments (id, parent_id, parent_type, data, status, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE SET parent_id = EXCLUDED.parent_id, parent_type = EXCLUDED.parent_type,
-                    data = EXCLUDED.data, status = EXCLUDED.status, created_at = EXCLUDED.created_at
+                    data = EXCLUDED.data, status = EXCLUDED.status, created_at = EXCLUDED.created_at,
+                    updated_at = EXCLUDED.updated_at
                 """,
                 (
                     c.id,
@@ -1316,6 +1362,7 @@ class PostgresStore:
                     c.model_dump_json(),
                     c.status,
                     c.created_at.isoformat(),
+                    c.updated_at.isoformat(),
                 ),
             )
             count += 1

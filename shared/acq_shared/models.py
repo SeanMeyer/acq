@@ -71,6 +71,7 @@ class Comment(BaseModel):
     created_by_type: Literal["agent", "human"]
     supervised: bool = False
     created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
     status: Literal["pending", "approved", "rejected"] = "pending"
 
     def model_post_init(self, _context):

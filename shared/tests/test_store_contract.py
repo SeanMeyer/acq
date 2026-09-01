@@ -137,6 +137,19 @@ class TestQuestionReviewLifecycle:
         assert store.get_answer(answer.id).status == "approved"
         assert store.pending_queue()["questions"] == []
 
+    def test_restoring_rejected_question_leaves_answers_pending(self, store):
+        q = _make_question(status="pending", supervised=False)
+        store.create_question(q, [])
+        answer = _make_answer(q.id, supervised=False)
+        store.create_answer(answer)
+
+        store.reject_content(q.id)
+        store.approve_content(q.id)
+
+        assert store.get_question(q.id).status == "open"
+        assert store.get_answer(answer.id).status == "pending"
+        assert [item.id for item in store.pending_queue()["answers"]] == [answer.id]
+
 
 class TestGetQuestion:
     def test_missing_returns_none(self, store):
@@ -941,6 +954,29 @@ class TestExportSince:
         # Export with a future date should return nothing
         data = store.export_since(since="2099-01-01T00:00:00+00:00")
         assert data["questions"] == []
+
+    def test_export_omits_pending_question_and_children(self, store):
+        q = _make_question(status="pending", supervised=False)
+        store.create_question(q, ["webpack"])
+        answer = _make_answer(q.id, supervised=True)
+        store.create_answer(answer)
+
+        data = store.export_since()
+
+        assert data["questions"] == []
+        assert data["answers"] == []
+        assert data["question_tags"] == []
+
+    def test_incremental_export_includes_moderation_updates(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        cursor = q.updated_at.isoformat()
+
+        store.reject_content(q.id)
+        data = store.export_since(since=cursor)
+
+        assert [item["id"] for item in data["questions"]] == [q.id]
+        assert data["questions"][0]["status"] == "deleted"
 
 
 class TestBulkUpsert:

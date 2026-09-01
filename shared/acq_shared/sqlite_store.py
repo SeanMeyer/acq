@@ -488,7 +488,7 @@ class SqliteStore:
 
     def create_comment(self, comment: Comment) -> Comment:
         self._conn.execute(
-            "INSERT INTO comments (id, parent_id, parent_type, data, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO comments (id, parent_id, parent_type, data, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 comment.id,
                 comment.parent_id,
@@ -496,6 +496,7 @@ class SqliteStore:
                 comment.model_dump_json(),
                 comment.status,
                 comment.created_at.isoformat(),
+                comment.updated_at.isoformat(),
             ),
         )
         self._conn.commit()
@@ -514,10 +515,11 @@ class SqliteStore:
         if c is None:
             return None
         self._record_edit(comment_id, "comment", c.body, new_body, edited_by, edited_by_type)
-        updated = c.model_copy(update={"body": new_body})
+        now = datetime.now(UTC)
+        updated = c.model_copy(update={"body": new_body, "updated_at": now})
         self._conn.execute(
-            "UPDATE comments SET data = ? WHERE id = ?",
-            (updated.model_dump_json(), comment_id),
+            "UPDATE comments SET data = ?, updated_at = ? WHERE id = ?",
+            (updated.model_dump_json(), now.isoformat(), comment_id),
         )
         self._conn.commit()
         return updated
@@ -680,10 +682,11 @@ class SqliteStore:
                 continue
             if row[1] == new_status:
                 return False
-            updated = cls.model_validate_json(row[0]).model_copy(update={"status": new_status})
+            now = datetime.now(UTC)
+            updated = cls.model_validate_json(row[0]).model_copy(update={"status": new_status, "updated_at": now})
             self._conn.execute(
-                f"UPDATE {table} SET data = ?, status = ? WHERE id = ?",
-                (updated.model_dump_json(), new_status, content_id),
+                f"UPDATE {table} SET data = ?, status = ?, updated_at = ? WHERE id = ?",
+                (updated.model_dump_json(), new_status, now.isoformat(), content_id),
             )
             self._conn.commit()
             return True
@@ -692,34 +695,36 @@ class SqliteStore:
     def _review_question(self, q: Question, new_status: str) -> bool:
         """Apply one approve/reject verdict to a question and its answers.
 
-        A new question is reviewed as a single card together with the answers
-        filed under it, so approving promotes every answer still pending in the
-        same transaction.
+        A new pending question is reviewed as a single card together with the
+        answers filed under it, so approving that card promotes every pending
+        answer in the same transaction. Restoring a previously deleted question
+        only restores the question; otherwise an unrelated answer submitted
+        while it was deleted could be published without review.
 
-        Rejection deliberately leaves those answers pending. A rejected
-        question is invisible, and pending_queue refuses to surface answers
-        whose parent question is not live, so its pending answers are already
-        unreachable. Leaving them pending is what makes the reject reversible:
-        a later approve promotes them normally. Cascading the rejection onto
-        the answer rows would make approve and reject asymmetric and
-        unrecoverable.
+        Rejection leaves bundled answers pending and unreachable while their
+        parent is deleted. If the question is restored, those answers enter the
+        ordinary answer queue instead of being silently approved.
         """
         if new_status == "approved":
             # 'resolved' is a live status too, so an approve there is a no-op
             # rather than a demotion back to 'open'.
             if q.status in ("open", "resolved"):
                 return False
-            rows = self._conn.execute(
-                "SELECT id, data FROM answers WHERE question_id = ? AND status = 'pending'",
-                (q.id,),
-            ).fetchall()
-            for answer_id, data_json in rows:
-                promoted = Answer.model_validate_json(data_json).model_copy(update={"status": "approved"})
-                self._conn.execute(
-                    "UPDATE answers SET data = ?, status = 'approved' WHERE id = ?",
-                    (promoted.model_dump_json(), answer_id),
-                )
-            # Commits the answer promotions above along with the question row.
+            if q.status == "pending":
+                now = datetime.now(UTC)
+                rows = self._conn.execute(
+                    "SELECT id, data FROM answers WHERE question_id = ? AND status = 'pending'",
+                    (q.id,),
+                ).fetchall()
+                for answer_id, data_json in rows:
+                    promoted = Answer.model_validate_json(data_json).model_copy(
+                        update={"status": "approved", "updated_at": now}
+                    )
+                    self._conn.execute(
+                        "UPDATE answers SET data = ?, status = 'approved', updated_at = ? WHERE id = ?",
+                        (promoted.model_dump_json(), now.isoformat(), answer_id),
+                    )
+            # Commits any answer promotions above along with the question row.
             self._write_question_status(q, "open")
             return True
 
@@ -1048,8 +1053,20 @@ class SqliteStore:
             "SELECT COUNT(DISTINCT q.id) FROM questions q LEFT JOIN answers a ON a.question_id = q.id AND a.status = 'approved' WHERE a.id IS NULL AND q.status NOT IN ('deleted', 'pending')"
         ).fetchone()[0]
         pending_questions = self._conn.execute("SELECT COUNT(*) FROM questions WHERE status = 'pending'").fetchone()[0]
-        pending_answers = self._conn.execute("SELECT COUNT(*) FROM answers WHERE status = 'pending'").fetchone()[0]
-        pending_comments = self._conn.execute("SELECT COUNT(*) FROM comments WHERE status = 'pending'").fetchone()[0]
+        # Match pending_queue(): the dashboard count describes review cards,
+        # not hidden children bundled under a pending or deleted question.
+        pending_answers = self._conn.execute(
+            "SELECT COUNT(*) FROM answers a JOIN questions q ON q.id = a.question_id"
+            " WHERE a.status = 'pending' AND q.status IN ('open', 'resolved')"
+        ).fetchone()[0]
+        pending_comments = self._conn.execute(
+            "SELECT COUNT(*) FROM comments c WHERE c.status = 'pending' AND ("
+            " (c.parent_type = 'question' AND EXISTS (SELECT 1 FROM questions q"
+            "   WHERE q.id = c.parent_id AND q.status IN ('open', 'resolved')))"
+            " OR (c.parent_type = 'answer' AND EXISTS (SELECT 1 FROM answers a"
+            "   JOIN questions q ON q.id = a.question_id WHERE a.id = c.parent_id"
+            "   AND a.status = 'approved' AND q.status IN ('open', 'resolved'))))"
+        ).fetchone()[0]
         return {
             "total_questions": total_questions,
             "total_answers": total_answers,
@@ -1065,34 +1082,61 @@ class SqliteStore:
     # ------------------------------------------------------------------
 
     def export_since(self, since: str | None = None) -> dict:
-        """Export all content, optionally filtered to items created after *since*."""
+        """Export published content and moderation updates after *since*.
+
+        Pending questions and their children stay server-side until approval.
+        Besides avoiding orphan rows, this lets older clients synchronize while
+        a mixed-version deployment is in progress because they never receive
+        the new ``pending`` question status.
+        """
         if since:
             questions = self._conn.execute(
-                "SELECT data FROM questions WHERE created_at >= ? ORDER BY created_at",
+                "SELECT data FROM questions WHERE status != 'pending' AND updated_at >= ? ORDER BY updated_at",
                 (since,),
             ).fetchall()
             answers = self._conn.execute(
-                "SELECT data FROM answers WHERE created_at >= ? ORDER BY created_at",
-                (since,),
+                "SELECT a.data FROM answers a JOIN questions q ON q.id = a.question_id"
+                " WHERE q.status != 'pending' AND (a.updated_at >= ? OR q.updated_at >= ?)"
+                " ORDER BY a.updated_at",
+                (since, since),
             ).fetchall()
             votes = self._conn.execute(
                 "SELECT id, target_id, target_type, voter_id, voter_type, value, created_at FROM votes WHERE created_at >= ? ORDER BY created_at",
                 (since,),
             ).fetchall()
             comments = self._conn.execute(
-                "SELECT data FROM comments WHERE created_at >= ? ORDER BY created_at",
-                (since,),
+                "SELECT c.data FROM comments c LEFT JOIN answers a"
+                " ON c.parent_type = 'answer' AND a.id = c.parent_id"
+                " JOIN questions q ON q.id = CASE WHEN c.parent_type = 'question'"
+                " THEN c.parent_id ELSE a.question_id END WHERE q.status != 'pending'"
+                " AND (c.updated_at >= ? OR q.updated_at >= ? OR a.updated_at >= ?)"
+                " ORDER BY c.updated_at",
+                (since, since, since),
             ).fetchall()
         else:
-            questions = self._conn.execute("SELECT data FROM questions ORDER BY created_at").fetchall()
-            answers = self._conn.execute("SELECT data FROM answers ORDER BY created_at").fetchall()
+            questions = self._conn.execute(
+                "SELECT data FROM questions WHERE status != 'pending' ORDER BY created_at"
+            ).fetchall()
+            answers = self._conn.execute(
+                "SELECT a.data FROM answers a JOIN questions q ON q.id = a.question_id"
+                " WHERE q.status != 'pending' ORDER BY a.created_at"
+            ).fetchall()
             votes = self._conn.execute(
                 "SELECT id, target_id, target_type, voter_id, voter_type, value, created_at FROM votes ORDER BY created_at"
             ).fetchall()
-            comments = self._conn.execute("SELECT data FROM comments ORDER BY created_at").fetchall()
+            comments = self._conn.execute(
+                "SELECT c.data FROM comments c LEFT JOIN answers a"
+                " ON c.parent_type = 'answer' AND a.id = c.parent_id"
+                " JOIN questions q ON q.id = CASE WHEN c.parent_type = 'question'"
+                " THEN c.parent_id ELSE a.question_id END"
+                " WHERE q.status != 'pending' ORDER BY c.created_at"
+            ).fetchall()
 
         tags = self._conn.execute("SELECT id, name, description, usage_count FROM tags ORDER BY name").fetchall()
-        question_tags = self._conn.execute("SELECT question_id, tag_id FROM question_tags").fetchall()
+        question_tags = self._conn.execute(
+            "SELECT qt.question_id, qt.tag_id FROM question_tags qt JOIN questions q"
+            " ON q.id = qt.question_id WHERE q.status != 'pending'"
+        ).fetchall()
 
         return {
             "questions": [json.loads(r[0]) for r in questions],
@@ -1206,7 +1250,7 @@ class SqliteStore:
         for c_data in data.get("comments", []):
             c = Comment.model_validate(c_data)
             self._conn.execute(
-                "INSERT OR REPLACE INTO comments (id, parent_id, parent_type, data, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO comments (id, parent_id, parent_type, data, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     c.id,
                     c.parent_id,
@@ -1214,6 +1258,7 @@ class SqliteStore:
                     c.model_dump_json(),
                     c.status,
                     c.created_at.isoformat(),
+                    c.updated_at.isoformat(),
                 ),
             )
             count += 1

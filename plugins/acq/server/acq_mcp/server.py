@@ -116,10 +116,14 @@ async def _periodic_pull() -> None:
         if team_client is None:
             continue
         store = _get_store()
+        # Capture the next cursor before the request. An approval that happens
+        # during the pull then remains newer than the cursor and is returned by
+        # the following pull instead of falling into a race window.
+        sync_started = datetime.now(UTC).isoformat()
         count = await store.pull_from_team(team_client, since=last_sync)
         if count > 0:
-            logger.info("Hourly sync: pulled %d new items.", count)
-        last_sync = datetime.now(UTC).isoformat()
+            logger.info("Hourly sync: pulled %d changed items.", count)
+        last_sync = sync_started
 
 
 @asynccontextmanager

@@ -59,10 +59,9 @@ class Store(Protocol):
     def list_tags(self, q: str | None = None) -> list[Tag]: ...
     def get_status(self) -> dict: ...
     # Moderation resolves question, answer, and comment ids alike. Approving a
-    # question also promotes every answer still pending under it, because a
-    # question and the answers filed with it are reviewed as one card. There is
-    # no separate delete_question/restore_question: rejecting a question is
-    # what soft-deletes it, and approving it again is the restore.
+    # new pending question also promotes its bundled answers. Approving a
+    # deleted question only restores that question, so pending answers under it
+    # return to the ordinary review queue rather than being silently published.
     def approve_content(self, content_id: str) -> bool | None: ...
     def reject_content(self, content_id: str) -> bool | None: ...
 

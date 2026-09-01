@@ -236,7 +236,7 @@ class TestReviewStats:
         # A pending question is not live content, and total_pending is the
         # single number the dashboard badges, so it has to include it.
         assert body["total_questions"] == 0
-        assert body["total_pending"] == 2
+        assert body["total_pending"] == 1
 
     def test_stats_requires_auth(self, client: TestClient) -> None:
         resp = client.get("/review/stats")
@@ -417,10 +417,10 @@ class TestQuestionVerdict:
         queue = client.get("/review/queue", headers=_auth_header(token)).json()
         assert queue["total"] == 0
 
-    def test_rejecting_a_question_drops_the_whole_bundle(
+    def test_restoring_a_rejected_question_does_not_approve_its_answers(
         self, client: TestClient
     ) -> None:
-        """The answers stay pending on purpose, which is what makes it undoable."""
+        """Restore is not a fresh-question bundle approval."""
         token = _login(client)
         q = _create_pending_question(client)
         a = _create_answer(client, q["id"])
@@ -436,14 +436,18 @@ class TestQuestionVerdict:
         ).json()
         assert thread["question"]["status"] == "deleted"
 
-        # Approving later resurrects the bundle intact, answer included.
+        # Restoring the question makes its answer independently reviewable.
+        # It does not silently publish an answer under a deleted parent.
         client.post(f"/review/{q['id']}/approve", headers=_auth_header(token))
         thread = client.get(
             f"/api/questions/{q['id']}/thread", headers=_auth_header(token)
         ).json()
         assert thread["question"]["status"] == "open"
         assert [t["answer"]["id"] for t in thread["answers"]] == [a["id"]]
-        assert thread["answers"][0]["answer"]["status"] == "approved"
+        assert thread["answers"][0]["answer"]["status"] == "pending"
+        queue = client.get("/review/queue", headers=_auth_header(token)).json()
+        assert queue["total"] == 1
+        assert queue["items"][0]["type"] == "answer"
 
     def test_reject_twice_returns_409(self, client: TestClient) -> None:
         token = _login(client)

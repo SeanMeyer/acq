@@ -15,6 +15,7 @@
 
   let questionExpanded = $state(false);
   let showEditModal = $state(false);
+  let editingBundled = $state<Answer | null>(null);
 
   const isQuestion = $derived(item.type === 'question');
   const isAnswer = $derived(item.type === 'answer');
@@ -23,7 +24,9 @@
   const question = $derived(item.question);
 
   async function saveEdit(patch: { body: string; title?: string; tags?: string[] }) {
-    if (isQuestion) {
+    if (editingBundled) {
+      await api.editAnswer(editingBundled.id, patch.body);
+    } else if (isQuestion) {
       await api.editQuestion(content.id, patch);
     } else if (isAnswer) {
       await api.editAnswer(content.id, patch.body);
@@ -31,6 +34,11 @@
       await api.editComment(content.id, patch.body);
     }
     onEditSaved?.();
+  }
+
+  function editMainContent() {
+    editingBundled = null;
+    showEditModal = true;
   }
 </script>
 
@@ -54,7 +62,7 @@
       <div class="flex items-start justify-between gap-3 mb-2">
         <h3 class="text-base font-semibold text-gray-900 leading-snug flex-1 min-w-0">{question.title}</h3>
         <button
-          onclick={() => (showEditModal = true)}
+          onclick={editMainContent}
           class="flex-shrink-0 text-xs text-indigo-600 hover:text-indigo-800 font-medium transition-colors hover:underline"
         >
           Edit before approving
@@ -101,6 +109,15 @@
                   <span class="text-gray-400">({bundled.created_by_type})</span>
                 </span>
                 <div class="flex items-center gap-2">
+                  <button
+                    onclick={() => {
+                      editingBundled = bundled;
+                      showEditModal = true;
+                    }}
+                    class="text-xs text-indigo-600 hover:text-indigo-800 font-medium transition-colors hover:underline"
+                  >
+                    Edit
+                  </button>
                   {#if bundled.supervised}
                     <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
                       supervised
@@ -172,7 +189,7 @@
           {/if}
         </div>
         <button
-          onclick={() => (showEditModal = true)}
+          onclick={editMainContent}
           class="text-xs text-indigo-600 hover:text-indigo-800 font-medium transition-colors hover:underline"
         >
           Edit before approving
@@ -195,11 +212,14 @@
 
 {#if showEditModal}
   <EditModal
-    title={isQuestion ? 'Edit question' : isAnswer ? 'Edit answer' : 'Edit comment'}
-    initialBody={content.body}
-    initialTitle={isQuestion ? question.title : undefined}
-    initialTags={isQuestion ? (question.tags ?? []).map((t) => t.name) : undefined}
+    title={editingBundled ? 'Edit bundled answer' : isQuestion ? 'Edit question' : isAnswer ? 'Edit answer' : 'Edit comment'}
+    initialBody={editingBundled?.body ?? content.body}
+    initialTitle={!editingBundled && isQuestion ? question.title : undefined}
+    initialTags={!editingBundled && isQuestion ? (question.tags ?? []).map((t) => t.name) : undefined}
     onSave={saveEdit}
-    onClose={() => (showEditModal = false)}
+    onClose={() => {
+      showEditModal = false;
+      editingBundled = null;
+    }}
   />
 {/if}

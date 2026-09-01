@@ -475,7 +475,7 @@ class TestGetStatus:
         status = store.get_status()
         assert status["unanswered"] == 1
 
-    def test_pending_count_includes_answers_and_comments(
+    def test_pending_count_matches_visible_review_cards(
         self, store: SqliteStore
     ) -> None:
         q = _make_question()
@@ -485,7 +485,9 @@ class TestGetStatus:
         c = _make_comment(a.id)  # pending
         store.create_comment(c)
         status = store.get_status()
-        assert status["pending"] == 2
+        # The answer is reviewable. Its comment is hidden until the answer is
+        # approved, so reporting two pending cards would overstate the queue.
+        assert status["pending"] == 1
 
 
 class TestUserManagement:
