@@ -74,20 +74,59 @@ done
 AGENT_DIR="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
 MCP_FILE="${AGENT_DIR}/mcp.json"
 
-# -- Atomic writes. --
-# mcp.json is the user's real config and may hold unrelated servers they added
-# by hand. A plain `> file` redirect truncates on open, so an interruption
-# between truncate and write would destroy it. Write to a sibling temp file and
-# rename instead: rename(2) within one directory is atomic.
+# -- File writes. --
+# mcp.json and AGENTS.md are the user's real config and may hold unrelated
+# content they added by hand. A plain `> file` redirect truncates on open, so
+# an interruption between truncate and write would destroy it. Write to a
+# sibling temp file and rename instead: rename(2) within one directory is
+# atomic, and staying in the same directory keeps it on one filesystem.
 
 TMP_FILE=""
 cleanup() { [[ -n "${TMP_FILE}" && -e "${TMP_FILE}" ]] && rm -f "${TMP_FILE}"; return 0; }
 trap cleanup EXIT
 
-write_atomic() {
-    TMP_FILE="$(mktemp "${MCP_FILE}.tmp.XXXXXX")"
-    printf '%s\n' "$1" > "${TMP_FILE}"
-    mv -f "${TMP_FILE}" "${MCP_FILE}"
+# Follow a symlink chain to the real file. These paths are often symlinks into
+# a dotfiles repo, and renaming over the link would replace it with a regular
+# file, silently orphaning the version-controlled original that the user still
+# believes is in effect.
+resolve_link() {
+    local path="$1" target hops=0
+    while [[ -L "${path}" ]]; do
+        if (( ++hops > 40 )); then
+            echo "Error: symlink loop resolving $1" >&2
+            return 1
+        fi
+        target="$(readlink "${path}")"
+        if [[ "${target}" = /* ]]; then
+            path="${target}"
+        else
+            path="$(cd "$(dirname "${path}")" && pwd)/${target}"
+        fi
+    done
+    printf '%s\n' "${path}"
+}
+
+# BSD stat first, GNU stat second.
+file_mode() {
+    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+}
+
+# rename(2) makes the destination adopt the temp file's mode, which mktemp
+# creates as 0600, so an existing file's permissions have to be carried over
+# explicitly or every run would silently tighten them.
+write_file() {
+    local dest mode=""
+    dest="$(resolve_link "$1")" || return 1
+    mkdir -p "$(dirname "${dest}")"
+    if [[ -f "${dest}" ]]; then
+        mode="$(file_mode "${dest}")"
+    fi
+    TMP_FILE="$(mktemp "${dest}.tmp.XXXXXX")"
+    printf '%s\n' "$2" > "${TMP_FILE}"
+    if [[ -n "${mode}" ]]; then
+        chmod "${mode}" "${TMP_FILE}"
+    fi
+    mv -f "${TMP_FILE}" "${dest}"
     TMP_FILE=""
 }
 
@@ -112,9 +151,9 @@ configure_mcp() {
          + (if ($env | length) > 0 then { env: $env } else {} end)')
 
     mkdir -p "${AGENT_DIR}"
-    [[ -f "${MCP_FILE}" ]] || write_atomic "$(printf '{}\n')"
+    [[ -f "${MCP_FILE}" ]] || write_file "${MCP_FILE}" "{}"
 
-    write_atomic "$(jq \
+    write_file "${MCP_FILE}" "$(jq \
         --arg name "${SERVER_NAME}" \
         --argjson entry "${entry}" \
         '.mcpServers[$name] = $entry' \
@@ -129,7 +168,7 @@ configure_mcp() {
 
 remove_mcp() {
     [[ -f "${MCP_FILE}" ]] || return 0
-    write_atomic "$(jq --arg name "${SERVER_NAME}" 'del(.mcpServers[$name])' "${MCP_FILE}")"
+    write_file "${MCP_FILE}" "$(jq --arg name "${SERVER_NAME}" 'del(.mcpServers[$name])' "${MCP_FILE}")"
     echo "  Removed MCP server '${SERVER_NAME}' from ${MCP_FILE}"
 }
 
@@ -195,21 +234,23 @@ configure_rules() {
             echo "  Warning: ${rules_file} has an acq start marker but no end marker — leaving it alone" >&2
             return 0
         fi
-        local tmp_file
-        tmp_file=$(mktemp)
-        awk -v start="${RULES_MARKER_START}" '$0 == start { exit } { print }' "${rules_file}" > "${tmp_file}"
-        printf '%s\n' "${RULES_BLOCK}" >> "${tmp_file}"
-        awk -v end="${RULES_MARKER_END}" 'after { print } $0 == end { after=1 }' "${rules_file}" >> "${tmp_file}"
-        mv "${tmp_file}" "${rules_file}"
+        local before after
+        before="$(awk -v start="${RULES_MARKER_START}" '$0 == start { exit } { print }' "${rules_file}")"
+        after="$(awk -v end="${RULES_MARKER_END}" 'after { print } $0 == end { after=1 }' "${rules_file}")"
+        local parts=()
+        if [[ -n "${before}" ]]; then parts+=("${before}"); fi
+        parts+=("${RULES_BLOCK}")
+        if [[ -n "${after}" ]]; then parts+=("${after}"); fi
+        write_file "${rules_file}" "$(printf '%s\n' "${parts[@]}")"
         echo "  Updated acq guidance in ${rules_file}"
         return 0
     fi
 
     if [[ -s "${rules_file}" ]]; then
-        printf '\n%s\n' "${RULES_BLOCK}" >> "${rules_file}"
+        write_file "${rules_file}" "$(cat "${rules_file}"; printf '\n%s' "${RULES_BLOCK}")"
         echo "  Appended acq guidance to ${rules_file}"
     else
-        printf '%s\n' "${RULES_BLOCK}" > "${rules_file}"
+        write_file "${rules_file}" "${RULES_BLOCK}"
         echo "  Created ${rules_file} with acq guidance"
     fi
 }
@@ -238,10 +279,15 @@ remove_rules() {
     ' "${rules_file}")
 
     if [[ -z "${tmp}" ]]; then
-        rm -f "${rules_file}"
+        local resolved
+        resolved="$(resolve_link "${rules_file}")" || return 1
+        rm -f "${resolved}"
+        if [[ "${resolved}" != "${rules_file}" ]]; then
+            rm -f "${rules_file}"
+        fi
         echo "  Removed ${rules_file} (no other content)"
     else
-        printf '%s\n' "${tmp}" > "${rules_file}"
+        write_file "${rules_file}" "${tmp}"
         echo "  Removed acq guidance from ${rules_file}"
     fi
 }
