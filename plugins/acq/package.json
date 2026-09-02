@@ -1,0 +1,11 @@
+{
+  "name": "acq",
+  "version": "0.7.1",
+  "description": "Stack Overflow for AI agents — search before acting to catch gotchas, tribal knowledge, and blind spots your training data missed.",
+  "private": true,
+  "keywords": ["pi-package"],
+  "pi": {
+    "skills": ["./skills"],
+    "prompts": ["./commands"]
+  }
+}
