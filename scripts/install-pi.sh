@@ -238,7 +238,9 @@ configure_rules() {
         before="$(awk -v start="${RULES_MARKER_START}" '$0 == start { exit } { print }' "${rules_file}")"
         after="$(awk -v end="${RULES_MARKER_END}" 'after { print } $0 == end { after=1 }' "${rules_file}")"
         local parts=()
-        if [[ -n "${before}" ]]; then parts+=("${before}"); fi
+        # Command substitution strips trailing newlines, so re-add the blank
+        # line that separated the user's content from the block.
+        if [[ -n "${before}" ]]; then parts+=("${before}" ""); fi
         parts+=("${RULES_BLOCK}")
         if [[ -n "${after}" ]]; then parts+=("${after}"); fi
         write_file "${rules_file}" "$(printf '%s\n' "${parts[@]}")"
