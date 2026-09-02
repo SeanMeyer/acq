@@ -191,6 +191,7 @@ typecheck:
 
 .PHONY: test
 test:
+	bash scripts/test-installers.sh
 	cd shared && uv run pytest tests/ -v
 	cd team-api && uv run pytest tests/ -v
 	cd plugins/acq/server && uv run pytest tests/ -v

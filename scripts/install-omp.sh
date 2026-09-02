@@ -120,7 +120,11 @@ write_file() {
         mode="$(file_mode "${dest}")"
     fi
     TMP_FILE="$(mktemp "${dest}.tmp.XXXXXX")"
-    printf '%s\n' "$2" > "${TMP_FILE}"
+    if [[ "${3:-}" == "empty" ]]; then
+        : > "${TMP_FILE}"
+    else
+        printf '%s\n' "$2" > "${TMP_FILE}"
+    fi
     if [[ -n "${mode}" ]]; then
         chmod "${mode}" "${TMP_FILE}"
     fi
@@ -288,13 +292,11 @@ remove_rules() {
     ' "${rules_file}")
 
     if [[ -z "${tmp}" ]]; then
-        local resolved
-        resolved="$(resolve_link "${rules_file}")" || return 1
-        rm -f "${resolved}"
-        if [[ "${resolved}" != "${rules_file}" ]]; then
-            rm -f "${rules_file}"
-        fi
-        echo "  Removed ${rules_file} (no other content)"
+        # The marker proves we managed the block, not that we created the file.
+        # Preserve a symlinked dotfiles target (and an unproven regular file)
+        # rather than deleting user-owned configuration.
+        write_file "${rules_file}" "" empty
+        echo "  Cleared acq guidance from ${rules_file} (no other content)"
     else
         write_file "${rules_file}" "${tmp}"
         echo "  Removed acq guidance from ${rules_file}"
