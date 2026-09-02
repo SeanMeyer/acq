@@ -18,7 +18,11 @@
 # the same commands as /acq:reflect and /acq:status.
 #
 # The pi manifest has no field for MCP servers, so this script also writes an
-# entry to pi's mcp.json pointing at the working tree.
+# entry to pi's mcp.json pointing at the working tree. pi core has no MCP
+# support of its own -- nothing outside its bundled chunks reads mcp.json --
+# so that entry is inert until the pi-mcp-adapter extension is present. The
+# installer adds it when missing, otherwise the skill would tell the model to
+# search ACQ with no tool able to do it.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +31,7 @@ PLUGIN_DIR="${REPO_ROOT}/plugins/acq"
 SERVER_DIR="${PLUGIN_DIR}/server"
 
 SERVER_NAME="acq"
+MCP_ADAPTER="pi-mcp-adapter"
 
 # -- Dependencies. --
 
@@ -40,7 +45,7 @@ done
 # -- Argument parsing. --
 
 usage() {
-    sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"
     exit 1
 }
 
@@ -133,6 +138,17 @@ remove_mcp() {
 configure_package() {
     pi install "${PLUGIN_DIR}"
     echo "  Installed pi package from ${PLUGIN_DIR}"
+}
+
+# Not removed on uninstall: other packages may rely on the adapter, and it is
+# not ours to take away.
+configure_adapter() {
+    if pi list 2>/dev/null | grep -q "${MCP_ADAPTER}"; then
+        echo "  ${MCP_ADAPTER} already installed"
+        return 0
+    fi
+    echo "  Installing ${MCP_ADAPTER} (pi has no native MCP support)"
+    pi install "npm:${MCP_ADAPTER}"
 }
 
 remove_package() {
@@ -236,6 +252,7 @@ case "${ACTION}" in
     install)
         echo "Installing acq for pi..."
         configure_package
+        configure_adapter
         configure_mcp
         configure_rules
         echo ""
