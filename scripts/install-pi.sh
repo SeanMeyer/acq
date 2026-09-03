@@ -9,9 +9,9 @@
 # Unlike OMP, upstream pi does not read Claude-format plugin manifests. It has
 # its own package format instead: a package.json carrying a "pi" key that lists
 # skills, prompts, extensions, and themes. plugins/acq/package.json declares the
-# acq skill and slash commands that way, and `pi install` on a local path
-# resolves it in place rather than copying, so edits to the working tree take
-# effect without reinstalling.
+# acq skill, slash commands, and reminder extension that way, and `pi install`
+# on a local path resolves it in place rather than copying, so edits to the
+# working tree take effect without reinstalling.
 #
 # pi names slash commands after the file, ignoring frontmatter, so the commands
 # are /acq-reflect and /acq-status here. OMP reads the frontmatter and exposes
@@ -207,8 +207,11 @@ remove_package() {
 # The skill's own description tells the model what acq is, but a skill is only
 # consulted once the model decides it is relevant. Searching *before* exploring
 # has to be a standing instruction, which for pi means the user-level AGENTS.md.
-# In Claude Code the plugin's SessionStart hook injects this; pi has no
-# equivalent hook, so it is done here.
+#
+# plugins/acq/extensions/acq-reminder.js also injects this once per session, the
+# way the Claude-format SessionStart hook does. Both are kept: the extension is
+# the salient nudge, and AGENTS.md still covers anyone running the skill without
+# the package or with extensions disabled.
 #
 # The `mcp` adapter sentence is pi-specific and deliberately absent from
 # install-omp.sh: pi reaches MCP servers through the pi-mcp-adapter extension,

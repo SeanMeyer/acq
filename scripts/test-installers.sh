@@ -97,4 +97,19 @@ assert_link_and_target_preserved \
 [[ "$(jq -r '.mcpServers.other.command' "${OMP_AGENT_DIR}/mcp.json")" == "kept" ]] || \
     fail "OMP uninstall removed unrelated MCP configuration"
 
+# A resource the manifest does not list is inert, which is how the Claude-format
+# SessionStart hook silently did nothing under pi. Assert the declaration and
+# the files agree in both directions.
+for dir in $(jq -r '.pi.extensions // [] | .[]' "${REPO_ROOT}/plugins/acq/package.json"); do
+    ext_dir="${REPO_ROOT}/plugins/acq/${dir#./}"
+    [[ -d "${ext_dir}" ]] || fail "pi manifest declares ${dir} but no such directory exists"
+    compgen -G "${ext_dir}/*.[jt]s" >/dev/null || \
+        fail "pi manifest declares ${dir} but it holds no .js or .ts extension"
+done
+while IFS= read -r ext; do
+    jq -e --arg d "./$(dirname "${ext#plugins/acq/}")" \
+        '.pi.extensions | index($d)' "${REPO_ROOT}/plugins/acq/package.json" >/dev/null || \
+        fail "${ext} is not covered by pi.extensions in plugins/acq/package.json"
+done < <(cd "${REPO_ROOT}" && git ls-files 'plugins/acq/extensions/*.js' 'plugins/acq/extensions/*.ts')
+
 printf '%s\n' "installer symlink regression tests passed"
