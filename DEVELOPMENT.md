@@ -108,6 +108,36 @@ mind before a nontrivial investigation. Claude Code receives it from the
 writes the equivalent into `RULES.md`. Reinstalling refreshes the marked block,
 and uninstall removes it without touching the surrounding file.
 
+### pi (upstream)
+
+```bash
+make install-pi
+```
+
+Same `TEAM_ADDR`, `API_KEY`, `AGENT_NAME`, and `LOCAL_ONLY=1` options as
+`install-omp`. `make uninstall-pi` reverses it.
+
+Upstream pi is not OMP and does not read Claude-format plugins. It has its own
+package format instead, so the same four pieces come from different places:
+
+| Part | Source | Effect of editing |
+|------|--------|-------------------|
+| Skill, slash commands | The `pi` key in `plugins/acq/package.json`, installed as a local pi package | Live; pi resolves local packages in place, so no reinstall is needed |
+| MCP tools | `pi-mcp-adapter`, plus an entry in the agent directory's `mcp.json` pointing at `plugins/acq/server` | Live; restart pi |
+| "Search acq first" guidance | A marked block in the agent directory's `AGENTS.md` | Live on the next session |
+
+Two differences from OMP are worth knowing.
+
+pi core has no MCP support of its own, so `mcp.json` alone does nothing. The
+tools arrive through the `pi-mcp-adapter` extension, which the installer adds
+when it is missing. Without it you would get the skill and the slash commands
+but no way to actually query ACQ. Uninstall leaves the adapter in place, since
+other packages may depend on it.
+
+pi names a slash command after its file and ignores the `name` in frontmatter,
+so the commands are `/acq-reflect` and `/acq-status` rather than the
+`/acq:reflect` and `/acq:status` that OMP and Claude Code expose.
+
 ### Other agents
 
 To point any MCP-capable agent at a local team API instance, set these in

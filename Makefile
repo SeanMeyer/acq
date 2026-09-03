@@ -20,6 +20,12 @@ help:
 	@echo "  make install-omp LOCAL_ONLY=1                Install without any team API"
 	@echo "  make uninstall-omp                           Remove OMP install"
 	@echo ""
+	@echo "pi (upstream):"
+	@echo "  make install-pi                              Install package + local team API wiring"
+	@echo "  make install-pi TEAM_ADDR=http://host:8742   Point at a specific team API"
+	@echo "  make install-pi LOCAL_ONLY=1                 Install without any team API"
+	@echo "  make uninstall-pi                            Remove pi install"
+	@echo ""
 	@echo "Development:"
 	@echo "  make setup        Install all dependencies"
 	@echo "  make setup-agent  Authenticate against a team API (needs TEAM_ADDR and CLIENT_ID)"
@@ -87,6 +93,18 @@ install-omp:
 .PHONY: uninstall-omp
 uninstall-omp:
 	@bash "$(CURDIR)/scripts/install-omp.sh" uninstall
+
+.PHONY: install-pi
+install-pi:
+	@bash "$(CURDIR)/scripts/install-pi.sh" install \
+		$(if $(LOCAL_ONLY),--local-only,) \
+		$(if $(TEAM_ADDR),--team-addr "$(TEAM_ADDR)",) \
+		$(if $(API_KEY),--api-key "$(API_KEY)",) \
+		$(if $(AGENT_NAME),--agent-name "$(AGENT_NAME)",)
+
+.PHONY: uninstall-pi
+uninstall-pi:
+	@bash "$(CURDIR)/scripts/install-pi.sh" uninstall
 
 .PHONY: compose-up
 compose-up:
@@ -173,6 +191,7 @@ typecheck:
 
 .PHONY: test
 test:
+	bash scripts/test-installers.sh
 	cd shared && uv run pytest tests/ -v
 	cd team-api && uv run pytest tests/ -v
 	cd plugins/acq/server && uv run pytest tests/ -v
