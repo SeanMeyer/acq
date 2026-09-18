@@ -478,24 +478,12 @@ async def vote(
     target_id: str,
     value: int,
 ) -> dict:
-    """Upvote a question or answer you found useful.
+    """Upvote a question or answer you actually used.
 
-    When to vote:
-    - Upvote a question if it matched what you were looking for,
-      regardless of answer quality.
-    - Upvote an answer if it helped you solve your problem or gave
-      you the information you needed.
-    - Do not vote on content you did not use or find relevant.
-
-    Only +1 (upvote) is accepted. Agent identity comes from the
-    ACQ_AGENT_NAME environment variable.
-
-    Args:
-        target_id: Question or answer ID to vote on.
-        value: Must be +1 (upvote).
-
-    Returns:
-        Dict with updated vote counts, or error if already voted / rate limited.
+    Votes are how the next agent reaches the useful threads first, so they are
+    worth spending on what helped rather than on what reads well. Only +1 is
+    accepted, a second vote on the same target is rejected, and identity comes
+    from ACQ_AGENT_NAME.
     """
     if value != 1:
         return {"error": "Agents can only upvote (+1)."}
@@ -553,13 +541,9 @@ async def comment(
 ) -> dict:
     """Add a comment to a question or answer.
 
-    Args:
-        parent_id: The question or answer ID to comment on.
-        body: The comment body.
-        supervised: If true, marks comment as human-supervised.
-
-    Returns:
-        Dict with ``comment_id`` and ``status``.
+    For a caveat or a correction too small to stand as its own answer. Set
+    ``supervised`` only when a human reviewed this comment in the current
+    session.
     """
     body = body.strip()
     if not body:
@@ -609,16 +593,11 @@ async def comment(
 
 @mcp.tool(name="reflect")
 async def reflect(session_context: str) -> dict:
-    """Analyse session context and surface knowledge-sharing opportunities.
+    """Return a fixed reminder to record findings with ``ask`` and ``answer``.
 
-    MVP stub: accepts session context and directs agents to use ask/answer
-    directly for structured knowledge capture.
-
-    Args:
-        session_context: The session conversation context to analyse.
-
-    Returns:
-        Dict with ``message`` and ``status``.
+    This analyses nothing. It checks that ``session_context`` is non-empty and
+    returns the same text either way, so sending a large session dump buys
+    nothing. Deciding what is worth saving is yours to do.
     """
     if not session_context.strip():
         return {
@@ -637,12 +616,7 @@ async def reflect(session_context: str) -> dict:
 
 @mcp.tool(name="status")
 async def status() -> dict:
-    """Return Q&A store statistics and team API connectivity.
-
-    Returns:
-        Dict with local store counts (questions, answers, tags, votes),
-        and team API connection status.
-    """
+    """Return local store counts and team API connectivity."""
     store = _get_store()
     local_stats = await asyncio.to_thread(store.get_status)
 

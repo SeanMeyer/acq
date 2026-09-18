@@ -12,11 +12,10 @@ Review the current session for knowledge worth carrying into future work.
    that an existing answer was incomplete or wrong.
 2. Summarize the investigation and call `reflect` with that summary. Continue
    with your own judgment if the tool has no candidates or is unavailable.
-3. Identify useful new Q&A candidates. Save knowledge that was genuinely hard
-   to obtain and is likely to save substantial future investigation or prevent
-   a costly mistake. Prefer information that cannot be recovered quickly from
-   code or primary documentation. Skip readable-code summaries and facts whose
-   value ends with the current task. Most sessions will have no candidates.
+3. Identify new Q&A candidates. The bar is whether it would save the next
+   session real time and could not have been read off the code, because ACQ
+   stays worth searching only while what is in it is worth reading. Most
+   sessions have no candidates, which is the normal outcome.
 4. Search for duplicates before proposing a new question.
 5. Present each candidate with its title, body, answer, and tags. Ask the user
    which candidates to save or revise.
