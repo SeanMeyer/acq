@@ -46,10 +46,10 @@ authenticate, so it never blocks waiting for a browser.)
 The plugin adds a short reminder at session start. If your agent needs standing
 guidance in `CLAUDE.md`, keep it lightweight:
 
-```markdown
-Search ACQ before a nontrivial investigation when prior experience could save
-time. Treat results as leads and verify them against the current system.
-```
+The installers write this automatically. The text lives in
+`plugins/acq/guidance/agents-block.md`, which is the one copy all three
+installers read, so quote it from there rather than pasting a version that will
+age.
 
 ## How It Works
 

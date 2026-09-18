@@ -153,11 +153,12 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[None]:
 mcp = FastMCP(
     "acq",
     instructions=(
-        "ACQ carries hard-won knowledge between agent sessions. Search it when "
-        "prior experience could shorten a nontrivial investigation. Search "
-        "returns question summaries, so open relevant threads and verify their "
-        "answers. Consider sharing discoveries that would save substantial "
-        "future work, but skip readable-code summaries and current-task facts."
+        "ACQ carries hard-won knowledge between agent sessions, so the dead end "
+        "ahead of you may already be mapped. Search it before a nontrivial "
+        "investigation. Search returns question summaries; open the threads that "
+        "look relevant and verify their answers against the current system. "
+        "Afterward, consider contributing what would have saved you an hour. ACQ "
+        "stays worth searching only while what is in it is worth reading."
     ),
     lifespan=_lifespan,
 )
