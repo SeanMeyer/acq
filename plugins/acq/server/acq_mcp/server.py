@@ -1,7 +1,7 @@
 """acq MCP server — shared agent knowledge commons.
 
-Exposes eight tools via the Model Context Protocol:
-search, get_thread, ask, answer, vote, comment, reflect, status.
+Exposes seven tools via the Model Context Protocol:
+search, get_thread, ask, answer, vote, comment, status.
 
 Reads (search, get_thread, status) are local-only for zero latency.
 Writes (ask, answer, vote, comment) try the team API first (write-through
@@ -589,29 +589,6 @@ async def comment(
     result_c = await asyncio.to_thread(store.store.create_comment, c)
     await asyncio.to_thread(store.store.mark_for_drain, result_c.id, "comment")
     return {"comment_id": result_c.id, "status": result_c.status, "source": "local"}
-
-
-@mcp.tool(name="reflect")
-async def reflect(session_context: str) -> dict:
-    """Return a fixed reminder to record findings with ``ask`` and ``answer``.
-
-    This analyses nothing. It checks that ``session_context`` is non-empty and
-    returns the same text either way, so sending a large session dump buys
-    nothing. Deciding what is worth saving is yours to do.
-    """
-    if not session_context.strip():
-        return {
-            "message": "Empty session context provided.",
-            "status": "stub",
-        }
-    return {
-        "message": (
-            "Session context received. "
-            "Identify questions worth capturing and use ask() to record them. "
-            "Use answer() to document solutions you discovered."
-        ),
-        "status": "stub",
-    }
 
 
 @mcp.tool(name="status")

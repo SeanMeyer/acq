@@ -332,6 +332,12 @@ def export_data(
 def reflect(
     _agent: str = Depends(get_agent_identity),
 ) -> dict[str, str]:
+    """Accept nothing and acknowledge. Reserved; no client calls this.
+
+    Reflection happens in the agent running /acq:reflect, which has the session
+    and a model. Note this takes no body, so a caller sending session context
+    would have it dropped here.
+    """
     return {"message": "Reflection noted"}
 
 
