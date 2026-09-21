@@ -19,7 +19,8 @@ class TestQuestion:
             context_language="typescript",
         )
         assert q.id.startswith("q_")
-        assert q.status == "open"
+        assert q.status == "pending"
+        assert q.supervised is False
         assert q.agent_upvotes == 0
         assert q.human_upvotes == 0
         assert q.pinned_answer_id is None
@@ -28,6 +29,39 @@ class TestQuestion:
         q1 = Question(title="A", body="B", created_by="x", created_by_type="agent")
         q2 = Question(title="A", body="B", created_by="x", created_by_type="agent")
         assert q1.id != q2.id
+
+    def test_rejected_question_survives_a_json_round_trip(self):
+        """Reading a rejected question back must not resurrect it.
+
+        The promotion of human and supervised questions to "open" lives in the
+        store's create_question rather than in a model_post_init hook. That
+        hook re-runs on every model_validate_json, so promoting there would
+        silently undo every rejection the moment the row was read.
+        """
+        rejected = Question(
+            title="A",
+            body="B",
+            created_by="sean",
+            created_by_type="human",
+            status="deleted",
+        )
+        assert Question.model_validate_json(rejected.model_dump_json()).status == "deleted"
+
+    def test_supervised_question_is_not_promoted_by_the_model(self):
+        """Promotion is the store's job; the model must leave status alone.
+
+        Same trap as above from the other side: an unconditional promotion in
+        the model would make a supervised question that was later rejected come
+        back open on the next read.
+        """
+        q = Question(
+            title="A",
+            body="B",
+            created_by="agent-1",
+            created_by_type="agent",
+            supervised=True,
+        )
+        assert q.status == "pending"
 
 
 class TestAnswer:

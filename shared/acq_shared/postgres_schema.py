@@ -6,7 +6,7 @@ and tsvector columns with GIN indexes for full-text search.
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _DDL = """
 CREATE SCHEMA IF NOT EXISTS acq;
@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS acq.comments (
     parent_type TEXT NOT NULL,
     data TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
-    created_at TIMESTAMPTZ NOT NULL
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS acq.votes (
@@ -119,6 +120,11 @@ def create_tables(conn) -> None:
     cur.execute("SELECT version FROM acq.schema_version")
     row = cur.fetchone()
     current_version = row[0] if row else 0
+
+    if 0 < current_version < 4:
+        cur.execute("ALTER TABLE acq.comments ADD COLUMN updated_at TIMESTAMPTZ")
+        cur.execute("UPDATE acq.comments SET updated_at = created_at")
+        cur.execute("ALTER TABLE acq.comments ALTER COLUMN updated_at SET NOT NULL")
 
     if current_version == 0:
         cur.execute(

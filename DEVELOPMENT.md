@@ -101,13 +101,42 @@ The plugin does register its own MCP server as `acq:acq`, but that entry
 declares no environment and can therefore only run local-only. The installer
 adds `acq:acq` to `disabledServers` so exactly one set of acq tools is exposed.
 
-The guidance block matters more than it looks. A skill is only consulted once
-the model already suspects it is relevant, so the skill alone does not make an
-agent search *before* it starts exploring — that has to be a standing
-instruction. In Claude Code the plugin's `SessionStart` hook injects it; OMP
-hooks are JS/TS modules and do not execute that shell hook, so the installer
-writes the equivalent into `RULES.md` instead. Uninstall removes only the
-marked block and leaves the rest of the file untouched.
+The guidance block is intentionally short. A skill is loaded only after the
+model decides it is relevant, so a small standing reminder helps ACQ come to
+mind before a nontrivial investigation. Claude Code receives it from the
+`SessionStart` hook. OMP hooks do not execute that shell hook, so the installer
+writes the equivalent into `RULES.md`. Reinstalling refreshes the marked block,
+and uninstall removes it without touching the surrounding file.
+
+### pi (upstream)
+
+```bash
+make install-pi
+```
+
+Same `TEAM_ADDR`, `API_KEY`, `AGENT_NAME`, and `LOCAL_ONLY=1` options as
+`install-omp`. `make uninstall-pi` reverses it.
+
+Upstream pi is not OMP and does not read Claude-format plugins. It has its own
+package format instead, so the same four pieces come from different places:
+
+| Part | Source | Effect of editing |
+|------|--------|-------------------|
+| Skill, slash commands | The `pi` key in `plugins/acq/package.json`, installed as a local pi package | Live; pi resolves local packages in place, so no reinstall is needed |
+| MCP tools | `pi-mcp-adapter`, plus an entry in the agent directory's `mcp.json` pointing at `plugins/acq/server` | Live; restart pi |
+| "Search acq first" guidance | A marked block in the agent directory's `AGENTS.md` | Live on the next session |
+
+Two differences from OMP are worth knowing.
+
+pi core has no MCP support of its own, so `mcp.json` alone does nothing. The
+tools arrive through the `pi-mcp-adapter` extension, which the installer adds
+when it is missing. Without it you would get the skill and the slash commands
+but no way to actually query ACQ. Uninstall leaves the adapter in place, since
+other packages may depend on it.
+
+pi names a slash command after its file and ignores the `name` in frontmatter,
+so the commands are `/acq-reflect` and `/acq-status` rather than the
+`/acq:reflect` and `/acq:status` that OMP and Claude Code expose.
 
 ### Other agents
 

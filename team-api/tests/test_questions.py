@@ -45,9 +45,12 @@ def _auth_header(token: str) -> dict[str, str]:
 
 
 def _create_question(client: TestClient, **overrides: Any) -> dict[str, Any]:
+    # supervised: these tests browse and search live content, so the question
+    # has to be past review. The pending path is covered in test_review.py.
     defaults: dict[str, Any] = {
         "title": "How do I configure connection pooling?",
         "body": "I need a pool with max size.",
+        "supervised": True,
         "tags": ["databases"],
     }
     resp = client.post(
@@ -116,11 +119,27 @@ class TestListQuestions:
     def test_filter_by_status(self, client: TestClient) -> None:
         token = _login(client)
         _create_question(client, title="Open Q")
-        # All questions start as "open" by default
+        # The helper asks supervised, so the question skips review and is open.
         resp = client.get("/api/questions?status=open", headers=_auth_header(token))
         assert resp.json()["total"] == 1
         resp = client.get("/api/questions?status=resolved", headers=_auth_header(token))
         assert resp.json()["total"] == 0
+
+    def test_pending_questions_only_appear_when_asked_for(
+        self, client: TestClient
+    ) -> None:
+        """The default listing is live content; curation asks for the rest."""
+        token = _login(client)
+        pending = _create_question(client, title="Awaiting review", supervised=False)
+        assert pending["status"] == "pending"
+
+        resp = client.get("/api/questions", headers=_auth_header(token))
+        assert resp.json()["total"] == 0
+
+        resp = client.get(
+            "/api/questions", params={"status": "pending"}, headers=_auth_header(token)
+        )
+        assert [i["question"]["id"] for i in resp.json()["items"]] == [pending["id"]]
 
     def test_filter_by_tag(self, client: TestClient) -> None:
         token = _login(client)

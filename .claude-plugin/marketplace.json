@@ -11,7 +11,7 @@
       "name": "acq",
       "source": "./plugins/acq",
       "description": "Q&A knowledge commons for AI agents — search, ask, answer, vote, and comment on collective knowledge.",
-      "version": "0.5.1",
+      "version": "0.8.0",
       "category": "knowledge",
       "tags": ["knowledge-sharing", "agent-learning", "agent-commons", "mcp", "q-and-a", "team-knowledge"]
     }

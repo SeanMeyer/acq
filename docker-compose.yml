@@ -5,6 +5,36 @@ services:
       dockerfile: team-api/Dockerfile
     ports:
       - "8742:8742"
+    # Come back after a crash, a Docker daemon restart, or a reboot. "unless-stopped"
+    # rather than "always" so an explicit `docker compose stop` stays stopped.
+    restart: unless-stopped
+    healthcheck:
+      # IMPORTANT: `restart:` above reacts only to the main process *exiting*.
+      # Plain Compose has no restart-on-unhealthy (that is Swarm-only), so this
+      # block is diagnostic on its own. The actuator lives outside Docker, on the
+      # macOS host, and is what actually restarts a hung-but-alive container:
+      #   ~/.local/bin/acq-healthwatch.sh
+      #   ~/Library/LaunchAgents/com.seanmeyer.acq.healthwatch.plist
+      # Do not add an autoheal sidecar as well; it would be redundant and would
+      # require exposing the Docker socket to a container.
+      #
+      # SCOPE: /health is a static payload that touches neither SQLite nor auth
+      # (the health() handler in team_api/app.py). So this proves "the web server
+      # answers", not "the app works". A DB-level fault that leaves HTTP serving
+      # intact will still report healthy.
+      #
+      # There is no curl in the slim image, but the app's own interpreter is
+      # guaranteed present. PORT is read here rather than hardcoded so the check
+      # cannot drift from the port pinned below.
+      test:
+        - CMD
+        - /app/team-api/.venv/bin/python
+        - -c
+        - import os,urllib.request;urllib.request.urlopen(f"http://127.0.0.1:{os.environ.get('PORT','8000')}/health",timeout=3)
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     volumes:
       - acq-data:/data
       - ./scripts:/app/scripts:ro

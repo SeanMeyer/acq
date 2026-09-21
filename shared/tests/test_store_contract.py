@@ -47,11 +47,19 @@ def store(request):
 
 
 def _make_question(**overrides) -> Question:
+    """Build a question that lands live, so tests can read it straight back.
+
+    Agent questions enter the review queue by default, which would make almost
+    every test in this file assert against an invisible row. These fixtures
+    represent content that is already live unless a test says otherwise.
+    """
     defaults = dict(
         title="Why does webpack 5 fail?",
         body="Getting Module not found error for stream.",
         created_by="agent-1",
         created_by_type="agent",
+        status="open",
+        supervised=True,
         context_language="typescript",
         context_framework="nextjs",
     )
@@ -99,6 +107,50 @@ class TestCreateQuestion:
         assert fetched.body == q.body
 
 
+class TestQuestionReviewLifecycle:
+    def test_agent_question_waits_for_review(self, store):
+        q = _make_question(status="pending", supervised=False)
+        stored = store.create_question(q, [])
+
+        assert stored.status == "pending"
+        assert store.list_questions()[1] == 0
+        assert store.get_question_thread(q.id) is None
+        assert store.get_question_thread(q.id, include_pending=True) is not None
+        assert [item.id for item in store.pending_queue()["questions"]] == [q.id]
+
+    def test_human_question_goes_live(self, store):
+        q = _make_question(status="pending", supervised=False, created_by_type="human")
+        assert store.create_question(q, []).status == "open"
+
+    def test_approving_question_promotes_bundled_answers(self, store):
+        q = _make_question(status="pending", supervised=False)
+        store.create_question(q, [])
+        answer = _make_answer(q.id, supervised=False)
+        store.create_answer(answer)
+
+        queue = store.pending_queue()
+        assert [item.id for item in queue["questions"]] == [q.id]
+        assert queue["answers"] == []
+
+        assert store.approve_content(q.id) is True
+        assert store.get_question(q.id).status == "open"
+        assert store.get_answer(answer.id).status == "approved"
+        assert store.pending_queue()["questions"] == []
+
+    def test_restoring_rejected_question_leaves_answers_pending(self, store):
+        q = _make_question(status="pending", supervised=False)
+        store.create_question(q, [])
+        answer = _make_answer(q.id, supervised=False)
+        store.create_answer(answer)
+
+        store.reject_content(q.id)
+        store.approve_content(q.id)
+
+        assert store.get_question(q.id).status == "open"
+        assert store.get_answer(answer.id).status == "pending"
+        assert [item.id for item in store.pending_queue()["answers"]] == [answer.id]
+
+
 class TestGetQuestion:
     def test_missing_returns_none(self, store):
         assert store.get_question("q_nonexistent") is None
@@ -114,6 +166,119 @@ class TestEditQuestion:
 
     def test_edit_missing_returns_none(self, store):
         assert store.edit_question("q_none", "x", "e", "human") is None
+
+    def test_edit_updates_title(self, store):
+        q = _make_question(title="Old title")
+        store.create_question(q, [])
+        updated = store.edit_question(q.id, None, "editor", "human", new_title="New title")
+        assert updated is not None
+        assert updated.title == "New title"
+        assert updated.body == q.body, "omitting new_body must leave the body untouched"
+
+    def test_edit_replaces_tag_set(self, store):
+        q = _make_question()
+        store.create_question(q, ["webpack", "typescript"])
+        store.edit_question(q.id, None, "editor", "human", new_tags=["webpack", "vite"])
+        thread = store.get_question_thread(q.id)
+        assert sorted(t["name"] for t in thread["tags"]) == ["vite", "webpack"]
+
+    def test_edit_tags_keeps_usage_count_accurate(self, store):
+        q = _make_question()
+        store.create_question(q, ["webpack"])
+        store.edit_question(q.id, None, "editor", "human", new_tags=["vite"])
+        counts = {t.name: t.usage_count for t in store.list_tags()}
+        assert counts["webpack"] == 0
+        assert counts["vite"] == 1
+
+    def test_retitled_question_is_findable_by_new_title(self, store):
+        q = _make_question(title="webpack stream polyfill error")
+        store.create_question(q, [])
+        store.edit_question(q.id, None, "editor", "human", new_title="rollup externals misconfigured")
+        results = store.search("rollup externals")
+        assert [r["question"].id for r in results] == [q.id]
+
+
+class TestRejectQuestion:
+    """Rejecting a question is the soft-delete; approving it is the restore."""
+
+    def test_reject_sets_deleted_status(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        assert store.reject_content(q.id) is True
+        assert store.get_question(q.id).status == "deleted"
+
+    def test_reject_is_idempotent_guarded(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        store.reject_content(q.id)
+        assert store.reject_content(q.id) is False
+
+    def test_reject_missing_returns_none(self, store):
+        """None means "no such content" and False means "already deleted".
+
+        The routes turn that split into 404 versus 409, so collapsing both to
+        False would make every 404 branch unreachable.
+        """
+        assert store.reject_content("q_none") is None
+
+    def test_approve_missing_question_returns_none(self, store):
+        assert store.approve_content("q_none") is None
+
+    def test_approve_returns_question_to_open(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        store.reject_content(q.id)
+        assert store.approve_content(q.id) is True
+        assert store.get_question(q.id).status == "open"
+
+    def test_approve_live_question_returns_false(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        assert store.approve_content(q.id) is False
+
+    def test_approve_resolved_question_returns_false(self, store):
+        """'resolved' is live, so approving must not demote it back to open."""
+        q = _make_question(status="resolved")
+        store.create_question(q, [])
+        assert store.approve_content(q.id) is False
+        assert store.get_question(q.id).status == "resolved"
+
+    def test_deleted_question_drops_out_of_search(self, store):
+        q = _make_question(title="webpack stream polyfill error")
+        store.create_question(q, ["webpack"])
+        assert store.search("webpack stream")
+        store.reject_content(q.id)
+        assert store.search("webpack stream") == []
+
+    def test_deleted_question_hidden_from_thread_by_default(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        store.reject_content(q.id)
+        assert store.get_question_thread(q.id) is None
+        assert store.get_question_thread(q.id, include_deleted=True) is not None
+
+    def test_deleted_question_hidden_from_list(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        store.reject_content(q.id)
+        items, total = store.list_questions()
+        assert total == 0
+        items, total = store.list_questions(status="deleted")
+        assert [i["question"]["id"] for i in items] == [q.id]
+
+    def test_deleted_question_not_offered_as_duplicate(self, store):
+        q = _make_question(title="webpack stream polyfill error")
+        store.create_question(q, ["webpack"])
+        assert store.find_similar_questions("webpack stream polyfill error", ["webpack"])
+        store.reject_content(q.id)
+        assert store.find_similar_questions("webpack stream polyfill error", ["webpack"]) == []
+
+    def test_approve_makes_question_searchable_again(self, store):
+        q = _make_question(title="webpack stream polyfill error")
+        store.create_question(q, ["webpack"])
+        store.reject_content(q.id)
+        store.approve_content(q.id)
+        assert [r["question"].id for r in store.search("webpack stream")] == [q.id]
 
 
 # ===================================================================
@@ -203,6 +368,54 @@ class TestCreateComment:
         )
         result = store.create_comment(c)
         assert result.status == "approved"
+
+
+class TestEditComment:
+    def _comment(self, store, question_id, **overrides):
+        defaults = dict(
+            parent_id=question_id,
+            parent_type="question",
+            body="Original comment",
+            created_by="human-1",
+            created_by_type="human",
+        )
+        defaults.update(overrides)
+        return store.create_comment(Comment(**defaults))
+
+    def test_edit_updates_body(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        c = self._comment(store, q.id)
+        updated = store.edit_comment(c.id, "Revised comment", "editor", "human")
+        assert updated is not None
+        assert updated.body == "Revised comment"
+        assert store.get_comment(c.id).body == "Revised comment"
+
+    def test_edit_missing_returns_none(self, store):
+        assert store.edit_comment("c_none", "x", "e", "human") is None
+
+    def test_edit_records_history(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        c = self._comment(store, q.id)
+        store.edit_comment(c.id, "Revised comment", "editor", "human")
+        history = store.get_comment_history(c.id)
+        assert len(history) == 1
+        assert history[0].previous_body == "Original comment"
+        assert history[0].new_body == "Revised comment"
+
+    def test_rejected_human_comment_stays_rejected(self, store):
+        """A human comment is auto-approved at creation, not on every read.
+
+        Comment.model_post_init runs again on every deserialization, so if it
+        promoted unconditionally it would undo the soft-delete each time the
+        row was loaded.
+        """
+        q = _make_question()
+        store.create_question(q, [])
+        c = self._comment(store, q.id)
+        assert store.reject_content(c.id) is True
+        assert store.get_comment(c.id).status == "rejected"
 
 
 # ===================================================================
@@ -311,7 +524,7 @@ class TestModeration:
         fetched = store.get_answer(a.id)
         assert fetched.status == "approved"
 
-    def test_approve_non_pending_returns_false(self, store):
+    def test_approve_already_approved_returns_false(self, store):
         q = _make_question()
         store.create_question(q, [])
         a = _make_answer(q.id, supervised=True)
@@ -327,11 +540,62 @@ class TestModeration:
         fetched = store.get_answer(a.id)
         assert fetched.status == "rejected"
 
-    def test_approve_missing_returns_false(self, store):
-        assert store.approve_content("nonexistent") is False
+    def test_approve_missing_returns_none(self, store):
+        """None means "no such content" and False means "already there".
 
-    def test_reject_missing_returns_false(self, store):
-        assert store.reject_content("nonexistent") is False
+        The route layer turns that split into 404 versus 409, so collapsing
+        both to False would make every 404 branch unreachable.
+        """
+        assert store.approve_content("nonexistent") is None
+
+    def test_reject_missing_returns_none(self, store):
+        assert store.reject_content("nonexistent") is None
+
+    def test_reject_approved_answer_soft_deletes_it(self, store):
+        """Rejection is the delete path for content that is already live."""
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id, supervised=True)
+        store.create_answer(a)  # auto-approved
+        assert store.reject_content(a.id) is True
+        assert store.get_answer(a.id).status == "rejected"
+
+    def test_approve_rejected_answer_restores_it(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id, supervised=True)
+        store.create_answer(a)
+        store.reject_content(a.id)
+        assert store.approve_content(a.id) is True
+        assert store.get_answer(a.id).status == "approved"
+
+    def test_reject_already_rejected_returns_false(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id, supervised=False)
+        store.create_answer(a)
+        store.reject_content(a.id)
+        assert store.reject_content(a.id) is False
+
+    def test_rejected_answer_drops_out_of_search(self, store):
+        """The full-text index is never pruned, so search must filter."""
+        q = _make_question(title="unrelated topic")
+        store.create_question(q, [])
+        a = _make_answer(q.id, body="use the rollup externals option", supervised=True)
+        store.create_answer(a)
+        assert store.search("rollup externals")
+        store.reject_content(a.id)
+        assert store.search("rollup externals") == []
+
+    def test_rejected_answer_visible_only_with_include_deleted(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        a = _make_answer(q.id, supervised=True)
+        store.create_answer(a)
+        store.reject_content(a.id)
+        assert store.get_question_thread(q.id)["answers"] == []
+        thread = store.get_question_thread(q.id, include_deleted=True)
+        assert [t["answer"].id for t in thread["answers"]] == [a.id]
 
     def test_pending_queue_lists_pending(self, store):
         q = _make_question()
@@ -384,6 +648,26 @@ class TestEditHistory:
         store.edit_question(q.id, "Edit 2", "e2", "agent")
         history = store.get_question_history(q.id)
         assert len(history) == 2
+
+    def test_title_edit_is_audited_alongside_body(self, store):
+        """Title changes are recorded under their own target type.
+
+        get_question_history must return them too, otherwise the edit is
+        silently unauditable even though the row exists.
+        """
+        q = _make_question(title="Old title")
+        store.create_question(q, [])
+        store.edit_question(q.id, None, "editor", "human", new_title="New title")
+        history = store.get_question_history(q.id)
+        assert [h.target_type for h in history] == ["question_title"]
+        assert history[0].previous_body == "Old title"
+        assert history[0].new_body == "New title"
+
+    def test_no_op_edit_records_nothing(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        store.edit_question(q.id, q.body, "editor", "human", new_title=q.title)
+        assert store.get_question_history(q.id) == []
 
 
 # ===================================================================
@@ -670,6 +954,29 @@ class TestExportSince:
         # Export with a future date should return nothing
         data = store.export_since(since="2099-01-01T00:00:00+00:00")
         assert data["questions"] == []
+
+    def test_export_omits_pending_question_and_children(self, store):
+        q = _make_question(status="pending", supervised=False)
+        store.create_question(q, ["webpack"])
+        answer = _make_answer(q.id, supervised=True)
+        store.create_answer(answer)
+
+        data = store.export_since()
+
+        assert data["questions"] == []
+        assert data["answers"] == []
+        assert data["question_tags"] == []
+
+    def test_incremental_export_includes_moderation_updates(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        cursor = q.updated_at.isoformat()
+
+        store.reject_content(q.id)
+        data = store.export_since(since=cursor)
+
+        assert [item["id"] for item in data["questions"]] == [q.id]
+        assert data["questions"][0]["status"] == "deleted"
 
 
 class TestBulkUpsert:

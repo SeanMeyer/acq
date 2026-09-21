@@ -21,6 +21,7 @@ Present the results using this structure:
 
 **{total_questions} questions · {total_answers} answers**
 Unanswered: {unanswered_count} · Pending review: {pending_count}
+Pending questions: {pending_questions_count}
 
 ### Tags
 {tag}: {count} | {tag}: {count} | ...
@@ -31,6 +32,10 @@ Agent: {agent_upvotes}↑ {agent_downvotes}↓ · Human: {human_upvotes}↑ {hum
 ### Team API
 {team_status}
 ```
+
+## Counts
+
+`total_questions` and `unanswered` count live questions only. Questions awaiting review are reported separately as `pending_questions`. The `pending` field counts answers and comments awaiting review.
 
 ## Empty Store
 

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from acq_mcp import server
 from acq_mcp.server import (
     _do_drain,
     _do_pull,
+    _periodic_pull,
     answer,
     ask,
     comment,
@@ -85,9 +87,18 @@ class TestSearch:
         assert result["results"] == []
         assert result["source"] == "local"
 
-    async def test_local_search_finds_data(self) -> None:
+    async def test_pending_question_absent_from_search(self) -> None:
+        """An agent question awaiting review must not surface in search."""
         store = server._get_store()
-        store.create_question("How to pool connections?", "body", "a", ["db"])
+        store.create_question("How to pool connections?", "body", "a", ["db"], supervised=False)
+        result = await search(query="pool connections")
+        assert result["results"] == []
+        assert result["source"] == "local"
+
+    async def test_supervised_question_found_by_search(self) -> None:
+        """The mirror image: a vouched-for question goes live and is searchable."""
+        store = server._get_store()
+        store.create_question("How to pool connections?", "body", "a", ["db"], supervised=True)
         result = await search(query="pool connections")
         assert len(result["results"]) == 1
         assert result["source"] == "local"
@@ -95,7 +106,7 @@ class TestSearch:
     async def test_search_uses_local_store_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Search should NEVER call the team API — local only."""
         store = server._get_store()
-        store.create_question("Question about caching", "body", "a", ["cache"])
+        store.create_question("Question about caching", "body", "a", ["cache"], supervised=True)
 
         mock = _make_mock_team_client(search_result=[{"id": "q_team_1", "title": "Team question"}])
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
@@ -107,7 +118,7 @@ class TestSearch:
 
     async def test_search_returns_results_from_local(self) -> None:
         store = server._get_store()
-        store.create_question("Local question about python", "body", "a", ["python"])
+        store.create_question("Local question about python", "body", "a", ["python"], supervised=True)
 
         result = await search(query="python")
         assert result["source"] == "local"
@@ -134,7 +145,6 @@ class TestAsk:
         assert "error" in result
 
     async def test_ask_writes_to_team_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When team API succeeds, question is written to team AND local."""
         mock = _make_mock_team_client(
             create_question_result={
                 "question": {
@@ -154,12 +164,17 @@ class TestAsk:
         assert result["action"] == "created"
         assert result["question_id"] == "q_team_1"
         assert result["source"] == "team"
-
-        # Verify team API was called
         mock.create_question.assert_called_once()
 
+    async def test_ask_forwards_supervised_to_team(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock = _make_mock_team_client(create_question_result={"question": {"id": "q_team_1"}, "similar_questions": []})
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        await ask(title="Q", body="B", tags=["t"], supervised=True)
+
+        assert mock.create_question.call_args.kwargs["supervised"] is True
+
     async def test_ask_falls_back_to_local_on_team_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When team API returns None, question is written to local only."""
         mock = _make_mock_team_client(create_question_result=None)
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
@@ -167,6 +182,22 @@ class TestAsk:
         assert result["action"] == "created"
         assert result.get("source") == "local"
         assert result["question_id"].startswith("q_")
+
+    async def test_local_fallback_question_stays_pending(self) -> None:
+        result = await ask(title="Q", body="B", tags=["t"])
+
+        (q,) = server._get_store().all_questions()
+        assert q.id == result["question_id"]
+        assert q.supervised is False
+        assert q.status == "pending"
+
+    async def test_local_fallback_supervised_question_goes_live(self) -> None:
+        result = await ask(title="Q", body="B", tags=["t"], supervised=True)
+
+        (q,) = server._get_store().all_questions()
+        assert q.id == result["question_id"]
+        assert q.supervised is True
+        assert q.status == "open"
 
     async def test_returns_similar_found_when_duplicates_exist(self, monkeypatch: pytest.MonkeyPatch) -> None:
         similar = [{"id": "q_existing", "title": "Existing question", "similarity": 0.9}]
@@ -189,7 +220,7 @@ class TestAsk:
 class TestAnswer:
     async def test_creates_answer_locally(self) -> None:
         store = server._get_store()
-        store.create_question("Q", "B", "a", ["t"])
+        store.create_question("Q", "B", "a", ["t"], supervised=True)
         # Get the question to use its ID
         qs = store.all_questions()
         result = await answer(question_id=qs[0].id, body="My answer")
@@ -440,6 +471,7 @@ class TestPullSync:
             "question_tags": [],
             "votes": [],
             "comments": [],
+            "next_since": "server-cursor-1",
         }
         mock = _make_mock_team_client(
             health=True,
@@ -447,8 +479,9 @@ class TestPullSync:
         )
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
-        await _do_pull()
+        cursor = await _do_pull()
 
+        assert cursor == "server-cursor-1"
         mock.export_since.assert_called_once_with(since=None)
 
         # Verify the local store now has the question
@@ -471,6 +504,45 @@ class TestPullSync:
 
         mock.export_since.assert_not_called()
 
+    async def test_periodic_pull_keeps_cursor_after_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        empty_export = {
+            "questions": [],
+            "answers": [],
+            "tags": [],
+            "question_tags": [],
+            "votes": [],
+            "comments": [],
+            "next_since": "server-cursor-2",
+        }
+        mock = _make_mock_team_client()
+        mock.export_since = AsyncMock(
+            side_effect=[
+                ApiResult(error="unreachable", warnings=["unreachable"]),
+                ApiResult.success(empty_export),
+                ApiResult.success({**empty_export, "next_since": "server-cursor-3"}),
+            ]
+        )
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        sleeps = 0
+
+        async def fake_sleep(_seconds: int) -> None:
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps == 4:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(server.asyncio, "sleep", fake_sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            await _periodic_pull("server-cursor-1")
+
+        assert mock.export_since.await_args_list == [
+            call(since="server-cursor-1"),
+            call(since="server-cursor-1"),
+            call(since="server-cursor-2"),
+        ]
+
 
 class TestEndToEnd:
     async def test_ask_answer_search_lifecycle(self) -> None:
@@ -484,11 +556,12 @@ class TestEndToEnd:
         assert asked["action"] == "created"
         qid = asked["question_id"]
 
-        # Answer the question.
+        # The answer stays bundled with the pending question until review.
         answered = await answer(question_id=qid, body="Use PRAGMA journal_mode=WAL")
         assert "answer_id" in answered
+        assert (await search(query="SQLite WAL mode"))["results"] == []
 
-        # Search finds the question.
+        server._get_store().store.approve_content(qid)
         results = await search(query="SQLite WAL mode")
         assert len(results["results"]) == 1
         assert results["results"][0]["id"] == qid

@@ -148,6 +148,7 @@ class TeamClient:
         framework: str | None = None,
         pattern: str | None = None,
         force_create: bool = False,
+        supervised: bool = False,
     ) -> ApiResult:
         payload: dict[str, object] = {
             "title": title,
@@ -155,6 +156,7 @@ class TeamClient:
             "created_by": created_by,
             "tags": tags,
             "force_create": force_create,
+            "supervised": supervised,
         }
         if language:
             payload["language"] = language
