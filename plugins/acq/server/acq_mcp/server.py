@@ -225,7 +225,7 @@ async def search(
     tags = _as_list(tags)
     store = _get_store()
     results = await asyncio.to_thread(
-        store.store.search,
+        store.search,
         query,
         tags=tags,
         language=language,
@@ -332,7 +332,7 @@ async def get_thread(question_ids: list[str] | str) -> dict:
     threads: list[dict] = []
     errors: list[str] = []
     for qid in question_ids:
-        thread = await asyncio.to_thread(store.store.get_question_thread, qid)
+        thread = await asyncio.to_thread(store.get_question_thread, qid)
         if thread is None:
             errors.append(f"Question {qid} not found.")
         else:
@@ -393,7 +393,7 @@ async def ask(
             if isinstance(q_data, dict) and q_data.get("id"):
                 try:
                     q = Question.model_validate(q_data)
-                    await asyncio.to_thread(store.store.create_question, q, tags)
+                    await asyncio.to_thread(store.save_question, q, tags)
                 except Exception:
                     logger.warning("Write-through to local failed", exc_info=True)
             return {
@@ -414,8 +414,8 @@ async def ask(
         context_pattern=pattern,
         supervised=supervised,
     )
-    result = await asyncio.to_thread(store.store.create_question, q, tags)
-    await asyncio.to_thread(store.store.mark_for_drain, result.id, "question")
+    result = await asyncio.to_thread(store.save_question, q, tags)
+    await asyncio.to_thread(store.mark_for_drain, result.id, "question")
     return {"action": "created", "question_id": result.id, "similar_questions": [], "source": "local"}
 
 
@@ -451,7 +451,7 @@ async def answer(
             if a_id:
                 try:
                     a = Answer.model_validate(data)
-                    await asyncio.to_thread(store.store.create_answer, a)
+                    await asyncio.to_thread(store.save_answer, a)
                 except Exception:
                     logger.warning("Write-through answer to local failed", exc_info=True)
             return {
@@ -468,8 +468,8 @@ async def answer(
         created_by_type="agent",
         supervised=supervised,
     )
-    result_a = await asyncio.to_thread(store.store.create_answer, a)
-    await asyncio.to_thread(store.store.mark_for_drain, result_a.id, "answer")
+    result_a = await asyncio.to_thread(store.save_answer, a)
+    await asyncio.to_thread(store.mark_for_drain, result_a.id, "answer")
     return {"answer_id": result_a.id, "status": result_a.status, "source": "local"}
 
 
@@ -511,7 +511,7 @@ async def vote(
                     voter_type="agent",
                     value=value,
                 )
-                await asyncio.to_thread(store.store.cast_vote, v)
+                await asyncio.to_thread(store.save_vote, v)
             except Exception:
                 logger.warning("Write-through vote to local failed", exc_info=True)
             return data
@@ -528,8 +528,8 @@ async def vote(
         voter_type="agent",
         value=value,
     )
-    await asyncio.to_thread(store.store.cast_vote, v)
-    await asyncio.to_thread(store.store.mark_for_drain, v.id, "vote")
+    await asyncio.to_thread(store.save_vote, v)
+    await asyncio.to_thread(store.mark_for_drain, v.id, "vote")
     return {"vote_id": v.id, "source": "local"}
 
 
@@ -568,7 +568,7 @@ async def comment(
             if c_id:
                 try:
                     c = Comment.model_validate(data)
-                    await asyncio.to_thread(store.store.create_comment, c)
+                    await asyncio.to_thread(store.save_comment, c)
                 except Exception:
                     logger.warning("Write-through comment to local failed", exc_info=True)
             return {
@@ -586,8 +586,8 @@ async def comment(
         created_by_type="agent",
         supervised=supervised,
     )
-    result_c = await asyncio.to_thread(store.store.create_comment, c)
-    await asyncio.to_thread(store.store.mark_for_drain, result_c.id, "comment")
+    result_c = await asyncio.to_thread(store.save_comment, c)
+    await asyncio.to_thread(store.mark_for_drain, result_c.id, "comment")
     return {"comment_id": result_c.id, "status": result_c.status, "source": "local"}
 
 

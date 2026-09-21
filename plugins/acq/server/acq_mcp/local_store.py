@@ -16,7 +16,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from acq_shared.sqlite_store import SqliteStore
 
@@ -59,7 +59,15 @@ class LocalStore:
 
     @property
     def store(self) -> SqliteStore:
-        """The underlying SqliteStore — used by server.py for direct access."""
+        """The underlying SqliteStore, with no lock held.
+
+        Every call made through this property touches the shared connection
+        without serialising against other threads. That is safe only from
+        single-threaded code such as tests. Anything reached from an
+        ``asyncio.to_thread()`` executor must use the locked delegates below
+        instead, because concurrent use of one sqlite3 connection corrupts
+        cursor state and raises ``InterfaceError`` or ``IndexError``.
+        """
         return self._store
 
     def _check_open(self) -> None:
@@ -192,6 +200,51 @@ class LocalStore:
             self._store.create_comment(c)
         return c
 
+    # ------------------------------------------------------------------
+    # Locked delegates for prepared records
+    #
+    # The convenience wrappers above build a model from loose fields, which
+    # suits the drain path and the tests. Callers that already hold a model
+    # need a way in that still takes the lock, so these accept the prepared
+    # record and return whatever the store returns.
+    # ------------------------------------------------------------------
+
+    def save_question(self, question: Any, tags: list[str]) -> Any:
+        """Persist an already-constructed Question and its tags."""
+        with self._lock:
+            self._check_open()
+            return self._store.create_question(question, tags)
+
+    def save_answer(self, answer: Any) -> Any:
+        """Persist an already-constructed Answer."""
+        with self._lock:
+            self._check_open()
+            return self._store.create_answer(answer)
+
+    def save_vote(self, vote: Any) -> Any:
+        """Persist an already-constructed Vote."""
+        with self._lock:
+            self._check_open()
+            return self._store.cast_vote(vote)
+
+    def save_comment(self, comment: Any) -> Any:
+        """Persist an already-constructed Comment."""
+        with self._lock:
+            self._check_open()
+            return self._store.create_comment(comment)
+
+    def get_question_thread(self, question_id: str):
+        """Fetch one question with its answers, votes, and comments."""
+        with self._lock:
+            self._check_open()
+            return self._store.get_question_thread(question_id)
+
+    def mark_for_drain(self, entity_id: str, entity_type: str) -> None:
+        """Queue an entity for the next drain to the team API."""
+        with self._lock:
+            self._check_open()
+            self._store.mark_for_drain(entity_id, entity_type)
+
     def search(
         self,
         query: str,
@@ -312,12 +365,12 @@ class LocalStore:
             eid, etype = item["entity_id"], item["entity_type"]
             try:
                 if etype == "question":
-                    row = self._conn.execute("SELECT data FROM questions WHERE id = ?", (eid,)).fetchone()
+                    row = self._locked_fetchone("SELECT data FROM questions WHERE id = ?", (eid,))
                     if not row:
-                        self._store.clear_drain(eid)
+                        self._locked_clear_drain(eid)
                         continue
                     q = Question.model_validate_json(row[0])
-                    tags = self._get_tag_names_for_question_unlocked(q.id)
+                    tags = self._locked_tag_names(q.id)
                     result = await team_client.create_question(
                         title=q.title,
                         body=q.body,
@@ -332,13 +385,13 @@ class LocalStore:
                         supervised=q.supervised,
                     )
                     if result.ok:
-                        self._store.clear_drain(eid)
+                        self._locked_clear_drain(eid)
                         drained += 1
 
                 elif etype == "answer":
-                    row = self._conn.execute("SELECT data FROM answers WHERE id = ?", (eid,)).fetchone()
+                    row = self._locked_fetchone("SELECT data FROM answers WHERE id = ?", (eid,))
                     if not row:
-                        self._store.clear_drain(eid)
+                        self._locked_clear_drain(eid)
                         continue
                     a = Answer.model_validate_json(row[0])
                     result = await team_client.create_answer(
@@ -348,15 +401,15 @@ class LocalStore:
                         supervised=a.supervised,
                     )
                     if result.ok:
-                        self._store.clear_drain(eid)
+                        self._locked_clear_drain(eid)
                         drained += 1
 
                 elif etype == "vote":
-                    row = self._conn.execute(
+                    row = self._locked_fetchone(
                         "SELECT target_id, target_type, voter_id, value FROM votes WHERE id = ?", (eid,)
-                    ).fetchone()
+                    )
                     if not row:
-                        self._store.clear_drain(eid)
+                        self._locked_clear_drain(eid)
                         continue
                     result = await team_client.cast_vote(
                         target_id=row[0],
@@ -365,13 +418,13 @@ class LocalStore:
                         voter_id=row[2],
                     )
                     if result.ok:
-                        self._store.clear_drain(eid)
+                        self._locked_clear_drain(eid)
                         drained += 1
 
                 elif etype == "comment":
-                    row = self._conn.execute("SELECT data FROM comments WHERE id = ?", (eid,)).fetchone()
+                    row = self._locked_fetchone("SELECT data FROM comments WHERE id = ?", (eid,))
                     if not row:
-                        self._store.clear_drain(eid)
+                        self._locked_clear_drain(eid)
                         continue
                     c = Comment.model_validate_json(row[0])
                     result = await team_client.create_comment(
@@ -382,7 +435,7 @@ class LocalStore:
                         supervised=c.supervised,
                     )
                     if result.ok:
-                        self._store.clear_drain(eid)
+                        self._locked_clear_drain(eid)
                         drained += 1
 
             except Exception:
@@ -408,6 +461,26 @@ class LocalStore:
             self._check_open()
             count = self._store.bulk_upsert(data)
         return PullResult(count=count, next_since=next_since)
+
+    # Drain interleaves database reads with awaited HTTP calls, so it cannot
+    # hold the lock for the whole loop without stalling every tool call for the
+    # length of a network round trip. These helpers take the lock for one
+    # synchronous touch at a time and release it before the next await.
+
+    def _locked_fetchone(self, sql: str, params: tuple) -> tuple | None:
+        with self._lock:
+            self._check_open()
+            return self._conn.execute(sql, params).fetchone()
+
+    def _locked_clear_drain(self, entity_id: str) -> None:
+        with self._lock:
+            self._check_open()
+            self._store.clear_drain(entity_id)
+
+    def _locked_tag_names(self, question_id: str) -> list[str]:
+        with self._lock:
+            self._check_open()
+            return self._get_tag_names_for_question_unlocked(question_id)
 
     def _get_tag_names_for_question_unlocked(self, question_id: str) -> list[str]:
         """Read tag names without acquiring the lock (caller must hold it or be safe)."""

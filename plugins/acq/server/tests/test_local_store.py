@@ -377,3 +377,81 @@ class TestPullFromTeam:
 
         assert result is not None
         assert result.next_since is None
+
+
+class TestConcurrentAccess:
+    """One sqlite3 connection is shared across asyncio.to_thread() executor
+    threads, so every path that touches it has to hold the store lock. Without
+    it these raise InterfaceError, IndexError, or pydantic ValidationError as
+    threads corrupt each other's cursor state.
+    """
+
+    @staticmethod
+    def _seed(store: LocalStore) -> None:
+        for i in range(12):
+            q = store.create_question(
+                f"connection pooling question {i}",
+                f"body about sqlite and postgres pooling {i}",
+                "agent-1",
+                ["sqlite", "postgres", "pooling"],
+            )
+            store.create_answer(q.id, f"use WAL mode and a bounded pool {i}", "agent-1", supervised=True)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_search_is_serialised(self, store: LocalStore) -> None:
+        import asyncio
+
+        self._seed(store)
+        queries = ["pooling", "sqlite", "postgres", "connection", "WAL", "bounded", "question", "body"]
+
+        for _ in range(8):
+            results = await asyncio.gather(
+                *(asyncio.to_thread(store.search, q) for q in queries),
+                return_exceptions=True,
+            )
+            failures = [r for r in results if isinstance(r, Exception)]
+            assert not failures, f"concurrent search raised: {failures[:3]}"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_mixed_operations_are_serialised(self, store: LocalStore) -> None:
+        import asyncio
+
+        from acq_shared.models import Answer, Question, Vote
+
+        self._seed(store)
+
+        def _ops(n: int):
+            q = Question(
+                title=f"parallel write {n}",
+                body="body text for a parallel write",
+                created_by="agent-1",
+                created_by_type="agent",
+            )
+            saved = store.save_question(q, ["parallel"])
+            store.mark_for_drain(saved.id, "question")
+            store.save_answer(
+                Answer(
+                    question_id=saved.id,
+                    body="an answer written in parallel",
+                    created_by="agent-1",
+                    created_by_type="agent",
+                )
+            )
+            store.save_vote(
+                Vote(
+                    target_id=saved.id,
+                    target_type="question",
+                    voter_id=f"agent-{n}",
+                    voter_type="agent",
+                    value=1,
+                )
+            )
+            store.get_question_thread(saved.id)
+            return store.search("pooling")
+
+        results = await asyncio.gather(
+            *(asyncio.to_thread(_ops, n) for n in range(10)),
+            return_exceptions=True,
+        )
+        failures = [r for r in results if isinstance(r, Exception)]
+        assert not failures, f"concurrent mixed operations raised: {failures[:3]}"
