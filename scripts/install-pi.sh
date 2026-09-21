@@ -220,17 +220,10 @@ remove_package() {
 RULES_MARKER_START="<!-- acq:start -->"
 RULES_MARKER_END="<!-- acq:end -->"
 
-read -r -d '' RULES_BLOCK <<'BLOCK' || true
-<!-- acq:start -->
-Before a nontrivial investigation, search ACQ when prior experience could save
-time. ACQ tools are available through the `mcp` adapter. Search returns
-questions only, so open relevant threads to read the answers. Treat answers as
-leads and verify them against the current system. Afterward, consider saving
-knowledge that was hard to obtain and likely to save substantial future work.
-Skip facts quickly recovered from code or docs and facts useful only to the
-current task.
-<!-- acq:end -->
-BLOCK
+# The one copy of this text; all three installers read it. See DEVELOPMENT.md.
+GUIDANCE_FILE="${REPO_ROOT}/plugins/acq/guidance/agents-block.md"
+RULES_BLOCK="$(printf '%s\n%s\n\nACQ tools are available through the `mcp` adapter.\n%s' \
+    "${RULES_MARKER_START}" "$(cat "${GUIDANCE_FILE}")" "${RULES_MARKER_END}")"
 
 configure_rules() {
     local rules_file="${AGENT_DIR}/AGENTS.md"

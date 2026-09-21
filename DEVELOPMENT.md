@@ -108,6 +108,19 @@ mind before a nontrivial investigation. Claude Code receives it from the
 writes the equivalent into `RULES.md`. Reinstalling refreshes the marked block,
 and uninstall removes it without touching the surrounding file.
 
+The block text has one source, `plugins/acq/guidance/agents-block.md`, which all
+three installers read. Where a host needs something different, the installer
+composes it around that file rather than keeping its own copy: pi appends a sentence about the `mcp` adapter because it
+reaches MCP servers through a gateway, and opencode adds a heading because it
+writes into a shared `AGENTS.md`.
+
+The session nudge is separate and shorter, because it fires before the model has
+started exploring and only needs to give it a reason to search. It exists twice,
+in `plugins/acq/hooks/acq-session-context.sh` for hosts that run Claude-format
+hooks and in `plugins/acq/extensions/acq-reminder.js` for pi, which cannot. They
+differ only by a pi-only sentence about the `mcp` adapter, so edit them
+together.
+
 ### pi (upstream)
 
 ```bash

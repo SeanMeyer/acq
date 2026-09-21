@@ -137,18 +137,12 @@ ACQ_MARKER_END="<!-- acq:end -->"
 LEGACY_MARKER_START="<!-- cq:start -->"
 LEGACY_MARKER_END="<!-- cq:end -->"
 
-ACQ_AGENTS_BLOCK="$(cat <<'BLOCK'
-<!-- acq:start -->
-## ACQ
-
-Before a nontrivial investigation, search ACQ when prior experience could save
-time. Treat results as leads and verify them against the current system.
-Afterward, consider saving knowledge that was hard to obtain and likely to save
-substantial future work. Skip facts quickly recovered from code or docs and
-facts useful only to the current task.
-<!-- acq:end -->
-BLOCK
-)"
+# The one copy of this text; all three installers read it. See DEVELOPMENT.md.
+GUIDANCE_FILE="${REPO_ROOT}/plugins/acq/guidance/agents-block.md"
+# opencode appends into a shared AGENTS.md, so the block carries a heading to
+# sit alongside whatever else lives in that file.
+ACQ_AGENTS_BLOCK="$(printf '%s\n## ACQ\n\n%s\n%s' \
+    "${ACQ_MARKER_START}" "$(cat "${GUIDANCE_FILE}")" "${ACQ_MARKER_END}")"
 
 configure_agents_md() {
     local agents_file="${TARGET}/AGENTS.md"

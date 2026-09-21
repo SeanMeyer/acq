@@ -16,7 +16,6 @@ from acq_mcp.server import (
     answer,
     ask,
     comment,
-    reflect,
     search,
     status,
     vote,
@@ -343,20 +342,6 @@ class TestComment:
         result = await comment(parent_id="q_1", body="Comment")
         assert result["comment_id"].startswith("c_")
         assert result.get("source") == "local"
-
-
-class TestReflect:
-    async def test_returns_message_with_guidance(self) -> None:
-        result = await reflect(session_context="I discovered a bug in the payment API.")
-        assert "message" in result
-        assert result["status"] == "stub"
-        assert "ask" in result["message"] or "answer" in result["message"]
-
-    async def test_empty_context_returns_message(self) -> None:
-        result = await reflect(session_context="   ")
-        assert "message" in result
-        assert result["status"] == "stub"
-        assert "empty" in result["message"].lower()
 
 
 class TestStatus:

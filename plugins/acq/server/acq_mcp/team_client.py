@@ -258,6 +258,12 @@ class TeamClient:
             return ApiResult.unexpected_error("export", exc)
 
     async def reflect(self, session_context: str) -> ApiResult:
+        """Reach the /reflect endpoint. No caller yet, and both ends are stubs.
+
+        Reflection is done by the agent running /acq:reflect, which has the
+        session and a model; the server has neither. This stays as the shape a
+        server-side implementation would use if one ever earns its place.
+        """
         payload = {"session_context": session_context}
         try:
             resp = await self._client.post("/reflect", json=payload)
