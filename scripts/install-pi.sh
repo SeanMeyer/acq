@@ -106,9 +106,13 @@ resolve_link() {
     printf '%s\n' "${path}"
 }
 
-# BSD stat first, GNU stat second.
+# GNU stat first, BSD stat second. The order matters and cannot be swapped:
+# GNU's -f is a valid flag meaning "file system status", so on Linux
+# `stat -f '%Lp'` exits 0 and prints a block of filesystem detail instead of
+# failing, the || fallback never fires, and the caller hands that block to
+# chmod. BSD has no -c at all, so probing GNU first fails cleanly there.
 file_mode() {
-    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
 
 # rename(2) makes the destination adopt the temp file's mode, which mktemp
