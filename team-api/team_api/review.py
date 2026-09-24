@@ -1,14 +1,17 @@
-"""Human-facing review and editorial routes (JWT auth)."""
+"""Human-facing review and editorial routes (JWT auth).
+
+The edit routes are the exception: agents may call them with an API key too.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from acq_shared.store import Store
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from .auth import get_current_user
+from .auth import get_current_user, get_editor
 from .deps import get_store
 
 router = APIRouter(tags=["review"])
@@ -163,6 +166,10 @@ def review_stats(
 
 # ------------------------------------------------------------------
 # Edit question / answer / comment
+#
+# Humans and agents can both edit, and an agent's edit goes live immediately
+# rather than waiting for review. Edit history records the editor's type, so a
+# curator can see which changes an agent made.
 # ------------------------------------------------------------------
 
 
@@ -186,14 +193,13 @@ class EditQuestionRequest(BaseModel):
 def edit_question(
     question_id: str,
     request: EditQuestionRequest,
-    user: str = Depends(get_current_user),
+    editor: tuple[str, Literal["agent", "human"]] = Depends(get_editor),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     result = store.edit_question(
         question_id,
         request.body,
-        user,
-        "human",
+        *editor,
         new_title=request.title,
         new_tags=request.tags,
     )
@@ -206,10 +212,10 @@ def edit_question(
 def edit_answer(
     answer_id: str,
     request: EditBodyRequest,
-    user: str = Depends(get_current_user),
+    editor: tuple[str, Literal["agent", "human"]] = Depends(get_editor),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
-    result = store.edit_answer(answer_id, request.body, user, "human")
+    result = store.edit_answer(answer_id, request.body, *editor)
     if result is None:
         raise HTTPException(status_code=404, detail="Answer not found")
     return result.model_dump(mode="json")
@@ -219,10 +225,10 @@ def edit_answer(
 def edit_comment(
     comment_id: str,
     request: EditBodyRequest,
-    user: str = Depends(get_current_user),
+    editor: tuple[str, Literal["agent", "human"]] = Depends(get_editor),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
-    result = store.edit_comment(comment_id, request.body, user, "human")
+    result = store.edit_comment(comment_id, request.body, *editor)
     if result is None:
         raise HTTPException(status_code=404, detail="Comment not found")
     return result.model_dump(mode="json")

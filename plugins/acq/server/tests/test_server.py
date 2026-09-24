@@ -16,6 +16,8 @@ from acq_mcp.server import (
     answer,
     ask,
     comment,
+    edit,
+    get_thread,
     search,
     status,
     vote,
@@ -66,6 +68,7 @@ def _make_mock_team_client(
     create_comment_result=None,
     get_status_result=None,
     export_since_result=None,
+    edit_result=None,
 ) -> MagicMock:
     mock = MagicMock()
     mock.health = AsyncMock(return_value=health)
@@ -76,6 +79,9 @@ def _make_mock_team_client(
     mock.create_comment = AsyncMock(return_value=_to_api_result(create_comment_result))
     mock.get_status = AsyncMock(return_value=_to_api_result(get_status_result))
     mock.export_since = AsyncMock(return_value=_to_api_result(export_since_result))
+    mock.edit_question = AsyncMock(return_value=_to_api_result(edit_result))
+    mock.edit_answer = AsyncMock(return_value=_to_api_result(edit_result))
+    mock.edit_comment = AsyncMock(return_value=_to_api_result(edit_result))
     mock.base_url = "http://localhost:8742"
     return mock
 
@@ -342,6 +348,130 @@ class TestComment:
         result = await comment(parent_id="q_1", body="Comment")
         assert result["comment_id"].startswith("c_")
         assert result.get("source") == "local"
+
+
+class TestEdit:
+    @staticmethod
+    def _live_answer(body: str = "Use max_size=10."):
+        """A live question with one answer, as a pull from the team would leave it."""
+        store = server._get_store()
+        q = store.create_question("How do I size a pool?", "body", "a", ["db"], supervised=True)
+        a = store.create_answer(q.id, body, "a", supervised=True)
+        return store, q, a
+
+    async def test_local_only_edit_replaces_answer_and_records_history(self) -> None:
+        store, _, a = self._live_answer("old text")
+
+        result = await edit(target_id=a.id, body="new text")
+
+        assert result == {"edited": a.id, "source": "local"}
+        assert store.store.get_answer(a.id).body == "new text"
+        [entry] = store.store.get_answer_history(a.id)
+        assert (entry.previous_body, entry.edited_by, entry.edited_by_type) == ("old text", "test-agent", "agent")
+
+    async def test_edits_question_title_and_tags_without_touching_body(self) -> None:
+        store, q, _ = self._live_answer()
+
+        result = await edit(target_id=q.id, title="How big should a pool be?", tags="pooling")
+
+        assert result["source"] == "local"
+        thread = store.get_question_thread(q.id)
+        assert thread["question"].title == "How big should a pool be?"
+        assert thread["question"].body == "body"
+        assert [t["name"] if isinstance(t, dict) else t.name for t in thread["tags"]] == ["pooling"]
+
+    async def test_edits_comment(self) -> None:
+        store, q, _ = self._live_answer()
+        c = store.create_comment(q.id, "question", "typo here", "a", supervised=True)
+
+        await edit(target_id=c.id, body="fixed")
+
+        assert store.store.get_comment(c.id).body == "fixed"
+
+    async def test_comment_found_through_get_thread_can_be_edited(self) -> None:
+        """An agent can only edit a comment whose id it can discover."""
+        store, q, a = self._live_answer()
+        c = store.create_comment(a.id, "answer", "typo here", "a")
+        store.store.approve_content(c.id)
+
+        [thread] = (await get_thread(q.id))["threads"]
+        [found] = thread["answers"][0]["comments"]
+        assert (found["by"], found["body"]) == ("a", "typo here")
+        await edit(target_id=found["id"], body="fixed")
+
+        [thread] = (await get_thread(q.id))["threads"]
+        assert thread["answers"][0]["comments"][0]["body"] == "fixed"
+
+    async def test_missing_target_is_reported(self) -> None:
+        result = await edit(target_id="a_missing", body="text")
+        assert result == {"error": "a_missing not found."}
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"target_id": "x_1", "body": "text"},
+            {"target_id": "a_1", "body": "   "},
+            {"target_id": "a_1", "title": "Only questions have titles"},
+            {"target_id": "c_1", "tags": ["t"]},
+            {"target_id": "q_1"},
+            {"target_id": "q_1", "title": " "},
+            {"target_id": "q_1", "tags": []},
+        ],
+    )
+    async def test_rejects_invalid_edits(self, kwargs: dict) -> None:
+        assert "error" in await edit(**kwargs)
+
+    async def test_team_edit_is_written_through_locally(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, _, a = self._live_answer("old text")
+        mock = _make_mock_team_client(edit_result={"id": a.id, "body": "new text"})
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await edit(target_id=a.id, body="  new text  ")
+
+        assert result == {"edited": a.id, "source": "team"}
+        mock.edit_answer.assert_awaited_once_with(a.id, "new text")
+        assert store.store.get_answer(a.id).body == "new text"
+
+    async def test_team_question_edit_sends_only_edited_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _, q, _ = self._live_answer()
+        mock = _make_mock_team_client(edit_result={"id": q.id})
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        await edit(target_id=q.id, title="New title")
+
+        mock.edit_question.assert_awaited_once_with(q.id, body=None, title="New title", tags=None)
+
+    async def test_unreachable_team_leaves_local_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An edit must not fall back to local: it could later clobber a newer team edit."""
+        store, _, a = self._live_answer("old text")
+        mock = _make_mock_team_client(edit_result=None)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await edit(target_id=a.id, body="new text")
+
+        assert result["error"].startswith("Edit not applied")
+        assert store.store.get_answer(a.id).body == "old text"
+        assert store.store.get_pending_drain() == []
+
+    async def test_team_404_is_reported_as_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock = _make_mock_team_client(edit_result={"error": "Answer not found", "status_code": 404})
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        assert await edit(target_id="a_gone", body="text") == {"error": "a_gone not found."}
+
+    async def test_offline_content_is_edited_locally_and_drained_edited(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Content the team has never seen is edited in place; the drain then sends the new text."""
+        asked = await ask(title="How do I size a pool?", body="body", tags=["db"])
+        created = await answer(question_id=asked["question_id"], body="first draft")
+        mock = _make_mock_team_client(create_question_result={"id": "q_team"}, create_answer_result={"id": "a_team"})
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await edit(target_id=created["answer_id"], body="second draft")
+
+        assert result["source"] == "local"
+        mock.edit_answer.assert_not_called()
+        await _do_drain()
+        assert mock.create_answer.await_args.kwargs["body"] == "second draft"
 
 
 class TestStatus:

@@ -599,6 +599,58 @@ class TestPinAnswer:
         assert resp.status_code == 401
 
 
+class TestAgentEdits:
+    """Agents edit through the same routes with an API key, and the edit goes live."""
+
+    def test_agent_edits_answer_and_history_names_the_agent(
+        self, client: TestClient
+    ) -> None:
+        q = _create_question(client)
+        a = _create_answer(client, q["id"], body="original answer", supervised=True)
+        resp = client.put(
+            f"/answers/{a['id']}", json={"body": "corrected"}, headers=_agent_headers()
+        )
+        assert resp.status_code == 200
+        assert resp.json()["body"] == "corrected"
+        assert resp.json()["status"] == "approved"
+
+        token = _login(client)
+        [entry] = client.get(
+            f"/answers/{a['id']}/history", headers=_auth_header(token)
+        ).json()
+        assert entry["edited_by"] == "agent-smith"
+        assert entry["edited_by_type"] == "agent"
+
+    def test_agent_edits_question_title_and_tags(self, client: TestClient) -> None:
+        q = _create_question(client, title="Old title", tags=["databases"])
+        resp = client.put(
+            f"/questions/{q['id']}",
+            json={"title": "New title", "tags": ["pooling"]},
+            headers=_agent_headers(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "New title"
+
+    def test_agent_edits_comment(self, client: TestClient) -> None:
+        q = _create_question(client)
+        c = _create_comment(client, q["id"], body="original comment")
+        resp = client.put(
+            f"/comments/{c['id']}", json={"body": "fixed"}, headers=_agent_headers()
+        )
+        assert resp.status_code == 200
+        assert resp.json()["body"] == "fixed"
+
+    def test_invalid_api_key_cannot_edit(self, client: TestClient) -> None:
+        q = _create_question(client)
+        a = _create_answer(client, q["id"])
+        resp = client.put(
+            f"/answers/{a['id']}",
+            json={"body": "vandalism"},
+            headers={"X-API-Key": "wrong"},
+        )
+        assert resp.status_code == 401
+
+
 class TestEditHistory:
     def test_question_history(self, client: TestClient) -> None:
         token = _login(client)

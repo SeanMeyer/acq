@@ -233,6 +233,36 @@ class LocalStore:
             self._check_open()
             return self._store.create_comment(comment)
 
+    def edit_question(
+        self,
+        question_id: str,
+        body: str | None,
+        edited_by: str,
+        title: str | None = None,
+        tags: list[str] | None = None,
+    ) -> Any:
+        """Apply an agent's edit to a question. Returns None if it is absent."""
+        with self._lock:
+            self._check_open()
+            return self._store.edit_question(question_id, body, edited_by, "agent", new_title=title, new_tags=tags)
+
+    def edit_answer(self, answer_id: str, body: str, edited_by: str) -> Any:
+        """Apply an agent's edit to an answer. Returns None if it is absent."""
+        with self._lock:
+            self._check_open()
+            return self._store.edit_answer(answer_id, body, edited_by, "agent")
+
+    def edit_comment(self, comment_id: str, body: str, edited_by: str) -> Any:
+        """Apply an agent's edit to a comment. Returns None if it is absent."""
+        with self._lock:
+            self._check_open()
+            return self._store.edit_comment(comment_id, body, edited_by, "agent")
+
+    def is_pending_drain(self, entity_id: str) -> bool:
+        """Whether this entity exists only locally, waiting to be drained."""
+        row = self._locked_fetchone("SELECT 1 FROM pending_drain WHERE entity_id = ?", (entity_id,))
+        return row is not None
+
     def get_question_thread(self, question_id: str):
         """Fetch one question with its answers, votes, and comments."""
         with self._lock:

@@ -244,6 +244,57 @@ class TeamClient:
         except Exception as exc:
             return ApiResult.unexpected_error("create_comment", exc)
 
+    async def edit_question(
+        self,
+        question_id: str,
+        body: str | None = None,
+        title: str | None = None,
+        tags: list[str] | None = None,
+    ) -> ApiResult:
+        # Omitted fields are left unchanged by the server, so send only what is
+        # being edited. tags replaces the whole set.
+        payload: dict[str, object] = {}
+        if body is not None:
+            payload["body"] = body
+        if title is not None:
+            payload["title"] = title
+        if tags is not None:
+            payload["tags"] = tags
+        try:
+            resp = await self._client.put(f"/questions/{question_id}", json=payload)
+            resp.raise_for_status()
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("edit_question", exc)
+        except httpx.HTTPStatusError as exc:
+            return ApiResult.http_error("edit_question", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("edit_question", exc)
+
+    async def edit_answer(self, answer_id: str, body: str) -> ApiResult:
+        try:
+            resp = await self._client.put(f"/answers/{answer_id}", json={"body": body})
+            resp.raise_for_status()
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("edit_answer", exc)
+        except httpx.HTTPStatusError as exc:
+            return ApiResult.http_error("edit_answer", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("edit_answer", exc)
+
+    async def edit_comment(self, comment_id: str, body: str) -> ApiResult:
+        try:
+            resp = await self._client.put(f"/comments/{comment_id}", json={"body": body})
+            resp.raise_for_status()
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("edit_comment", exc)
+        except httpx.HTTPStatusError as exc:
+            return ApiResult.http_error("edit_comment", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("edit_comment", exc)
+
     async def export_since(self, since: str | None = None) -> ApiResult:
         params = {}
         if since:
