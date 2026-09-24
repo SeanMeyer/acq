@@ -1159,7 +1159,14 @@ class SqliteStore:
         }
 
     def bulk_upsert(self, data: dict) -> int:
-        """Import data dict (from export_since). Uses INSERT OR REPLACE. Returns count."""
+        """Import data dict (from export_since). Returns count.
+
+        Questions are updated in place rather than with INSERT OR REPLACE.
+        REPLACE deletes the old row first, and ON DELETE CASCADE then removes
+        every answer under it. The export re-sends the question's team answers,
+        but not a local answer still waiting to be drained, so that one would be
+        lost for good.
+        """
         count = 0
 
         # Build tag-name lookup so we can populate FTS tags column.
@@ -1173,7 +1180,9 @@ class SqliteStore:
         for q_data in data.get("questions", []):
             q = Question.model_validate(q_data)
             self._conn.execute(
-                "INSERT OR REPLACE INTO questions (id, data, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO questions (id, data, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(id) DO UPDATE SET data = excluded.data, status = excluded.status,"
+                " created_at = excluded.created_at, updated_at = excluded.updated_at",
                 (
                     q.id,
                     q.model_dump_json(),
@@ -1182,6 +1191,9 @@ class SqliteStore:
                     q.updated_at.isoformat(),
                 ),
             )
+            # The cascade used to clear these too. The export's question_tags
+            # restore the current set below, so a removed tag stays removed.
+            self._conn.execute("DELETE FROM question_tags WHERE question_id = ?", (q.id,))
             # Upsert search index entry.
             self._conn.execute(
                 "DELETE FROM search_index WHERE entity_id = ? AND entity_type = 'question'",

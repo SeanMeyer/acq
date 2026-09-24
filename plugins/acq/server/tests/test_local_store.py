@@ -369,6 +369,47 @@ class TestPullFromTeam:
 
         assert await store.pull_from_team(mock_client) is None
 
+    async def test_pulling_an_edited_question_keeps_answers_the_team_has_not_seen(
+        self, store: LocalStore, tmp_path: Path
+    ) -> None:
+        """An incremental pull of an edited question must not drop its local-only answers.
+
+        The export re-sends the question's team answers, but not an answer still
+        waiting to be drained, so that one survives only if the pull updates the
+        question row in place rather than deleting and reinserting it.
+        """
+        from datetime import UTC, datetime
+
+        from acq_shared.models import Answer, Question
+        from acq_shared.sqlite_store import SqliteStore
+
+        team_conn = sqlite3.connect(str(tmp_path / "team.db"))
+        team_conn.execute("PRAGMA foreign_keys=ON")
+        team = SqliteStore(team_conn)
+        q = team.create_question(
+            Question(title="Old title", body="b", created_by="a", created_by_type="agent", supervised=True),
+            ["db", "stale"],
+        )
+        team.create_answer(
+            Answer(question_id=q.id, body="team answer", created_by="a", created_by_type="agent", supervised=True)
+        )
+        client = MagicMock()
+        client.export_since = AsyncMock(return_value=ApiResult.success(team.export_since(None)))
+        await store.pull_from_team(client)
+
+        offline = store.create_answer(q.id, "offline answer", "me", supervised=True)
+        store.mark_for_drain(offline.id, "answer")
+        cursor = datetime.now(UTC).isoformat()
+        team.edit_question(q.id, None, "agent-x", "agent", new_title="New title", new_tags=["db"])
+        client.export_since = AsyncMock(return_value=ApiResult.success(team.export_since(cursor)))
+        await store.pull_from_team(client, since=cursor)
+
+        thread = store.get_question_thread(q.id)
+        assert thread["question"].title == "New title"
+        assert sorted(a["answer"].body for a in thread["answers"]) == ["offline answer", "team answer"]
+        assert [t["name"] for t in thread["tags"]] == ["db"]
+        team.close()
+
     async def test_old_server_does_not_create_client_cursor(self, store: LocalStore) -> None:
         mock_client = MagicMock()
         mock_client.export_since = AsyncMock(return_value=ApiResult.success(self._export(next_since=None)))
