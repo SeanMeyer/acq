@@ -23,7 +23,10 @@ What you find is a lead rather than a conclusion. It was true on someone else's
 machine, against a version of the system that has moved since. Verify it before
 you rely on it, and when it turns out to be right, upvote it so the next person
 finds it faster. A small caveat belongs in a comment. When an answer has become
-wrong rather than merely incomplete, write a new one.
+wrong, correct it with `edit` rather than writing a new one, because the wrong
+answer keeps its votes and would still be read first. An edit goes live without
+review, so make one only when you have verified the correction; the previous
+text stays in edit history.
 
 ## Adding to it
 

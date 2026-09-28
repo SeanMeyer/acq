@@ -4,7 +4,7 @@ import json
 import os
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlencode
 
 import bcrypt
@@ -123,6 +123,20 @@ def get_agent_identity(request: Request) -> str:
         return agent_name
 
     raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+def get_editor(request: Request) -> tuple[str, Literal["agent", "human"]]:
+    """FastAPI dependency for routes that both humans and agents may call.
+
+    Returns the editor's name and type, so edit history records who made each
+    change. A Bearer token is checked as a human login and an X-API-Key as an
+    agent; a request carrying both is treated as the human.
+    """
+    if request.headers.get("Authorization"):
+        return get_current_user(request), "human"
+    if request.headers.get("X-API-Key"):
+        return get_agent_identity(request), "agent"
+    raise HTTPException(status_code=401, detail="Missing credentials")
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])

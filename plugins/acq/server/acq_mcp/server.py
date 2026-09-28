@@ -1,11 +1,13 @@
 """acq MCP server — shared agent knowledge commons.
 
-Exposes seven tools via the Model Context Protocol:
-search, get_thread, ask, answer, vote, comment, status.
+Exposes eight tools via the Model Context Protocol:
+search, get_thread, ask, answer, vote, comment, edit, status.
 
 Reads (search, get_thread, status) are local-only for zero latency.
 Writes (ask, answer, vote, comment) try the team API first (write-through
-to local on success), falling back to local-only on failure.
+to local on success), falling back to local-only on failure. Edits also go
+to the team API first but never fall back, because a queued edit could
+overwrite a newer one made on the team in the meantime.
 Sync: drain local buffer on startup, pull from team, then hourly incremental pull.
 """
 
@@ -268,6 +270,16 @@ def _format_votes(d: dict) -> str:
     return result
 
 
+def _serialize_comment(c) -> dict:
+    """Serialize a comment with its id, so an agent can pass it to ``edit``."""
+    c_dict = c.model_dump(mode="json") if hasattr(c, "model_dump") else c
+    return {
+        "id": c_dict.get("id", ""),
+        "by": c_dict.get("created_by", ""),
+        "body": c_dict.get("body", ""),
+    }
+
+
 def _serialize_thread_compact(thread: dict) -> dict:
     """Serialize a question thread as a compact dict for get_thread."""
     q = thread["question"]
@@ -277,12 +289,7 @@ def _serialize_thread_compact(thread: dict) -> dict:
     tags_raw = thread.get("tags", [])
     tag_names = [t["name"] if isinstance(t, dict) else t for t in tags_raw]
 
-    q_comments = thread.get("comments", [])
-    comment_strs = []
-    for c in q_comments:
-        body = c.body if hasattr(c, "body") else c.get("body", "")
-        by = c.created_by if hasattr(c, "created_by") else c.get("created_by", "")
-        comment_strs.append(f"{by}: {body}")
+    comments_out = [_serialize_comment(c) for c in thread.get("comments", [])]
 
     answers_out = []
     for entry in thread.get("answers", []):
@@ -291,11 +298,7 @@ def _serialize_thread_compact(thread: dict) -> dict:
         is_pinned = a_dict.get("id") == pinned_id
 
         a_comments = entry.get("comments", []) if isinstance(entry, dict) else []
-        a_comment_strs = []
-        for c in a_comments:
-            body = c.body if hasattr(c, "body") else c.get("body", "")
-            by = c.created_by if hasattr(c, "created_by") else c.get("created_by", "")
-            a_comment_strs.append(f"{by}: {body}")
+        a_comments_out = [_serialize_comment(c) for c in a_comments]
 
         answer_out: dict = {
             "id": a_dict.get("id", ""),
@@ -304,8 +307,8 @@ def _serialize_thread_compact(thread: dict) -> dict:
         }
         if is_pinned:
             answer_out["pinned"] = True
-        if a_comment_strs:
-            answer_out["comments"] = a_comment_strs
+        if a_comments_out:
+            answer_out["comments"] = a_comments_out
         answers_out.append(answer_out)
 
     result: dict = {
@@ -317,8 +320,8 @@ def _serialize_thread_compact(thread: dict) -> dict:
         "body": q_dict.get("body", ""),
         "answers": answers_out,
     }
-    if comment_strs:
-        result["comments"] = comment_strs
+    if comments_out:
+        result["comments"] = comments_out
     return result
 
 
@@ -589,6 +592,89 @@ async def comment(
     result_c = await asyncio.to_thread(store.save_comment, c)
     await asyncio.to_thread(store.mark_for_drain, result_c.id, "comment")
     return {"comment_id": result_c.id, "status": result_c.status, "source": "local"}
+
+
+async def _edit_locally(
+    store: LocalStore,
+    target_id: str,
+    body: str | None,
+    title: str | None,
+    tags: list[str] | None,
+):
+    """Apply an edit to the local store, returning None if the target is absent."""
+    editor = _get_agent_name()
+    if target_id.startswith("q_"):
+        return await asyncio.to_thread(store.edit_question, target_id, body, editor, title, tags)
+    if target_id.startswith("a_"):
+        return await asyncio.to_thread(store.edit_answer, target_id, body, editor)
+    return await asyncio.to_thread(store.edit_comment, target_id, body, editor)
+
+
+@mcp.tool(name="edit")
+async def edit(
+    target_id: str,
+    body: str | None = None,
+    title: str | None = None,
+    tags: list[str] | None = None,
+) -> dict:
+    """Replace the text of an existing question, answer, or comment.
+
+    Edits go live immediately and are recorded in edit history under your
+    agent name. ``body`` replaces the whole body, so send the full corrected
+    text. ``title`` and ``tags`` apply to questions only, and ``tags`` replaces
+    the whole tag set. Omitted fields are left unchanged.
+    """
+    if not target_id.startswith(("q_", "a_", "c_")):
+        return {"error": "target_id must be a question (q_), answer (a_), or comment (c_) id."}
+    is_question = target_id.startswith("q_")
+    tags = _as_list(tags)
+    if not is_question and (title is not None or tags is not None):
+        return {"error": "title and tags can only be edited on a question."}
+    if body is not None:
+        body = body.strip()
+        if not body:
+            return {"error": "body must be non-blank."}
+    if title is not None:
+        title = title.strip()
+        if not title:
+            return {"error": "title must be non-blank."}
+    if tags is not None and not tags:
+        return {"error": "A question needs at least one tag."}
+    if body is None and title is None and tags is None:
+        return {"error": "Nothing to edit: provide body, title, or tags."}
+    if not is_question and body is None:
+        return {"error": "body is required."}
+
+    store = _get_store()
+    team_client = _get_team_client()
+
+    # Content created offline has not reached the team yet, so the team would
+    # answer 404. Editing the local row is enough, because the drain sends
+    # whatever the row holds when it runs.
+    local_only = team_client is None or await asyncio.to_thread(store.is_pending_drain, target_id)
+    if local_only:
+        if await _edit_locally(store, target_id, body, title, tags) is None:
+            return {"error": f"{target_id} not found."}
+        return {"edited": target_id, "source": "local"}
+
+    if is_question:
+        result = await team_client.edit_question(target_id, body=body, title=title, tags=tags)
+    elif target_id.startswith("a_"):
+        result = await team_client.edit_answer(target_id, body)
+    else:
+        result = await team_client.edit_comment(target_id, body)
+
+    if result.ok:
+        # Write-through, so the next local read sees the edit before the hourly
+        # pull would bring it back. A miss here is harmless: the pull catches up.
+        try:
+            await _edit_locally(store, target_id, body, title, tags)
+        except Exception:
+            logger.warning("Write-through edit to local failed", exc_info=True)
+        return {"edited": target_id, "source": "team"}
+    if result.status_code == 404:
+        return {"error": f"{target_id} not found."}
+    return {"error": f"Edit not applied: {result.error}"}
 
 
 @mcp.tool(name="status")
