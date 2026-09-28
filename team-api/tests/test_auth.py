@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import jwt
 import pytest
+import requests
 from fastapi.testclient import TestClient
 from team_api.app import app
 from team_api.auth import create_token, hash_password, verify_password, verify_token
@@ -209,3 +210,29 @@ def test_create_agent_key_invalid_github_token(client):
         )
 
     assert resp.status_code == 401
+
+
+def test_create_agent_key_github_unreachable_returns_503(client):
+    """A network failure reaching GitHub is a 503 naming the cause, not a bare 500."""
+    unreachable = requests.ConnectionError("No route to host")
+    with patch("team_api.auth.http_requests.get", side_effect=unreachable):
+        resp = client.post(
+            "/auth/agent-key",
+            headers={"Authorization": "Bearer ghp_fake_token"},
+        )
+
+    assert resp.status_code == 503
+    assert "ConnectionError" in resp.json()["detail"]
+
+
+def test_github_callback_unreachable_returns_503(client, monkeypatch):
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "id")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "secret")
+    unreachable = requests.ConnectionError("No route to host")
+    with patch("team_api.auth.http_requests.post", side_effect=unreachable):
+        resp = client.get(
+            "/auth/callback", params={"code": "abc"}, follow_redirects=False
+        )
+
+    assert resp.status_code == 503
+    assert "ConnectionError" in resp.json()["detail"]
