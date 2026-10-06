@@ -478,6 +478,61 @@ class TestPullFromTeam:
 
         assert await store.pull_from_team(mock_client) is None
 
+    @staticmethod
+    def _team_store(tmp_path: Path):
+        from acq_shared.sqlite_store import SqliteStore
+
+        conn = sqlite3.connect(str(tmp_path / "team.db"))
+        conn.execute("PRAGMA foreign_keys=ON")
+        return SqliteStore(conn)
+
+    @staticmethod
+    async def _pull(store: LocalStore, team) -> None:
+        client = MagicMock()
+        client.export_since = AsyncMock(return_value=ApiResult.success(team.export_since(None)))
+        await store.pull_from_team(client)
+
+    @staticmethod
+    def _tag_names(store: LocalStore, question_id: str) -> list[str]:
+        return sorted(t["name"] for t in store.get_question_thread(question_id)["tags"])
+
+    async def test_pull_keeps_tags_on_local_only_questions(self, store: LocalStore, tmp_path: Path) -> None:
+        """Every pull re-sends every tag; that must not strip tags from questions the team lacks."""
+        from acq_shared.models import Question
+
+        team = self._team_store(tmp_path)
+        team.create_question(
+            Question(title="Team question", body="b", created_by="a", created_by_type="agent", supervised=True),
+            ["db"],
+        )
+        await self._pull(store, team)
+        offline = store.create_question("Offline question", "b", "me", ["db"])
+        store.mark_for_drain(offline.id, "question")
+
+        await self._pull(store, team)
+
+        assert self._tag_names(store, offline.id) == ["db"]
+        team.close()
+
+    async def test_pull_adopts_team_id_for_a_tag_first_created_offline(self, store: LocalStore, tmp_path: Path) -> None:
+        """A tag made offline and later made on the team under its own id is one tag, not two."""
+        from acq_shared.models import Question
+
+        offline = store.create_question("Offline question", "b", "me", ["pooling"])
+        store.mark_for_drain(offline.id, "question")
+        team = self._team_store(tmp_path)
+        team.create_question(
+            Question(title="Team question", body="b", created_by="a", created_by_type="agent", supervised=True),
+            ["pooling"],
+        )
+        team_tag_id = team.list_tags()[0].id
+
+        await self._pull(store, team)
+
+        assert self._tag_names(store, offline.id) == ["pooling"]
+        assert [t.id for t in store.store.list_tags()] == [team_tag_id]
+        team.close()
+
     async def test_pulling_an_edited_question_keeps_answers_the_team_has_not_seen(
         self, store: LocalStore, tmp_path: Path
     ) -> None:

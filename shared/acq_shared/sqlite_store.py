@@ -1166,11 +1166,11 @@ class SqliteStore:
     def bulk_upsert(self, data: dict) -> int:
         """Import data dict (from export_since). Returns count.
 
-        Questions are updated in place rather than with INSERT OR REPLACE.
-        REPLACE deletes the old row first, and ON DELETE CASCADE then removes
-        every answer under it. The export re-sends the question's team answers,
-        but not a local answer still waiting to be drained, so that one would be
-        lost for good.
+        Questions and tags are updated in place rather than with INSERT OR
+        REPLACE. REPLACE deletes the old row first, and ON DELETE CASCADE then
+        removes every answer under a question, or every link to a tag. The
+        export re-sends what the team has, but not local content still waiting
+        to be drained, so that would be lost for good.
         """
         count = 0
 
@@ -1236,10 +1236,33 @@ class SqliteStore:
             )
             count += 1
 
+        # Tags are updated in place for the same reason as questions: REPLACE
+        # deletes the row, and the cascade strips the tag from every question,
+        # including local ones the export will not put back.
         for t_data in data.get("tags", []):
+            tag_id, name = t_data["id"], t_data["name"]
+            # A tag created offline has its own id. When the team's copy of the
+            # same name arrives, move the local links onto the team's id, since
+            # the two rows cannot coexist under the unique name.
+            clash = self._conn.execute("SELECT id FROM tags WHERE name = ? AND id != ?", (name, tag_id)).fetchone()
+            linked: list[str] = []
+            if clash is not None:
+                linked = [
+                    r[0]
+                    for r in self._conn.execute(
+                        "SELECT question_id FROM question_tags WHERE tag_id = ?", (clash[0],)
+                    ).fetchall()
+                ]
+                self._conn.execute("DELETE FROM tags WHERE id = ?", (clash[0],))
             self._conn.execute(
-                "INSERT OR REPLACE INTO tags (id, name, description, usage_count) VALUES (?, ?, ?, ?)",
-                (t_data["id"], t_data["name"], t_data.get("description"), t_data.get("usage_count", 0)),
+                "INSERT INTO tags (id, name, description, usage_count) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description,"
+                " usage_count = excluded.usage_count",
+                (tag_id, name, t_data.get("description"), t_data.get("usage_count", 0)),
+            )
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO question_tags (question_id, tag_id) VALUES (?, ?)",
+                [(qid, tag_id) for qid in linked],
             )
             count += 1
 
