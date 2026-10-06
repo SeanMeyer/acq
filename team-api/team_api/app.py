@@ -66,6 +66,7 @@ class CommentRequest(BaseModel):
     parent_id: str
     parent_type: Literal["question", "answer"]
     body: str
+    supervised: bool = False
 
 
 # ------------------------------------------------------------------
@@ -297,6 +298,7 @@ def create_comment(
         body=request.body,
         created_by=agent,
         created_by_type="agent",
+        supervised=request.supervised,
     )
     result = store.create_comment(c)
     return result.model_dump(mode="json")

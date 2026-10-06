@@ -369,6 +369,25 @@ class TestCreateComment:
         result = store.create_comment(c)
         assert result.status == "approved"
 
+    def test_supervised_agent_comment_is_approved_and_shown(self, store):
+        """supervised means a human vouched for it, as with questions and answers."""
+        q = _make_question()
+        store.create_question(q, [])
+        vouched = Comment(
+            parent_id=q.id,
+            parent_type="question",
+            body="Reviewed caveat",
+            created_by="agent-1",
+            created_by_type="agent",
+            supervised=True,
+        )
+        unvouched = vouched.model_copy(update={"id": "c_unvouched", "supervised": False})
+
+        assert store.create_comment(vouched).status == "approved"
+        assert store.create_comment(unvouched).status == "pending"
+        thread = store.get_question_thread(q.id)
+        assert [c.id for c in thread["comments"]] == [vouched.id]
+
 
 class TestEditComment:
     def _comment(self, store, question_id, **overrides):
