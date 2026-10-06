@@ -568,6 +568,8 @@ class PostgresStore:
     # ------------------------------------------------------------------
 
     def create_comment(self, comment: Comment) -> Comment:
+        if comment.supervised:
+            comment = comment.model_copy(update={"status": "approved"})
         self._execute(
             "INSERT INTO acq.comments (id, parent_id, parent_type, data, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (
