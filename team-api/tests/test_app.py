@@ -417,3 +417,57 @@ class TestListTags:
     def test_list_tags_requires_api_key(self, client: TestClient) -> None:
         resp = client.get("/tags")
         assert resp.status_code == 401
+
+
+class TestDrainedContentKeepsItsId:
+    """A client draining offline content sends the id it already uses locally.
+
+    The team must keep that id, or the next pull brings the content back as a
+    second copy. A resend of an id the team already has means an earlier drain
+    landed but its response was lost, so it must not create anything new.
+    """
+
+    def _export(self, client: TestClient) -> dict[str, Any]:
+        return client.get("/export", headers=_agent_headers()).json()
+
+    def test_question_keeps_client_id_and_resend_creates_nothing(
+        self, client: TestClient
+    ) -> None:
+        first = _create_question(client, id="q_offline", force_create=True)
+        again = _create_question(client, id="q_offline", force_create=True)
+
+        assert first["question"]["id"] == again["question"]["id"] == "q_offline"
+        assert _total_questions(client) == 1
+
+    def test_answer_resend_creates_nothing(self, client: TestClient) -> None:
+        question_id = _create_question(client)["question"]["id"]
+        for _ in range(2):
+            resp = client.post(
+                f"/questions/{question_id}/answers",
+                json={"id": "a_offline", "body": "Use max_size=10", "supervised": True},
+                headers=_agent_headers(),
+            )
+            assert resp.status_code == 201
+            assert resp.json()["id"] == "a_offline"
+
+        assert [a["id"] for a in self._export(client)["answers"]] == ["a_offline"]
+
+    def test_comment_keeps_client_id_and_resend_creates_nothing(
+        self, client: TestClient
+    ) -> None:
+        question_id = _create_question(client)["question"]["id"]
+        for _ in range(2):
+            resp = client.post(
+                "/comments",
+                json={
+                    "id": "c_offline",
+                    "parent_id": question_id,
+                    "parent_type": "question",
+                    "body": "A caveat.",
+                },
+                headers=_agent_headers(),
+            )
+            assert resp.status_code == 201
+            assert resp.json()["id"] == "c_offline"
+
+        assert [c["id"] for c in self._export(client)["comments"]] == ["c_offline"]

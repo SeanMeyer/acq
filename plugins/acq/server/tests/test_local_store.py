@@ -318,6 +318,27 @@ class TestDrainToTeam:
         assert drained == 2
         assert len(store.store.get_pending_drain()) == 0
 
+    async def test_drain_sends_local_ids(self, store: LocalStore) -> None:
+        """Drained content must keep its id on the team, or the next pull duplicates it
+        and answers under it point at a question the team does not have."""
+        q = store.create_question("Q", "B", "a", ["t"])
+        a = store.create_answer(q.id, "Answer body", "a")
+        c = store.create_comment(q.id, "question", "A caveat", "a")
+        for entity_id, kind in [(q.id, "question"), (a.id, "answer"), (c.id, "comment")]:
+            store.store.mark_for_drain(entity_id, kind)
+
+        mock_client = MagicMock()
+        mock_client.create_question = AsyncMock(return_value=ApiResult.success({"id": q.id}))
+        mock_client.create_answer = AsyncMock(return_value=ApiResult.success({"id": a.id}))
+        mock_client.create_comment = AsyncMock(return_value=ApiResult.success({"id": c.id}))
+
+        await store.drain_to_team(mock_client)
+
+        assert mock_client.create_question.await_args.kwargs["id"] == q.id
+        assert mock_client.create_answer.await_args.kwargs["id"] == a.id
+        assert mock_client.create_answer.await_args.kwargs["question_id"] == q.id
+        assert mock_client.create_comment.await_args.kwargs["id"] == c.id
+
     async def test_drain_pushes_votes_and_comments(self, store: LocalStore) -> None:
         v = store.cast_vote("q_123", "question", "a", "agent", 1)
         store.store.mark_for_drain(v.id, "vote")

@@ -413,6 +413,10 @@ class LocalStore:
                         # Preserve human supervision across an offline drain so
                         # the team store does not demote a live local question.
                         supervised=q.supervised,
+                        # Keep the local id. A new team id would come back on the
+                        # next pull as a second copy, and answers drained after
+                        # this would point at an id the team does not have.
+                        id=q.id,
                     )
                     if result.ok:
                         self._locked_clear_drain(eid)
@@ -429,6 +433,7 @@ class LocalStore:
                         body=a.body,
                         created_by=a.created_by,
                         supervised=a.supervised,
+                        id=a.id,
                     )
                     if result.ok:
                         self._locked_clear_drain(eid)
@@ -463,6 +468,7 @@ class LocalStore:
                         body=c.body,
                         created_by=c.created_by,
                         supervised=c.supervised,
+                        id=c.id,
                     )
                     if result.ok:
                         self._locked_clear_drain(eid)
