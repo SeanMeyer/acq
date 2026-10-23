@@ -4,7 +4,9 @@ services:
       context: .
       dockerfile: team-api/Dockerfile
     ports:
-      - "8742:8742"
+      # Loopback only. Without a host address Docker publishes on every
+      # interface, which puts the API on the LAN, VPN and tailnet.
+      - "127.0.0.1:8742:8742"
     # Come back after a crash, a Docker daemon restart, or a reboot. "unless-stopped"
     # rather than "always" so an explicit `docker compose stop` stays stopped.
     restart: unless-stopped

@@ -241,6 +241,12 @@ the review UI only renders the GitHub button — see the note under
 | `make compose-reset` | Stop services and wipe database |
 | `make seed-users USER=demo PASS=demo123` | Create a user |
 
+Compose publishes the API on `127.0.0.1` only, so nothing else on the network
+can reach it. To serve a team, publish it deliberately: put a proxy that does
+its own access control in front of the loopback port, or replace the binding in
+a `docker-compose.override.yml` with `ports: !override` (Compose 2.24+). A plain
+override adds a second binding rather than replacing the first.
+
 ## Validation
 
 | Command | Purpose |
