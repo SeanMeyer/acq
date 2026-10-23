@@ -194,6 +194,8 @@ class PassageEdit(BaseModel):
                 status_code=422,
                 detail="Send body, or old_text with new_text, not both.",
             )
+        if not self.old_text:
+            raise HTTPException(status_code=422, detail="old_text must be non-empty.")
         try:
             return replace_passage(current, self.old_text, self.new_text)
         except PassageError as exc:

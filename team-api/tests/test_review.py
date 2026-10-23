@@ -697,7 +697,7 @@ class TestPassageEdits:
         ("old_text", "new_text", "detail"),
         [
             ("port 9999", "x", "does not appear"),
-            ("port", "x", "appears 2 times"),
+            ("port", "x", "appears more than once"),
             ("port 1, port 2", "", "leave the text empty"),
         ],
     )

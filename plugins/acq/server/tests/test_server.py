@@ -448,7 +448,7 @@ class TestEdit:
 
         result = await edit(target_id=a.id, old_text="port", new_text="x")
 
-        assert "appears 2 times" in result["error"]
+        assert "appears more than once" in result["error"]
         assert store.store.get_answer(a.id).body == "port 1, port 2"
 
     async def test_team_passage_edit_keeps_the_teams_merged_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
