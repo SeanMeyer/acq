@@ -5,12 +5,12 @@ The edit routes are the exception: agents may call them with an API key too.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from acq_shared.models import Deletion
 from acq_shared.store import Store
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, StringConstraints
 
 from .auth import get_current_user, get_editor
 from .deps import get_store
@@ -245,7 +245,15 @@ def edit_comment(
 
 
 class DeleteRequest(BaseModel):
-    reason: str = Field(min_length=1)
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+def _is_pending(store: Store, content_id: str) -> bool:
+    for get in (store.get_question, store.get_answer, store.get_comment):
+        item = get(content_id)
+        if item is not None:
+            return item.status == "pending"
+    return False
 
 
 @router.post("/content/{content_id}/delete")
@@ -256,7 +264,12 @@ def delete_content(
     store: Store = Depends(get_store),
 ) -> dict[str, str]:
     by, by_type = editor
-    deletion = Deletion(by=by, by_type=by_type, reason=request.reason.strip())
+    # Content still awaiting review is the reviewer's call, not an agent's.
+    if by_type == "agent" and _is_pending(store, content_id):
+        raise HTTPException(
+            status_code=409, detail="Pending content is decided in review."
+        )
+    deletion = Deletion(by=by, by_type=by_type, reason=request.reason)
     result = store.reject_content(content_id, deletion)
     if result is None:
         raise HTTPException(status_code=404, detail="Content not found")

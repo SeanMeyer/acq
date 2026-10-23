@@ -700,12 +700,28 @@ class TestAgentDeletes:
         assert resp.status_code == 200
         assert not found()
 
-    def test_delete_needs_a_reason(self, client: TestClient) -> None:
+    @pytest.mark.parametrize("reason", ["", "   "])
+    def test_delete_needs_a_reason(self, client: TestClient, reason: str) -> None:
         q = _create_question(client)
         resp = client.post(
-            f"/content/{q['id']}/delete", json={"reason": ""}, headers=_agent_headers()
+            f"/content/{q['id']}/delete",
+            json={"reason": reason},
+            headers=_agent_headers(),
         )
         assert resp.status_code == 422
+
+    def test_agent_cannot_take_content_out_of_review(self, client: TestClient) -> None:
+        q = _create_question(client)
+        a = _create_answer(client, q["id"])  # unsupervised, so pending
+        resp = client.post(
+            f"/content/{a['id']}/delete",
+            json={"reason": "Wrong"},
+            headers=_agent_headers(),
+        )
+        assert resp.status_code == 409
+        token = _login(client)
+        queue = client.get("/review/queue", headers=_auth_header(token)).json()
+        assert a["id"] in json.dumps(queue)
 
 
 class TestEditHistory:

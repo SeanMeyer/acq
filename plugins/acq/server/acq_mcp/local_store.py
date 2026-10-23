@@ -409,6 +409,14 @@ class LocalStore:
         drained = 0
         from acq_shared.models import Answer, Comment, Question
 
+        # Only live content is published. Something deleted before it reached
+        # the team is dropped, and so is anything hanging from it, because its
+        # parent will never exist there. A child of a parent that did reach the
+        # team is still sent, so restoring the parent brings it back. Dropped
+        # entries leave the queue together at the end, so a run cut short
+        # works the same subtree out again next time.
+        dropped: set[str] = set()
+
         for item in pending:
             eid, etype = item["entity_id"], item["entity_type"]
             try:
@@ -419,7 +427,7 @@ class LocalStore:
                         continue
                     q = Question.model_validate_json(row[0])
                     if self._locked_is_deleted(q.id):
-                        self._locked_clear_drain(eid)
+                        dropped.add(eid)
                         continue
                     tags = self._locked_tag_names(q.id)
                     result = await team_client.create_question(
@@ -446,8 +454,8 @@ class LocalStore:
                         self._locked_clear_drain(eid)
                         continue
                     a = Answer.model_validate_json(row[0])
-                    if self._locked_is_deleted(a.id):
-                        self._locked_clear_drain(eid)
+                    if self._locked_is_deleted(a.id) or a.question_id in dropped:
+                        dropped.add(eid)
                         continue
                     result = await team_client.create_answer(
                         question_id=a.question_id,
@@ -464,8 +472,8 @@ class LocalStore:
                     row = self._locked_fetchone(
                         "SELECT target_id, target_type, voter_id, value FROM votes WHERE id = ?", (eid,)
                     )
-                    if not row or self._locked_is_deleted(row[0]):
-                        self._locked_clear_drain(eid)
+                    if not row or row[0] in dropped:
+                        dropped.add(eid)
                         continue
                     result = await team_client.cast_vote(
                         target_id=row[0],
@@ -485,8 +493,8 @@ class LocalStore:
                         self._locked_clear_drain(eid)
                         continue
                     c = Comment.model_validate_json(row[0])
-                    if self._locked_is_deleted(c.id):
-                        self._locked_clear_drain(eid)
+                    if self._locked_is_deleted(c.id) or c.parent_id in dropped:
+                        dropped.add(eid)
                         continue
                     result = await team_client.create_comment(
                         parent_id=c.parent_id,
@@ -503,6 +511,12 @@ class LocalStore:
             except Exception:
                 logger.warning("Failed to drain %s %s to team", etype, eid, exc_info=True)
 
+        if dropped:
+            with self._lock:
+                self._check_open()
+                # One transaction, so a parent never leaves the queue without its subtree.
+                self._conn.executemany("DELETE FROM pending_drain WHERE entity_id = ?", [(e,) for e in dropped])
+                self._conn.commit()
         return drained
 
     async def pull_from_team(self, team_client: TeamClient, since: str | None = None) -> PullResult | None:
@@ -540,12 +554,7 @@ class LocalStore:
             self._store.clear_drain(entity_id)
 
     def _locked_is_deleted(self, entity_id: str) -> bool:
-        """Whether this content, or anything it hangs from, was deleted locally.
-
-        The drain only publishes live content. Without this, something created
-        and then deleted in local-only mode would go live on the team the first
-        time one is configured.
-        """
+        """Whether this question, answer, or comment was deleted locally."""
         with self._lock:
             self._check_open()
             row = self._conn.execute(
@@ -554,15 +563,7 @@ class LocalStore:
                 " UNION ALL SELECT status FROM comments WHERE id = ?",
                 (entity_id, entity_id, entity_id),
             ).fetchone()
-            if row is None:
-                return False
-            if row[0] in ("deleted", "rejected"):
-                return True
-            parent = self._conn.execute(
-                "SELECT question_id FROM answers WHERE id = ? UNION ALL SELECT parent_id FROM comments WHERE id = ?",
-                (entity_id, entity_id),
-            ).fetchone()
-        return parent is not None and self._locked_is_deleted(parent[0])
+        return row is not None and row[0] in ("deleted", "rejected")
 
     def _locked_tag_names(self, question_id: str) -> list[str]:
         with self._lock:
