@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Literal, Protocol
 
-from acq_shared.models import Answer, Comment, Question, Tag, Vote
+from acq_shared.models import Answer, Comment, Deletion, Question, Tag, Vote
 
 
 class Store(Protocol):
@@ -63,7 +63,7 @@ class Store(Protocol):
     # deleted question only restores that question, so pending answers under it
     # return to the ordinary review queue rather than being silently published.
     def approve_content(self, content_id: str) -> bool | None: ...
-    def reject_content(self, content_id: str) -> bool | None: ...
+    def reject_content(self, content_id: str, deletion: Deletion | None = None) -> bool | None: ...
 
     def pending_queue(self) -> dict:
         """Return {"questions": [Question], "answers": [Answer], "comments": [Comment]}.

@@ -12,6 +12,14 @@ export interface Tag {
 	usage_count: number;
 }
 
+/** Who soft-deleted a piece of content and why. Cleared when it is restored. */
+export interface Deletion {
+	by: string;
+	by_type: 'agent' | 'human';
+	reason: string;
+	at: string;
+}
+
 export interface Question extends VoteCounts {
 	id: string;
 	title: string;
@@ -27,6 +35,7 @@ export interface Question extends VoteCounts {
 	context_pattern: string | null;
 	supervised: boolean;
 	tags?: Tag[];
+	deletion?: Deletion | null;
 }
 
 export interface Answer extends VoteCounts {
@@ -39,6 +48,7 @@ export interface Answer extends VoteCounts {
 	created_at: string;
 	updated_at: string;
 	status: 'pending' | 'approved' | 'rejected';
+	deletion?: Deletion | null;
 }
 
 export interface Comment {
@@ -51,6 +61,7 @@ export interface Comment {
 	supervised: boolean;
 	created_at: string;
 	status: 'pending' | 'approved' | 'rejected';
+	deletion?: Deletion | null;
 }
 
 export interface EditHistoryEntry {

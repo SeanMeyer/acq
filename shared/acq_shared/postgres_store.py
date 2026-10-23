@@ -14,7 +14,7 @@ from typing import Any, Literal
 import psycopg2
 import psycopg2.extensions
 
-from acq_shared.models import Answer, Comment, EditHistory, Question, Tag, Vote
+from acq_shared.models import Answer, Comment, Deletion, EditHistory, Question, Tag, Vote
 from acq_shared.postgres_schema import create_tables
 from acq_shared.scoring import (
     DUPLICATE_THRESHOLD,
@@ -426,9 +426,9 @@ class PostgresStore:
         rows = cur.fetchall()
         return [_row_to_edit_history(r) for r in rows]
 
-    def _write_question_status(self, q: Question, status: str) -> None:
+    def _write_question_status(self, q: Question, status: str, deletion: Deletion | None = None) -> None:
         now = datetime.now(UTC)
-        updated = q.model_copy(update={"status": status, "updated_at": now})
+        updated = q.model_copy(update={"status": status, "updated_at": now, "deletion": deletion})
         self._execute(
             "UPDATE acq.questions SET data = %s, status = %s, updated_at = %s WHERE id = %s",
             (updated.model_dump_json(), status, now.isoformat(), q.id),
@@ -740,15 +740,16 @@ class PostgresStore:
         """
         return self._set_content_status(content_id, "approved")
 
-    def reject_content(self, content_id: str) -> bool | None:
+    def reject_content(self, content_id: str, deletion: Deletion | None = None) -> bool | None:
         """Hide a question, answer, or comment, whether pending or already live.
 
         Rejection is the soft-delete mechanism: the row is kept and only its
         status changes, so restoring it later is a status change back.
+        *deletion* records who removed live content and why; restoring clears it.
         """
-        return self._set_content_status(content_id, "rejected")
+        return self._set_content_status(content_id, "rejected", deletion)
 
-    def _set_content_status(self, content_id: str, new_status: str) -> bool | None:
+    def _set_content_status(self, content_id: str, new_status: str, deletion: Deletion | None = None) -> bool | None:
         """Move a question, answer, or comment to *new_status*.
 
         Returns None when no such content exists and False when it already has
@@ -762,7 +763,7 @@ class PostgresStore:
         cur = self._execute("SELECT data FROM acq.questions WHERE id = %s", (content_id,))
         row = cur.fetchone()
         if row is not None:
-            return self._review_question(Question.model_validate_json(row[0]), new_status)
+            return self._review_question(Question.model_validate_json(row[0]), new_status, deletion)
 
         for table, cls in (("answers", Answer), ("comments", Comment)):
             cur = self._execute(f"SELECT data, status FROM acq.{table} WHERE id = %s", (content_id,))
@@ -772,7 +773,9 @@ class PostgresStore:
             if row[1] == new_status:
                 return False
             now = datetime.now(UTC)
-            updated = cls.model_validate_json(row[0]).model_copy(update={"status": new_status, "updated_at": now})
+            updated = cls.model_validate_json(row[0]).model_copy(
+                update={"status": new_status, "updated_at": now, "deletion": deletion}
+            )
             self._execute(
                 f"UPDATE acq.{table} SET data = %s, status = %s, updated_at = %s WHERE id = %s",
                 (updated.model_dump_json(), new_status, now.isoformat(), content_id),
@@ -781,7 +784,7 @@ class PostgresStore:
             return True
         return None
 
-    def _review_question(self, q: Question, new_status: str) -> bool:
+    def _review_question(self, q: Question, new_status: str, deletion: Deletion | None = None) -> bool:
         """Apply one approve/reject verdict to a question and its answers.
 
         A new pending question is reviewed as a single card together with the
@@ -819,7 +822,7 @@ class PostgresStore:
 
         if q.status == "deleted":
             return False
-        self._write_question_status(q, "deleted")
+        self._write_question_status(q, "deleted", deletion)
         return True
 
     # ------------------------------------------------------------------
