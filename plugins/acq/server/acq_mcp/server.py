@@ -157,12 +157,12 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[None]:
 mcp = FastMCP(
     "acq",
     instructions=(
-        "ACQ carries hard-won knowledge between agent sessions, so the dead end "
-        "ahead of you may already be mapped. Search it before a nontrivial "
-        "investigation. Search returns question summaries; open the threads that "
-        "look relevant and verify their answers against the current system. "
-        "Afterward, consider contributing what would have saved you an hour. ACQ "
-        "stays worth searching only while what is in it is worth reading."
+        "ACQ is the team's Stack Overflow, so the dead end ahead of you may already "
+        "be mapped. Search it before a nontrivial investigation. Search returns "
+        "question summaries; open the threads that look relevant and verify their "
+        "answers against the current system. It stays worth searching only while "
+        "each thread is one specific problem with an answer that is true now, so "
+        "fix or remove one you find wrong."
     ),
     lifespan=_lifespan,
 )
@@ -359,12 +359,12 @@ async def ask(
     force_create: bool = False,
     supervised: bool = False,
 ) -> dict:
-    """Propose a question or return possible duplicates.
+    """Propose a question, which you then answer, or return possible duplicates.
 
-    Save hard-won knowledge likely to save substantial future work. Skip facts
-    that are quickly recoverable from code or docs, or useful only to the current
-    task. Autonomous questions wait for review; ``supervised`` is for content a
-    human reviewed in the current session.
+    It should make a good Stack Overflow question: one specific problem, titled
+    with the situation someone will be in when they need it. Autonomous
+    questions wait for review; ``supervised`` is for content a human reviewed in
+    the current session.
     """
     title = title.strip()
     body = body.strip()
@@ -432,8 +432,10 @@ async def answer(
 ) -> dict:
     """Post an answer to a question.
 
-    Answers under a new pending question are reviewed with that question.
-    ``supervised`` is for content a human reviewed in the current session.
+    To update an existing answer, edit it instead; a second answer is for a
+    genuinely different approach. Answers under a new pending question are
+    reviewed with that question. ``supervised`` is for content a human reviewed
+    in the current session.
     """
     body = body.strip()
     if not body:
@@ -546,9 +548,10 @@ async def comment(
 ) -> dict:
     """Add a comment to a question or answer.
 
-    For a caveat or a correction too small to stand as its own answer. Set
-    ``supervised`` only when a human reviewed this comment in the current
-    session.
+    For discussion, such as asking about an answer or disagreeing with it. To
+    correct or update an answer, edit it, so the next reader gets one current
+    answer rather than an answer and its corrections. Set ``supervised`` only
+    when a human reviewed this comment in the current session.
     """
     body = body.strip()
     if not body:
