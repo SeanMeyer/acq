@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 
 import httpx
@@ -223,3 +224,39 @@ class TestGetTags:
         monkeypatch.setattr(client._client, "get", _raise_connect_error)
         result = await client.get_tags()
         assert not result.ok
+
+
+class TestEditPayload:
+    """What each edit form puts on the wire, since the server decides by it."""
+
+    @staticmethod
+    async def _sent(call) -> list[dict]:
+        sent: list[dict] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "x", "body": "b"})
+
+        c = TeamClient(base_url="http://team")
+        c._client = httpx.AsyncClient(base_url="http://team", transport=httpx.MockTransport(handle))
+        async with c:
+            await call(c)
+        return sent
+
+    async def test_passage_edits_send_the_passage_not_a_body(self) -> None:
+        async def edits(c: TeamClient) -> None:
+            await c.edit_answer("a_1", old_text="old", new_text="new")
+            await c.edit_comment("c_1", old_text="old", new_text="")
+            await c.edit_question("q_1", title="T", old_text="old", new_text="new")
+
+        assert await self._sent(edits) == [
+            {"old_text": "old", "new_text": "new"},
+            {"old_text": "old", "new_text": ""},
+            {"old_text": "old", "new_text": "new", "title": "T"},
+        ]
+
+    async def test_whole_body_edit_sends_only_the_body(self) -> None:
+        async def edits(c: TeamClient) -> None:
+            await c.edit_answer("a_1", "whole new body")
+
+        assert await self._sent(edits) == [{"body": "whole new body"}]

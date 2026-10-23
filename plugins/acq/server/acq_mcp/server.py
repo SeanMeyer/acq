@@ -14,6 +14,7 @@ Sync: drain local buffer on startup, pull from team, then hourly incremental pul
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -21,6 +22,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from acq_shared.models import Answer, Comment, Question, Vote
+from acq_shared.passages import PassageError, replace_passage
 from mcp.server.fastmcp import FastMCP
 
 from .local_store import LocalStore
@@ -616,20 +618,26 @@ async def edit(
     body: str | None = None,
     title: str | None = None,
     tags: list[str] | None = None,
+    old_text: str | None = None,
+    new_text: str | None = None,
 ) -> dict:
-    """Replace the text of an existing question, answer, or comment.
+    """Change an existing question, answer, or comment.
 
-    Edits go live immediately and are recorded in edit history under your
-    agent name. ``body`` replaces the whole body, so send the full corrected
-    text. ``title`` and ``tags`` apply to questions only, and ``tags`` replaces
-    the whole tag set. Omitted fields are left unchanged.
+    To change part of it, pass ``old_text`` copied from the thread, appearing
+    exactly once, and ``new_text`` to put in its place. ``body`` replaces the
+    whole text instead. ``title`` and ``tags`` apply to questions only, and
+    ``tags`` replaces the whole set. Edits go live immediately and edit history
+    keeps the previous text.
     """
     if not target_id.startswith(("q_", "a_", "c_")):
         return {"error": "target_id must be a question (q_), answer (a_), or comment (c_) id."}
     is_question = target_id.startswith("q_")
     tags = _as_list(tags)
+    passage = old_text is not None or new_text is not None
     if not is_question and (title is not None or tags is not None):
         return {"error": "title and tags can only be edited on a question."}
+    if passage and (body is not None or not old_text or new_text is None):
+        return {"error": "Send body, or old_text with new_text, not both."}
     if body is not None:
         body = body.strip()
         if not body:
@@ -640,9 +648,9 @@ async def edit(
             return {"error": "title must be non-blank."}
     if tags is not None and not tags:
         return {"error": "A question needs at least one tag."}
-    if body is None and title is None and tags is None:
-        return {"error": "Nothing to edit: provide body, title, or tags."}
-    if not is_question and body is None:
+    if body is None and not passage and title is None and tags is None:
+        return {"error": "Nothing to edit: provide body, old_text and new_text, title, or tags."}
+    if not is_question and body is None and not passage:
         return {"error": "body is required."}
 
     store = _get_store()
@@ -653,20 +661,33 @@ async def edit(
     # whatever the row holds when it runs.
     local_only = team_client is None or await asyncio.to_thread(store.is_pending_drain, target_id)
     if local_only:
+        if passage:
+            current = await asyncio.to_thread(store.current_body, target_id)
+            if current is None:
+                return {"error": f"{target_id} not found."}
+            try:
+                body = replace_passage(current, old_text, new_text)
+            except PassageError as exc:
+                return {"error": str(exc)}
         if await _edit_locally(store, target_id, body, title, tags) is None:
             return {"error": f"{target_id} not found."}
         return {"edited": target_id, "source": "local"}
 
+    change = {"old_text": old_text, "new_text": new_text} if passage else {}
     if is_question:
-        result = await team_client.edit_question(target_id, body=body, title=title, tags=tags)
+        result = await team_client.edit_question(target_id, body=body, title=title, tags=tags, **change)
     elif target_id.startswith("a_"):
-        result = await team_client.edit_answer(target_id, body)
+        result = await team_client.edit_answer(target_id, body, **change)
     else:
-        result = await team_client.edit_comment(target_id, body)
+        result = await team_client.edit_comment(target_id, body, **change)
 
     if result.ok:
         # Write-through, so the next local read sees the edit before the hourly
-        # pull would bring it back. A miss here is harmless: the pull catches up.
+        # pull would bring it back. The team applied any passage to its own
+        # current text, so its body is the one to keep. A miss here is
+        # harmless: the pull catches up.
+        if passage and isinstance(result.data, dict):
+            body = result.data.get("body")
         try:
             await _edit_locally(store, target_id, body, title, tags)
         except Exception:
@@ -674,7 +695,17 @@ async def edit(
         return {"edited": target_id, "source": "team"}
     if result.status_code == 404:
         return {"error": f"{target_id} not found."}
+    if result.status_code == 409:
+        return {"error": _detail(result.error)}
     return {"error": f"Edit not applied: {result.error}"}
+
+
+def _detail(error: str | None) -> str:
+    """The message from a FastAPI error body, or the body itself."""
+    try:
+        return json.loads(error or "")["detail"]
+    except (ValueError, KeyError, TypeError):
+        return error or "Edit not applied."
 
 
 @mcp.tool(name="delete")
