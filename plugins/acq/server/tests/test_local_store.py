@@ -326,6 +326,22 @@ class TestDrainToTeam:
         assert team.answers == {a.id: q.id}
         assert team.comments == {c.id: a.id}
         assert team.votes == [a.id]
+        # Draining only empties the queue; the local copy keeps everything.
+        assert (len(store.all_answers()), len(store.all_comments()), len(store.all_votes())) == (1, 1, 1)
+
+    async def test_a_vote_the_team_already_has_leaves_the_queue(self, store: LocalStore) -> None:
+        q = store.create_question("Q", "B", "a", ["t"])
+        v = store.cast_vote(q.id, "question", "a", "agent", 1)
+        store.store.mark_for_drain(v.id, "vote")
+        team = FakeTeam()
+        team.questions[q.id] = "Q"
+        team.votes.append(q.id)
+
+        async with team.client() as client:
+            await store.drain_to_team(client)
+
+        assert team.votes == [q.id]
+        assert store.store.get_pending_drain() == []
 
     async def test_redrain_after_a_lost_response_does_not_duplicate(self, store: LocalStore) -> None:
         q = store.create_question("Q", "B", "a", ["t"])
@@ -351,7 +367,7 @@ class FakeTeam:
     on the wire is part of what the tests check. It keeps the rules the drain
     depends on: the team assigns its own id unless the request carries one, an
     answer to a question it does not hold is a 404, and an id it already holds
-    is a replay, not an error.
+    is a replay, not an error. Votes carry no id, so a repeat is a 409.
     """
 
     def __init__(self) -> None:
@@ -391,6 +407,8 @@ class FakeTeam:
             self.comments.setdefault(cid, body["parent_id"])
             return httpx.Response(201, json={"id": cid})
         if path == "/vote":
+            if body["target_id"] in self.votes:
+                return httpx.Response(409, json={"detail": "Duplicate vote"})
             self.votes.append(body["target_id"])
             return httpx.Response(200, json={"id": self._id("v", {})})
         return httpx.Response(404)

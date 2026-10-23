@@ -455,7 +455,9 @@ class LocalStore:
                         value=row[3],
                         voter_id=row[2],
                     )
-                    if result.ok:
+                    # Votes carry no client id. A 409 means the team already has
+                    # this vote, from a lost response or an online vote since.
+                    if result.ok or result.status_code == 409:
                         self._locked_clear_drain(eid)
                         drained += 1
 
