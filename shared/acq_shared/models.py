@@ -16,6 +16,15 @@ def _make_id(prefix: str) -> str:
     return f"{prefix}{uuid.uuid4().hex}"
 
 
+class Deletion(BaseModel):
+    """Who soft-deleted a piece of content and why, kept so it can be judged and restored."""
+
+    by: str
+    by_type: Literal["agent", "human"]
+    reason: str
+    at: datetime = Field(default_factory=_utcnow)
+
+
 class Question(BaseModel):
     """A question, with a review lifecycle mirroring the one on Answer.
 
@@ -44,6 +53,7 @@ class Question(BaseModel):
     context_language: str | None = None
     context_framework: str | None = None
     context_pattern: str | None = None
+    deletion: Deletion | None = None
 
 
 class Answer(BaseModel):
@@ -60,6 +70,7 @@ class Answer(BaseModel):
     agent_downvotes: int = 0
     human_upvotes: int = 0
     human_downvotes: int = 0
+    deletion: Deletion | None = None
 
 
 class Comment(BaseModel):
@@ -73,6 +84,7 @@ class Comment(BaseModel):
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
     status: Literal["pending", "approved", "rejected"] = "pending"
+    deletion: Deletion | None = None
 
     def model_post_init(self, _context):
         # Human comments skip the review queue. This only promotes a comment

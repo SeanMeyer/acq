@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from acq_shared.models import Deletion
 from acq_shared.store import Store
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .auth import get_current_user, get_editor
 from .deps import get_store
@@ -232,6 +233,36 @@ def edit_comment(
     if result is None:
         raise HTTPException(status_code=404, detail="Comment not found")
     return result.model_dump(mode="json")
+
+
+# ------------------------------------------------------------------
+# Delete question / answer / comment
+#
+# Like an edit, a delete by a human or an agent takes effect immediately. It is
+# the same soft-delete as a rejection, plus a record of who removed the content
+# and why, so a curator can judge it and restore it through /review/{id}/approve.
+# ------------------------------------------------------------------
+
+
+class DeleteRequest(BaseModel):
+    reason: str = Field(min_length=1)
+
+
+@router.post("/content/{content_id}/delete")
+def delete_content(
+    content_id: str,
+    request: DeleteRequest,
+    editor: tuple[str, Literal["agent", "human"]] = Depends(get_editor),
+    store: Store = Depends(get_store),
+) -> dict[str, str]:
+    by, by_type = editor
+    deletion = Deletion(by=by, by_type=by_type, reason=request.reason.strip())
+    result = store.reject_content(content_id, deletion)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+    if result is False:
+        raise HTTPException(status_code=409, detail="Content is already deleted")
+    return {"id": content_id, "status": "deleted"}
 
 
 # ------------------------------------------------------------------

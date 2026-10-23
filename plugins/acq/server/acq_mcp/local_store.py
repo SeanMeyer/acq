@@ -258,6 +258,18 @@ class LocalStore:
             self._check_open()
             return self._store.edit_comment(comment_id, body, edited_by, "agent")
 
+    def delete_content(self, content_id: str, reason: str, deleted_by: str) -> bool | None:
+        """Soft-delete a question, answer, or comment on an agent's behalf.
+
+        Returns None if it is absent and False if it is already deleted.
+        """
+        from acq_shared.models import Deletion
+
+        with self._lock:
+            self._check_open()
+            deletion = Deletion(by=deleted_by, by_type="agent", reason=reason)
+            return self._store.reject_content(content_id, deletion)
+
     def is_pending_drain(self, entity_id: str) -> bool:
         """Whether this entity exists only locally, waiting to be drained."""
         row = self._locked_fetchone("SELECT 1 FROM pending_drain WHERE entity_id = ?", (entity_id,))
@@ -406,6 +418,9 @@ class LocalStore:
                         self._locked_clear_drain(eid)
                         continue
                     q = Question.model_validate_json(row[0])
+                    if self._locked_is_deleted(q.id):
+                        self._locked_clear_drain(eid)
+                        continue
                     tags = self._locked_tag_names(q.id)
                     result = await team_client.create_question(
                         title=q.title,
@@ -431,6 +446,9 @@ class LocalStore:
                         self._locked_clear_drain(eid)
                         continue
                     a = Answer.model_validate_json(row[0])
+                    if self._locked_is_deleted(a.id):
+                        self._locked_clear_drain(eid)
+                        continue
                     result = await team_client.create_answer(
                         question_id=a.question_id,
                         body=a.body,
@@ -446,7 +464,7 @@ class LocalStore:
                     row = self._locked_fetchone(
                         "SELECT target_id, target_type, voter_id, value FROM votes WHERE id = ?", (eid,)
                     )
-                    if not row:
+                    if not row or self._locked_is_deleted(row[0]):
                         self._locked_clear_drain(eid)
                         continue
                     result = await team_client.cast_vote(
@@ -467,6 +485,9 @@ class LocalStore:
                         self._locked_clear_drain(eid)
                         continue
                     c = Comment.model_validate_json(row[0])
+                    if self._locked_is_deleted(c.id):
+                        self._locked_clear_drain(eid)
+                        continue
                     result = await team_client.create_comment(
                         parent_id=c.parent_id,
                         parent_type=c.parent_type,
@@ -517,6 +538,31 @@ class LocalStore:
         with self._lock:
             self._check_open()
             self._store.clear_drain(entity_id)
+
+    def _locked_is_deleted(self, entity_id: str) -> bool:
+        """Whether this content, or anything it hangs from, was deleted locally.
+
+        The drain only publishes live content. Without this, something created
+        and then deleted in local-only mode would go live on the team the first
+        time one is configured.
+        """
+        with self._lock:
+            self._check_open()
+            row = self._conn.execute(
+                "SELECT status FROM questions WHERE id = ?"
+                " UNION ALL SELECT status FROM answers WHERE id = ?"
+                " UNION ALL SELECT status FROM comments WHERE id = ?",
+                (entity_id, entity_id, entity_id),
+            ).fetchone()
+            if row is None:
+                return False
+            if row[0] in ("deleted", "rejected"):
+                return True
+            parent = self._conn.execute(
+                "SELECT question_id FROM answers WHERE id = ? UNION ALL SELECT parent_id FROM comments WHERE id = ?",
+                (entity_id, entity_id),
+            ).fetchone()
+        return parent is not None and self._locked_is_deleted(parent[0])
 
     def _locked_tag_names(self, question_id: str) -> list[str]:
         with self._lock:

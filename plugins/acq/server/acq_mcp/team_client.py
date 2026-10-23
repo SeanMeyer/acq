@@ -292,6 +292,18 @@ class TeamClient:
         except Exception as exc:
             return ApiResult.unexpected_error("edit_answer", exc)
 
+    async def delete_content(self, content_id: str, reason: str) -> ApiResult:
+        try:
+            resp = await self._client.post(f"/content/{content_id}/delete", json={"reason": reason})
+            resp.raise_for_status()
+            return ApiResult.success(resp.json())
+        except _TRANSPORT_ERRORS as exc:
+            return ApiResult.transport_error("delete_content", exc)
+        except httpx.HTTPStatusError as exc:
+            return ApiResult.http_error("delete_content", exc)
+        except Exception as exc:
+            return ApiResult.unexpected_error("delete_content", exc)
+
     async def edit_comment(self, comment_id: str, body: str) -> ApiResult:
         try:
             resp = await self._client.put(f"/comments/{comment_id}", json={"body": body})
