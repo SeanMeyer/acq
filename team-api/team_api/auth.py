@@ -22,6 +22,9 @@ GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_USER_URL = "https://api.github.com/user"
 
+# There is no refresh token, so this is how often a person signs in again.
+SESSION_TTL_HOURS = 30 * 24
+
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
@@ -31,7 +34,9 @@ def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
-def create_token(username: str, *, secret: str, ttl_hours: int = 24) -> str:
+def create_token(
+    username: str, *, secret: str, ttl_hours: int = SESSION_TTL_HOURS
+) -> str:
     now = datetime.now(UTC)
     payload = {
         "sub": username,

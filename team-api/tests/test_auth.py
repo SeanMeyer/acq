@@ -51,6 +51,13 @@ class TestJWT:
         payload = verify_token(token, secret=test_secret)
         assert payload["sub"] == "peter"
 
+    def test_session_lasts_thirty_days(self) -> None:
+        test_secret = "test-secret"  # pragma: allowlist secret
+        payload = verify_token(
+            create_token("peter", secret=test_secret), secret=test_secret
+        )
+        assert payload["exp"] - payload["iat"] == 30 * 24 * 3600
+
     def test_expired_token_rejected(self) -> None:
         test_secret = "test-secret"  # pragma: allowlist secret
         token = create_token("peter", secret=test_secret, ttl_hours=0)
