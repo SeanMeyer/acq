@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from acq_shared.models import Deletion
+from acq_shared.passages import PassageError, replace_passage
 from acq_shared.store import Store
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, StringConstraints
@@ -174,18 +175,44 @@ def review_stats(
 # ------------------------------------------------------------------
 
 
-class EditBodyRequest(BaseModel):
-    body: str
+class PassageEdit(BaseModel):
+    """Either a whole new ``body``, or ``old_text`` to find once in the current
+    body and ``new_text`` to put in its place. The passage form is matched
+    against the stored text at edit time, so it cannot overwrite a newer edit
+    the caller has not seen.
+    """
+
+    body: str | None = None
+    old_text: str | None = None
+    new_text: str | None = None
+
+    def new_body(self, current: str) -> str | None:
+        if self.old_text is None and self.new_text is None:
+            return self.body
+        if self.body is not None or self.old_text is None or self.new_text is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Send body, or old_text with new_text, not both.",
+            )
+        if not self.old_text:
+            raise HTTPException(status_code=422, detail="old_text must be non-empty.")
+        try:
+            return replace_passage(current, self.old_text, self.new_text)
+        except PassageError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-class EditQuestionRequest(BaseModel):
+class EditBodyRequest(PassageEdit):
+    pass
+
+
+class EditQuestionRequest(PassageEdit):
     """A partial update. Every omitted field is left untouched.
 
     ``tags``, when present, replaces the question's whole tag set rather than
     adding to it, so the client always sends the full list it wants.
     """
 
-    body: str | None = None
     title: str | None = None
     tags: list[str] | None = None
 
@@ -197,9 +224,12 @@ def edit_question(
     editor: tuple[str, Literal["agent", "human"]] = Depends(get_editor),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
+    current = store.get_question(question_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Question not found")
     result = store.edit_question(
         question_id,
-        request.body,
+        request.new_body(current.body),
         *editor,
         new_title=request.title,
         new_tags=request.tags,
@@ -216,7 +246,13 @@ def edit_answer(
     editor: tuple[str, Literal["agent", "human"]] = Depends(get_editor),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
-    result = store.edit_answer(answer_id, request.body, *editor)
+    current = store.get_answer(answer_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Answer not found")
+    body = request.new_body(current.body)
+    if body is None:
+        raise HTTPException(status_code=422, detail="body is required.")
+    result = store.edit_answer(answer_id, body, *editor)
     if result is None:
         raise HTTPException(status_code=404, detail="Answer not found")
     return result.model_dump(mode="json")
@@ -229,7 +265,13 @@ def edit_comment(
     editor: tuple[str, Literal["agent", "human"]] = Depends(get_editor),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
-    result = store.edit_comment(comment_id, request.body, *editor)
+    current = store.get_comment(comment_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    body = request.new_body(current.body)
+    if body is None:
+        raise HTTPException(status_code=422, detail="body is required.")
+    result = store.edit_comment(comment_id, body, *editor)
     if result is None:
         raise HTTPException(status_code=404, detail="Comment not found")
     return result.model_dump(mode="json")

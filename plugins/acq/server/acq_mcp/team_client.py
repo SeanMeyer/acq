@@ -19,6 +19,13 @@ _DEFAULT_TIMEOUT = 5.0
 _TRANSPORT_ERRORS = (httpx.TransportError, httpx.TimeoutException)
 
 
+def _body_change(body: str | None, old_text: str | None, new_text: str | None) -> dict[str, object]:
+    """A whole new body, or a passage for the server to replace in the current one."""
+    if old_text is not None:
+        return {"old_text": old_text, "new_text": new_text or ""}
+    return {} if body is None else {"body": body}
+
+
 @dataclass(frozen=True, slots=True)
 class ApiResult:
     """Structured result from a Team API call.
@@ -259,12 +266,12 @@ class TeamClient:
         body: str | None = None,
         title: str | None = None,
         tags: list[str] | None = None,
+        old_text: str | None = None,
+        new_text: str | None = None,
     ) -> ApiResult:
         # Omitted fields are left unchanged by the server, so send only what is
         # being edited. tags replaces the whole set.
-        payload: dict[str, object] = {}
-        if body is not None:
-            payload["body"] = body
+        payload = _body_change(body, old_text, new_text)
         if title is not None:
             payload["title"] = title
         if tags is not None:
@@ -280,9 +287,11 @@ class TeamClient:
         except Exception as exc:
             return ApiResult.unexpected_error("edit_question", exc)
 
-    async def edit_answer(self, answer_id: str, body: str) -> ApiResult:
+    async def edit_answer(
+        self, answer_id: str, body: str | None = None, old_text: str | None = None, new_text: str | None = None
+    ) -> ApiResult:
         try:
-            resp = await self._client.put(f"/answers/{answer_id}", json={"body": body})
+            resp = await self._client.put(f"/answers/{answer_id}", json=_body_change(body, old_text, new_text))
             resp.raise_for_status()
             return ApiResult.success(resp.json())
         except _TRANSPORT_ERRORS as exc:
@@ -304,9 +313,11 @@ class TeamClient:
         except Exception as exc:
             return ApiResult.unexpected_error("delete_content", exc)
 
-    async def edit_comment(self, comment_id: str, body: str) -> ApiResult:
+    async def edit_comment(
+        self, comment_id: str, body: str | None = None, old_text: str | None = None, new_text: str | None = None
+    ) -> ApiResult:
         try:
-            resp = await self._client.put(f"/comments/{comment_id}", json={"body": body})
+            resp = await self._client.put(f"/comments/{comment_id}", json=_body_change(body, old_text, new_text))
             resp.raise_for_status()
             return ApiResult.success(resp.json())
         except _TRANSPORT_ERRORS as exc:
