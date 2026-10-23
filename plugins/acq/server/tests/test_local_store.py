@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from acq_mcp.local_store import LocalStore
-from acq_mcp.team_client import ApiResult
+from acq_mcp.team_client import ApiResult, TeamClient
 
 
 @pytest.fixture()
@@ -303,38 +305,95 @@ class TestDrainToTeam:
         assert drained == 0
         assert len(store.store.get_pending_drain()) == 1
 
-    async def test_drain_pushes_answers(self, store: LocalStore) -> None:
+    async def test_offline_thread_arrives_on_the_team_linked_together(self, store: LocalStore) -> None:
+        # Everything an agent wrote while the team was unreachable: a question,
+        # its answer, and a comment and a vote on that answer.
         q = store.create_question("Q", "B", "a", ["t"])
-        store.store.mark_for_drain(q.id, "question")
         a = store.create_answer(q.id, "Answer body", "a")
+        c = store.create_comment(a.id, "answer", "Confirmed", "a")
+        v = store.cast_vote(a.id, "answer", "a", "agent", 1)
+        # Queued children-first, the worst case for ordering.
+        for entity_id, kind in ((v.id, "vote"), (c.id, "comment"), (a.id, "answer"), (q.id, "question")):
+            store.store.mark_for_drain(entity_id, kind)
+        team = FakeTeam()
+
+        async with team.client() as client:
+            drained = await store.drain_to_team(client)
+
+        assert drained == 4
+        assert store.store.get_pending_drain() == []
+        assert set(team.questions) == {q.id}
+        assert team.answers == {a.id: q.id}
+        assert team.comments == {c.id: a.id}
+        assert team.votes == [a.id]
+
+    async def test_redrain_after_a_lost_response_does_not_duplicate(self, store: LocalStore) -> None:
+        q = store.create_question("Q", "B", "a", ["t"])
+        a = store.create_answer(q.id, "Answer body", "a")
+        store.store.mark_for_drain(q.id, "question")
         store.store.mark_for_drain(a.id, "answer")
+        team = FakeTeam()
+        # The team stored the question, but the client never saw the response.
+        team.questions[q.id] = "Q"
 
-        mock_client = MagicMock()
-        mock_client.create_question = AsyncMock(return_value=ApiResult.success({"id": q.id}))
-        mock_client.create_answer = AsyncMock(return_value=ApiResult.success({"id": a.id}))
+        async with team.client() as client:
+            await store.drain_to_team(client)
 
-        drained = await store.drain_to_team(mock_client)
+        assert set(team.questions) == {q.id}
+        assert team.answers == {a.id: q.id}
+        assert store.store.get_pending_drain() == []
 
-        assert drained == 2
-        assert len(store.store.get_pending_drain()) == 0
 
-    async def test_drain_pushes_votes_and_comments(self, store: LocalStore) -> None:
-        v = store.cast_vote("q_123", "question", "a", "agent", 1)
-        store.store.mark_for_drain(v.id, "vote")
-        c = store.create_comment("q_123", "question", "Nice question", "a")
-        store.store.mark_for_drain(c.id, "comment")
+class FakeTeam:
+    """In-memory stand-in for the team API's create endpoints, served over HTTP.
 
-        mock_client = MagicMock()
-        mock_client.cast_vote = AsyncMock(return_value=ApiResult.success({"id": v.id}))
-        mock_client.create_comment = AsyncMock(return_value=ApiResult.success({"id": c.id}))
+    The drain talks to it through a real TeamClient, so what the client puts
+    on the wire is part of what the tests check. It keeps the rules the drain
+    depends on: the team assigns its own id unless the request carries one, an
+    answer to a question it does not hold is a 404, and an id it already holds
+    is a replay, not an error.
+    """
 
-        drained = await store.drain_to_team(mock_client)
+    def __init__(self) -> None:
+        self.questions: dict[str, str] = {}
+        self.answers: dict[str, str] = {}
+        self.comments: dict[str, str] = {}
+        self.votes: list[str] = []
+        self._next = 0
 
-        assert drained == 2
-        assert len(store.store.get_pending_drain()) == 0
-        # Content stays in local (read replica), only drain queue is cleared
-        assert len(store.all_votes()) == 1
-        assert len(store.all_comments()) == 1
+    def client(self) -> TeamClient:
+        c = TeamClient(base_url="http://team")
+        c._client = httpx.AsyncClient(base_url="http://team", transport=httpx.MockTransport(self._handle))
+        return c
+
+    def _id(self, prefix: str, body: dict) -> str:
+        if body.get("id"):
+            return body["id"]
+        self._next += 1
+        return f"{prefix}_team{self._next}"
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        path = request.url.path
+        if path == "/questions":
+            qid = self._id("q", body)
+            self.questions.setdefault(qid, body["title"])
+            return httpx.Response(201, json={"question": {"id": qid}})
+        if path.startswith("/questions/") and path.endswith("/answers"):
+            question_id = path.split("/")[2]
+            if question_id not in self.questions:
+                return httpx.Response(404, json={"detail": "Question not found"})
+            aid = self._id("a", body)
+            self.answers.setdefault(aid, question_id)
+            return httpx.Response(201, json={"id": aid})
+        if path == "/comments":
+            cid = self._id("c", body)
+            self.comments.setdefault(cid, body["parent_id"])
+            return httpx.Response(201, json={"id": cid})
+        if path == "/vote":
+            self.votes.append(body["target_id"])
+            return httpx.Response(200, json={"id": self._id("v", {})})
+        return httpx.Response(404)
 
 
 class TestPullFromTeam:

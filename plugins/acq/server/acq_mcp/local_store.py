@@ -380,10 +380,16 @@ class LocalStore:
         Only drains items in the pending_drain queue — content pulled from the
         team via bulk_upsert is never drained back. Returns the number of items
         successfully drained.
+
+        Each item keeps its local id on the team, because answers, comments and
+        votes created offline point at their parent by that id. Parents go
+        first so a child never arrives before the thing it points at.
         """
         with self._lock:
             self._check_open()
             pending = self._store.get_pending_drain()
+        parents_first = {"question": 0, "answer": 1, "comment": 2, "vote": 3}
+        pending.sort(key=lambda item: parents_first.get(item["entity_type"], 4))
 
         if not pending:
             return 0
@@ -413,6 +419,7 @@ class LocalStore:
                         # Preserve human supervision across an offline drain so
                         # the team store does not demote a live local question.
                         supervised=q.supervised,
+                        id=q.id,
                     )
                     if result.ok:
                         self._locked_clear_drain(eid)
@@ -429,6 +436,7 @@ class LocalStore:
                         body=a.body,
                         created_by=a.created_by,
                         supervised=a.supervised,
+                        id=a.id,
                     )
                     if result.ok:
                         self._locked_clear_drain(eid)
@@ -463,6 +471,7 @@ class LocalStore:
                         body=c.body,
                         created_by=c.created_by,
                         supervised=c.supervised,
+                        id=c.id,
                     )
                     if result.ok:
                         self._locked_clear_drain(eid)

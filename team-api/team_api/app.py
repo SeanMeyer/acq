@@ -63,6 +63,7 @@ class VoteRequest(BaseModel):
 
 
 class CommentRequest(BaseModel):
+    id: str | None = None
     parent_id: str
     parent_type: Literal["question", "answer"]
     body: str
@@ -196,6 +197,11 @@ def create_question(
     agent: str = Depends(get_agent_identity),
     store: Store = Depends(get_store),
 ) -> CreateQuestionResponse:
+    # A client that created this question offline sends its own id, so its
+    # answers and comments can follow under the same id. A retry after a lost
+    # response must not fail or duplicate, so an id we already hold is a replay.
+    if request.id is not None and (existing := store.get_question(request.id)):
+        return CreateQuestionResponse(question=existing.model_dump(mode="json"))
     # Check for duplicates first (unless force_create)
     if not request.force_create:
         similar = store.find_similar_questions(request.title, request.tags)
@@ -239,6 +245,8 @@ def create_answer(
     q = store.get_question(question_id)
     if q is None:
         raise HTTPException(status_code=404, detail="Question not found")
+    if request.id is not None and (existing := store.get_answer(request.id)):
+        return existing.model_dump(mode="json")
     kwargs: dict[str, Any] = {
         "question_id": question_id,
         "body": request.body,
@@ -291,14 +299,18 @@ def create_comment(
     agent: str = Depends(get_agent_identity),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
-    c = Comment(
-        parent_id=request.parent_id,
-        parent_type=request.parent_type,
-        body=request.body,
-        created_by=agent,
-        created_by_type="agent",
-    )
-    result = store.create_comment(c)
+    if request.id is not None and (existing := store.get_comment(request.id)):
+        return existing.model_dump(mode="json")
+    kwargs: dict[str, Any] = {
+        "parent_id": request.parent_id,
+        "parent_type": request.parent_type,
+        "body": request.body,
+        "created_by": agent,
+        "created_by_type": "agent",
+    }
+    if request.id is not None:
+        kwargs["id"] = request.id
+    result = store.create_comment(Comment(**kwargs))
     return result.model_dump(mode="json")
 
 
