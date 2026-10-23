@@ -435,6 +435,35 @@ class TestEdit:
         mock.edit_answer.assert_awaited_once_with(a.id, "new text")
         assert store.store.get_answer(a.id).body == "new text"
 
+    async def test_local_passage_edit_changes_only_that_passage(self) -> None:
+        store, _, a = self._live_answer("Use port 5432.\n\nSet a timeout.")
+
+        result = await edit(target_id=a.id, old_text="port 5432", new_text="port 15432")
+
+        assert result == {"edited": a.id, "source": "local"}
+        assert store.store.get_answer(a.id).body == "Use port 15432.\n\nSet a timeout."
+
+    async def test_ambiguous_passage_is_refused(self) -> None:
+        store, _, a = self._live_answer("port 1, port 2")
+
+        result = await edit(target_id=a.id, old_text="port", new_text="x")
+
+        assert "appears 2 times" in result["error"]
+        assert store.store.get_answer(a.id).body == "port 1, port 2"
+
+    async def test_team_passage_edit_keeps_the_teams_merged_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The team applies the passage to its current text, which may hold edits this copy has not pulled."""
+        store, _, a = self._live_answer("Use port 5432.\n\nSet a timeout.")
+        merged = "Use port 15432.\n\nSet a 30s timeout."
+        mock = _make_mock_team_client(edit_result={"id": a.id, "body": merged})
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await edit(target_id=a.id, old_text="port 5432", new_text="port 15432")
+
+        assert result == {"edited": a.id, "source": "team"}
+        mock.edit_answer.assert_awaited_once_with(a.id, None, old_text="port 5432", new_text="port 15432")
+        assert store.store.get_answer(a.id).body == merged
+
     async def test_team_question_edit_sends_only_edited_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _, q, _ = self._live_answer()
         mock = _make_mock_team_client(edit_result={"id": q.id})

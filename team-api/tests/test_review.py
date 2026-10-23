@@ -651,6 +651,76 @@ class TestAgentEdits:
         assert resp.status_code == 401
 
 
+class TestPassageEdits:
+    """An agent changes the part that went stale, against the text as it is now."""
+
+    def test_passage_edit_keeps_an_edit_made_since_the_agent_read(
+        self, client: TestClient
+    ) -> None:
+        q = _create_question(client)
+        a = _create_answer(
+            client, q["id"], body="Use port 5432.\n\nSet a timeout.", supervised=True
+        )
+        token = _login(client)
+        # A human edits one part after the agent last synced.
+        client.put(
+            f"/answers/{a['id']}",
+            json={"body": "Use port 5432.\n\nSet a 30s timeout."},
+            headers=_auth_header(token),
+        )
+
+        # The agent corrects a different part, from its older copy.
+        resp = client.put(
+            f"/answers/{a['id']}",
+            json={"old_text": "port 5432", "new_text": "port 15432"},
+            headers=_agent_headers(),
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["body"] == "Use port 15432.\n\nSet a 30s timeout."
+
+    def test_passage_edit_works_on_questions_and_comments(
+        self, client: TestClient
+    ) -> None:
+        q = _create_question(client, body="Runs on RDS.")
+        c = _create_comment(client, q["id"], body="Checked on RDS today.")
+        for path in (f"/questions/{q['id']}", f"/comments/{c['id']}"):
+            resp = client.put(
+                path,
+                json={"old_text": "RDS", "new_text": "CloudNativePG"},
+                headers=_agent_headers(),
+            )
+            assert resp.status_code == 200
+            assert "CloudNativePG" in resp.json()["body"]
+
+    @pytest.mark.parametrize(
+        ("old_text", "new_text", "detail"),
+        [
+            ("port 9999", "x", "does not appear"),
+            ("port", "x", "appears 2 times"),
+            ("port 1, port 2", "", "leave the text empty"),
+        ],
+    )
+    def test_passage_that_is_not_exactly_one_place_is_refused(
+        self, client: TestClient, old_text: str, new_text: str, detail: str
+    ) -> None:
+        q = _create_question(client)
+        a = _create_answer(client, q["id"], body="port 1, port 2", supervised=True)
+        resp = client.put(
+            f"/answers/{a['id']}",
+            json={"old_text": old_text, "new_text": new_text},
+            headers=_agent_headers(),
+        )
+        assert resp.status_code == 409
+        assert detail in resp.json()["detail"]
+        assert (
+            client.get(
+                f"/api/questions/{q['id']}/thread", headers=_auth_header(_login(client))
+            ).json()["answers"][0]["answer"]["body"]
+            == "port 1, port 2"
+        )
+
+
 class TestAgentDeletes:
     """Agents retire content that stopped being true; a human can restore it."""
 
