@@ -239,6 +239,11 @@
           <p class="text-sm text-red-700">
             <span class="font-semibold">This question is deleted.</span>
             It stays hidden from search and question listings until it is restored.
+            {#if thread.question.deletion}
+              <span class="block mt-1">
+                Deleted by {thread.question.deletion.by}{thread.question.deletion.by_type === 'agent' ? ' (agent)' : ''}: {thread.question.deletion.reason}
+              </span>
+            {/if}
           </p>
           <button
             onclick={() => approveQuestion('Failed to restore question')}
@@ -352,6 +357,9 @@
                     <span class="text-[10px] text-gray-300 bg-gray-100 px-0.5 rounded">agent</span>
                   {/if}
                   · {timeAgo(comment.created_at)}
+                  {#if comment.status === 'rejected' && comment.deletion}
+                    · deleted by {comment.deletion.by}: {comment.deletion.reason}
+                  {/if}
                 </span>
                 <span class="ml-2 inline-flex items-center gap-2">
                   <button

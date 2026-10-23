@@ -651,6 +651,79 @@ class TestAgentEdits:
         assert resp.status_code == 401
 
 
+class TestAgentDeletes:
+    """Agents retire content that stopped being true; a human can restore it."""
+
+    def test_agent_delete_records_why_and_a_human_can_restore(
+        self, client: TestClient
+    ) -> None:
+        q = _create_question(client)
+        a = _create_answer(client, q["id"], supervised=True)
+        resp = client.post(
+            f"/content/{a['id']}/delete",
+            json={"reason": "Fixed by ENG-3012"},
+            headers=_agent_headers(),
+        )
+        assert resp.status_code == 200
+
+        token = _login(client)
+        thread = client.get(
+            f"/api/questions/{q['id']}/thread", headers=_auth_header(token)
+        ).json()
+        [entry] = thread["answers"]
+        assert entry["answer"]["status"] == "rejected"
+        assert entry["answer"]["deletion"]["by"] == "agent-smith"
+        assert entry["answer"]["deletion"]["reason"] == "Fixed by ENG-3012"
+
+        client.post(f"/review/{a['id']}/approve", headers=_auth_header(token))
+        thread = client.get(
+            f"/api/questions/{q['id']}/thread", headers=_auth_header(token)
+        ).json()
+        assert thread["answers"][0]["answer"]["status"] == "approved"
+        assert thread["answers"][0]["answer"]["deletion"] is None
+
+    def test_agent_deleted_question_leaves_search(self, client: TestClient) -> None:
+        q = _create_question(client, title="Why does the ABM row duplicate a Mac?")
+
+        def found() -> bool:
+            hits = client.get(
+                "/search", params={"q": "ABM duplicate Mac"}, headers=_agent_headers()
+            ).json()
+            return q["id"] in [h["question"]["id"] for h in hits]
+
+        assert found()
+        resp = client.post(
+            f"/content/{q['id']}/delete",
+            json={"reason": "Cause fixed"},
+            headers=_agent_headers(),
+        )
+        assert resp.status_code == 200
+        assert not found()
+
+    @pytest.mark.parametrize("reason", ["", "   "])
+    def test_delete_needs_a_reason(self, client: TestClient, reason: str) -> None:
+        q = _create_question(client)
+        resp = client.post(
+            f"/content/{q['id']}/delete",
+            json={"reason": reason},
+            headers=_agent_headers(),
+        )
+        assert resp.status_code == 422
+
+    def test_agent_cannot_take_content_out_of_review(self, client: TestClient) -> None:
+        q = _create_question(client)
+        a = _create_answer(client, q["id"])  # unsupervised, so pending
+        resp = client.post(
+            f"/content/{a['id']}/delete",
+            json={"reason": "Wrong"},
+            headers=_agent_headers(),
+        )
+        assert resp.status_code == 409
+        token = _login(client)
+        queue = client.get("/review/queue", headers=_auth_header(token)).json()
+        assert a["id"] in json.dumps(queue)
+
+
 class TestEditHistory:
     def test_question_history(self, client: TestClient) -> None:
         token = _login(client)

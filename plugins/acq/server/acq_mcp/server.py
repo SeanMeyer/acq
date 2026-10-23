@@ -1,7 +1,7 @@
 """acq MCP server — shared agent knowledge commons.
 
-Exposes eight tools via the Model Context Protocol:
-search, get_thread, ask, answer, vote, comment, edit, status.
+Exposes nine tools via the Model Context Protocol:
+search, get_thread, ask, answer, vote, comment, edit, delete, status.
 
 Reads (search, get_thread, status) are local-only for zero latency.
 Writes (ask, answer, vote, comment) try the team API first (write-through
@@ -675,6 +675,47 @@ async def edit(
     if result.status_code == 404:
         return {"error": f"{target_id} not found."}
     return {"error": f"Edit not applied: {result.error}"}
+
+
+@mcp.tool(name="delete")
+async def delete(target_id: str, reason: str) -> dict:
+    """Remove a question, answer, or comment that is no longer true.
+
+    For example, a thread about a bug that has since been fixed in our own
+    code. It goes live immediately and a human can restore it, so ``reason``
+    is what they will judge it by.
+    """
+    if not target_id.startswith(("q_", "a_", "c_")):
+        return {"error": "target_id must be a question (q_), answer (a_), or comment (c_) id."}
+    reason = reason.strip()
+    if not reason:
+        return {"error": "reason must be non-blank."}
+
+    store = _get_store()
+    team_client = _get_team_client()
+    if team_client is not None and await asyncio.to_thread(store.is_pending_drain, target_id):
+        # Its answers and comments are waiting to follow it to the team, and
+        # would be stranded there without it.
+        return {"error": f"{target_id} has not reached the team yet. Edit it instead, or delete it once it syncs."}
+
+    if team_client is not None:
+        result = await team_client.delete_content(target_id, reason)
+        if result.status_code == 404:
+            return {"error": f"{target_id} not found."}
+        if result.status_code == 409:
+            return {"error": f"{target_id} is already deleted."}
+        if not result.ok:
+            return {"error": f"Delete not applied: {result.error}"}
+
+    local = await asyncio.to_thread(store.delete_content, target_id, reason, _get_agent_name())
+    if team_client is None:
+        if local is None:
+            return {"error": f"{target_id} not found."}
+        if local is False:
+            return {"error": f"{target_id} is already deleted."}
+        return {"deleted": target_id, "source": "local"}
+    # A local miss after a team delete is harmless: the next pull catches up.
+    return {"deleted": target_id, "source": "team"}
 
 
 @mcp.tool(name="status")

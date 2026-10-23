@@ -359,6 +359,38 @@ class TestDrainToTeam:
         assert team.answers == {a.id: q.id}
         assert store.store.get_pending_drain() == []
 
+    async def test_content_deleted_before_any_team_existed_is_never_published(self, store: LocalStore) -> None:
+        # Local-only mode: everything waits in the drain queue for a team.
+        q = store.create_question("Q", "B", "a", ["t"])
+        a = store.create_answer(q.id, "Answer body", "a")
+        c = store.create_comment(a.id, "answer", "Confirmed", "a")
+        v = store.cast_vote(a.id, "answer", "a", "agent", 1)
+        for entity_id, kind in ((q.id, "question"), (a.id, "answer"), (c.id, "comment"), (v.id, "vote")):
+            store.store.mark_for_drain(entity_id, kind)
+        store.delete_content(q.id, "Wrong premise", "a")
+        team = FakeTeam()
+
+        async with team.client() as client:
+            await store.drain_to_team(client)
+
+        assert (team.questions, team.answers, team.comments, team.votes) == ({}, {}, {}, [])
+        assert store.store.get_pending_drain() == []
+
+    async def test_offline_answer_to_a_question_deleted_on_the_team_is_still_sent(self, store: LocalStore) -> None:
+        """If the question is restored, the answer should come back with it."""
+        q = store.create_question("Q", "B", "a", ["t"])
+        a = store.create_answer(q.id, "Answer body", "a")
+        store.store.mark_for_drain(a.id, "answer")
+        # Someone deleted the question on the team, and a pull brought that here.
+        store.delete_content(q.id, "Wrong premise", "someone-else")
+        team = FakeTeam()
+        team.questions[q.id] = "Q"
+
+        async with team.client() as client:
+            await store.drain_to_team(client)
+
+        assert team.answers == {a.id: q.id}
+
 
 class FakeTeam:
     """In-memory stand-in for the team API's create endpoints, served over HTTP.
