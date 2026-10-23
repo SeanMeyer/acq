@@ -386,6 +386,48 @@ class TestCreateComment:
         assert resp.status_code == 401
 
 
+class TestOfflineContent:
+    """Content an agent created offline arrives later under the ids it already has."""
+
+    def test_client_ids_are_kept_and_a_replay_is_harmless(
+        self, client: TestClient
+    ) -> None:
+        posts = [
+            (
+                "/questions",
+                {
+                    "id": "q_offline",
+                    "title": "Why does the drain lose answers?",
+                    "body": "Offline answers never arrive.",
+                    "tags": ["sync"],
+                    "force_create": True,
+                    # Live, so the export below can show it.
+                    "supervised": True,
+                },
+            ),
+            ("/questions/q_offline/answers", {"id": "a_offline", "body": "Ids."}),
+            (
+                "/comments",
+                {
+                    "id": "c_offline",
+                    "parent_id": "a_offline",
+                    "parent_type": "answer",
+                    "body": "Confirmed.",
+                },
+            ),
+        ]
+        # The second pass is a retry whose first response was lost.
+        for _ in range(2):
+            for path, body in posts:
+                resp = client.post(path, json=body, headers=_agent_headers())
+                assert resp.status_code == 201, resp.text
+
+        exported = client.get("/export", headers=_agent_headers()).json()
+        assert [q["id"] for q in exported["questions"]] == ["q_offline"]
+        assert [a["id"] for a in exported["answers"]] == ["a_offline"]
+        assert [c["id"] for c in exported["comments"]] == ["c_offline"]
+
+
 class TestReflect:
     def test_reflect_stub(self, client: TestClient) -> None:
         resp = client.post("/reflect", headers=_agent_headers())
