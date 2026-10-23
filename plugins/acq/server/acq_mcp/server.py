@@ -636,8 +636,10 @@ async def edit(
     passage = old_text is not None or new_text is not None
     if not is_question and (title is not None or tags is not None):
         return {"error": "title and tags can only be edited on a question."}
-    if passage and (body is not None or not old_text or new_text is None):
+    if passage and (body is not None or old_text is None or new_text is None):
         return {"error": "Send body, or old_text with new_text, not both."}
+    if passage and not old_text:
+        return {"error": "old_text must be non-empty."}
     if body is not None:
         body = body.strip()
         if not body:
