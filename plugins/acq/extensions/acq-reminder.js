@@ -17,10 +17,12 @@ const REMINDER = [
 export default function (pi) {
   let injected = false;
 
-  // Extensions are reloaded and rebound per session, but a reload reuses this
-  // instance, so the flag has to be cleared for the incoming session.
-  pi.on("session_start", () => {
-    injected = false;
+  // A reload reuses this instance, so the flag is set from the incoming
+  // session. Only a fresh one needs the reminder: a resumed, forked or
+  // reloaded session already holds it, and clearing the flag there added a
+  // copy every time.
+  pi.on("session_start", (event) => {
+    injected = !(event.reason === "startup" || event.reason === "new");
   });
 
   pi.on("before_agent_start", async () => {

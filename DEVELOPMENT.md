@@ -84,9 +84,12 @@ make install-omp
 ```
 
 That defaults to the local stack (`http://localhost:8742`). Override with
-`TEAM_ADDR`, `API_KEY`, and `AGENT_NAME`, or pass `LOCAL_ONLY=1` to skip the
-team API entirely and use only the local store. `make uninstall-omp` reverses
-it.
+`TEAM_ADDR` and `AGENT_NAME`, or pass `LOCAL_ONLY=1` to skip the team API
+entirely and use only the local store. `make uninstall-omp` reverses it.
+
+There is no default `API_KEY`. The first install needs one; a reinstall reuses
+the key already configured for the same `TEAM_ADDR`, and a different address
+needs its own.
 
 Three things happen, because OMP takes each piece from a different place:
 

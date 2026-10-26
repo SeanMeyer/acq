@@ -112,4 +112,49 @@ while IFS= read -r ext; do
         fail "${ext} is not covered by pi.extensions in plugins/acq/package.json"
 done < <(cd "${REPO_ROOT}" && git ls-files 'plugins/acq/extensions/*.js' 'plugins/acq/extensions/*.ts')
 
-printf '%s\n' "installer symlink regression tests passed"
+# Team API key: no shared default. A reinstall keeps the key configured for the
+# same address, a different address needs its own key, and a fresh install with
+# no key stops before writing anything.
+install_pi() {
+    PATH="${BIN_DIR}:${PATH}" PI_CODING_AGENT_DIR="$1" \
+        "${REPO_ROOT}/scripts/install-pi.sh" install "${@:2}" >/dev/null 2>&1
+}
+pi_key() { jq -r '.mcpServers.acq.env.ACQ_TEAM_API_KEY' "$1/mcp.json"; }
+
+FRESH_DIR="${WORK_DIR}/pi-fresh"
+mkdir -p "${FRESH_DIR}"
+! install_pi "${FRESH_DIR}" || fail "install without a key succeeded"
+[[ ! -e "${FRESH_DIR}/mcp.json" ]] || fail "install without a key wrote mcp.json"
+
+install_pi "${FRESH_DIR}" --api-key first-key || fail "install with --api-key failed"
+[[ "$(pi_key "${FRESH_DIR}")" == "first-key" ]] || fail "--api-key was not written"
+
+install_pi "${FRESH_DIR}" || fail "reinstall for the same address failed"
+[[ "$(pi_key "${FRESH_DIR}")" == "first-key" ]] || fail "reinstall did not keep the configured key"
+
+! install_pi "${FRESH_DIR}" --team-addr http://elsewhere:8742 || \
+    fail "a new address reused the old address's key"
+[[ "$(pi_key "${FRESH_DIR}")" == "first-key" ]] || fail "a refused install changed the config"
+
+OMP_FRESH="${WORK_DIR}/omp-fresh"
+mkdir -p "${OMP_FRESH}"
+! PATH="${BIN_DIR}:${PATH}" FAKE_OMP_AGENT_DIR="${OMP_FRESH}" \
+    "${REPO_ROOT}/scripts/install-omp.sh" install >/dev/null 2>&1 || fail "OMP install without a key succeeded"
+
+# The pi reminder is injected once into a fresh session, and never into one
+# that already holds it.
+node --input-type=module -e '
+const { default: register } = await import(process.argv[1]);
+const handlers = {};
+register({ on: (event, fn) => { handlers[event] = fn; } });
+const turn = () => handlers.before_agent_start();
+const results = [];
+for (const reason of ["startup", "resume", "fork", "reload", "new"]) {
+  handlers.session_start({ type: "session_start", reason });
+  results.push(`${reason}:${(await turn()) ? 1 : 0}${(await turn()) ? 1 : 0}`);
+}
+const want = "startup:10 resume:00 fork:00 reload:00 new:10";
+if (results.join(" ") !== want) { console.error(`got ${results.join(" ")}, want ${want}`); process.exit(1); }
+' "${REPO_ROOT}/plugins/acq/extensions/acq-reminder.js" 2>/dev/null || fail "the pi reminder is injected into a session that already holds it"
+
+printf '%s\n' "installer regression tests passed"
