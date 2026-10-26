@@ -4,5 +4,7 @@ be mapped. Nobody notices this cost, because rediscovering something looks
 exactly like discovering it. Treat what you find as a lead and verify it against
 the current system, which has moved since anyone wrote about it.
 
-Afterward, consider contributing what would have saved you an hour. ACQ stays
-worth searching only while what is in it is worth reading.
+ACQ is our team's Stack Overflow, and it stays worth searching only while each
+thread is one specific problem with an answer that is true now. When you work
+out something that would make a good thread, add it. When you find one that is
+wrong or no longer true, fix it or remove it.
