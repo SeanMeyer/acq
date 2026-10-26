@@ -141,20 +141,31 @@ mkdir -p "${OMP_FRESH}"
 ! PATH="${BIN_DIR}:${PATH}" FAKE_OMP_AGENT_DIR="${OMP_FRESH}" \
     "${REPO_ROOT}/scripts/install-omp.sh" install >/dev/null 2>&1 || fail "OMP install without a key succeeded"
 
-# The pi reminder is injected once into a fresh session, and never into one
-# that already holds it.
+# The pi reminder is injected once per session branch, whether that branch is
+# new, resumed with `pi -c` (which reports "startup"), or forked from before the
+# first prompt (which reports "fork" but holds no reminder).
 node --input-type=module -e '
 const { default: register } = await import(process.argv[1]);
 const handlers = {};
 register({ on: (event, fn) => { handlers[event] = fn; } });
-const turn = () => handlers.before_agent_start();
-const results = [];
-for (const reason of ["startup", "resume", "fork", "reload", "new"]) {
-  handlers.session_start({ type: "session_start", reason });
-  results.push(`${reason}:${(await turn()) ? 1 : 0}${(await turn()) ? 1 : 0}`);
+// Each case starts with the session_start reason pi really reports for it.
+const turn = async (branch, reason) => {
+  handlers.session_start?.({ type: "session_start", reason });
+  const result = await handlers.before_agent_start({ type: "before_agent_start", prompt: "hi" },
+    { sessionManager: { getBranch: () => branch } });
+  if (result) branch.push({ type: "custom_message", customType: result.message.customType });
+  return result ? 1 : 0;
+};
+const fresh = [];
+const resumed = [{ type: "message" }, { type: "custom_message", customType: "acq-reminder" }];
+const forkedBeforeFirstPrompt = [];
+const other = [{ type: "custom_message", customType: "something-else" }];
+let got = "";
+for (const [branch, reason] of [[fresh, "startup"], [resumed, "startup"], [forkedBeforeFirstPrompt, "fork"], [other, "new"]]) {
+  got += await turn(branch, reason);
 }
-const want = "startup:10 resume:00 fork:00 reload:00 new:10";
-if (results.join(" ") !== want) { console.error(`got ${results.join(" ")}, want ${want}`); process.exit(1); }
-' "${REPO_ROOT}/plugins/acq/extensions/acq-reminder.js" 2>/dev/null || fail "the pi reminder is injected into a session that already holds it"
+got += "/" + (await turn(fresh, "reload"));
+if (got !== "1011/0") { console.error(`got ${got}, want 1011/0`); process.exit(1); }
+' "${REPO_ROOT}/plugins/acq/extensions/acq-reminder.js" || fail "the pi reminder is injected into a branch that already holds it, or missing from one that doesn't"
 
 printf '%s\n' "installer regression tests passed"

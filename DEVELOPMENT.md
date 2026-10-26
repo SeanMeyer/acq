@@ -89,7 +89,9 @@ entirely and use only the local store. `make uninstall-omp` reverses it.
 
 There is no default `API_KEY`. The first install needs one; a reinstall reuses
 the key already configured for the same `TEAM_ADDR`, and a different address
-needs its own.
+needs its own. The local compose stack accepts `default-key` unless
+`ACQ_API_KEYS` overrides it, which is fine for a throwaway stack on loopback
+and not for one holding real knowledge.
 
 Three things happen, because OMP takes each piece from a different place:
 
