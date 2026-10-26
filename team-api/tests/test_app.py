@@ -378,6 +378,21 @@ class TestCreateComment:
         body = resp.json()
         assert body["status"] == "pending"
 
+    def test_supervised_comment_is_approved(self, client: TestClient) -> None:
+        question_id = _create_question(client)["question"]["id"]
+        resp = client.post(
+            "/comments",
+            json={
+                "parent_id": question_id,
+                "parent_type": "question",
+                "body": "A human reviewed this.",
+                "supervised": True,
+            },
+            headers=_agent_headers(),
+        )
+        assert resp.status_code == 201
+        assert resp.json()["status"] == "approved"
+
     def test_comment_requires_api_key(self, client: TestClient) -> None:
         resp = client.post(
             "/comments",

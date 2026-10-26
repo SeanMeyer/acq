@@ -317,6 +317,15 @@ class TestVote:
 
 
 class TestComment:
+    async def test_supervised_comment_appears_in_get_thread(self) -> None:
+        store = server._get_store()
+        q = store.create_question("How do I size a pool?", "body", "a", ["db"], supervised=True)
+
+        await comment(parent_id=q.id, body="A human reviewed this.", supervised=True)
+
+        [thread] = (await get_thread(q.id))["threads"]
+        assert [c["body"] for c in thread["comments"]] == ["A human reviewed this."]
+
     async def test_creates_comment_locally(self) -> None:
         result = await comment(parent_id="q_1", body="Great question!")
         assert result["comment_id"].startswith("c_")
