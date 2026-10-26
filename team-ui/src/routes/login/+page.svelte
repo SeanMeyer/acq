@@ -18,7 +18,8 @@
         const username = payload.sub ?? 'user';
         setToken(token);
         auth.login(token, username);
-        goto('/review');
+        // Replace rather than push, so the token-bearing URL leaves browser history.
+        goto('/review', { replaceState: true });
       } catch {
         error = 'Invalid token received. Please try again.';
       }
