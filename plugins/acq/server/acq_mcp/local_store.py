@@ -60,14 +60,14 @@ class LocalStore:
 
     @property
     def store(self) -> SqliteStore:
-        """The underlying SqliteStore, with no lock held.
+        """The underlying SqliteStore, without this store's lock.
 
-        Every call made through this property touches the shared connection
-        without serialising against other threads. That is safe only from
-        single-threaded code such as tests. Anything reached from an
-        ``asyncio.to_thread()`` executor must use the locked delegates below
-        instead, because concurrent use of one sqlite3 connection corrupts
-        cursor state and raises ``InterfaceError`` or ``IndexError``.
+        SqliteStore serialises its own methods, but this store also uses the
+        connection directly (``current_body``, the drain's helpers), guarded
+        only by its own lock. Calls through this property don't take that lock,
+        so they are safe only from single-threaded code such as tests. Anything
+        reached from an ``asyncio.to_thread()`` executor must use the locked
+        delegates below.
         """
         return self._store
 
