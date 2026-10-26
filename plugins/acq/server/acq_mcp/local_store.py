@@ -10,6 +10,7 @@ available, and new content is pulled from the team API periodically.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import threading
@@ -269,6 +270,18 @@ class LocalStore:
             self._check_open()
             deletion = Deletion(by=deleted_by, by_type="agent", reason=reason)
             return self._store.reject_content(content_id, deletion)
+
+    def current_body(self, entity_id: str) -> str | None:
+        """The stored body of a question, answer, or comment, or None if absent."""
+        with self._lock:
+            self._check_open()
+            row = self._conn.execute(
+                "SELECT data FROM questions WHERE id = ?"
+                " UNION ALL SELECT data FROM answers WHERE id = ?"
+                " UNION ALL SELECT data FROM comments WHERE id = ?",
+                (entity_id, entity_id, entity_id),
+            ).fetchone()
+        return None if row is None else json.loads(row[0])["body"]
 
     def is_pending_drain(self, entity_id: str) -> bool:
         """Whether this entity exists only locally, waiting to be drained."""
