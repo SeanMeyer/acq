@@ -54,13 +54,14 @@ _CANDIDATE_LIMIT = 50
 
 
 def _serialised(cls):
-    """Run every public method of *cls* under the instance's lock.
+    """Run every public method of *cls* under the instance's lock, as one unit.
 
     The store holds one connection, and the team API calls it from FastAPI's
     threadpool. Interleaved use of a sqlite3 connection corrupts cursor state,
     and one method's commit can publish another's half-finished writes, so a
     whole method runs at a time. The lock is re-entrant because methods call
-    each other.
+    each other. A method that raises rolls back whatever it left uncommitted,
+    so the next commit, on any thread, can't publish part of it.
     """
     for name, fn in list(vars(cls).items()):
         if name.startswith("_") or not inspect.isfunction(fn):
@@ -69,7 +70,16 @@ def _serialised(cls):
         @functools.wraps(fn)
         def locked(self, *args, __fn=fn, **kwargs):
             with self._lock:
-                return __fn(self, *args, **kwargs)
+                self._depth += 1
+                try:
+                    return __fn(self, *args, **kwargs)
+                except BaseException:
+                    # Only the outermost call owns the unit of work.
+                    if self._depth == 1 and self._conn.in_transaction:
+                        self._conn.rollback()
+                    raise
+                finally:
+                    self._depth -= 1
 
         setattr(cls, name, locked)
     return cls
@@ -86,6 +96,7 @@ class SqliteStore:
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._lock = threading.RLock()
+        self._depth = 0
         self._conn = conn
         create_tables(conn)
         self._ensure_users_table()

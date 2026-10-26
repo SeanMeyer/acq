@@ -49,3 +49,24 @@ def test_concurrent_requests_neither_fail_nor_lose_writes(tmp_path) -> None:
     status = store.get_status()
     assert (status["total_questions"], status["total_answers"]) == (rounds, rounds)
     conn.close()
+
+
+def test_a_failed_write_is_not_published_by_the_next_commit(tmp_path) -> None:
+    conn = sqlite3.connect(str(tmp_path / "team.db"), check_same_thread=False)
+    store = SqliteStore(conn)
+    good = Question(title="kept out", body="b", created_by="a", created_by_type="agent", supervised=True)
+    # The second record fails validation after the first is already written.
+    export = {"questions": [good.model_dump(mode="json"), {"id": "q_broken"}]}
+
+    try:
+        store.bulk_upsert(export)
+    except Exception:
+        pass
+    else:
+        raise AssertionError("bulk_upsert accepted an invalid record")
+    store.create_question(
+        Question(title="later", body="b", created_by="a", created_by_type="agent", supervised=True), ["t"]
+    )
+
+    assert store.get_question(good.id) is None
+    conn.close()
