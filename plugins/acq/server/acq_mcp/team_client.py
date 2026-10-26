@@ -149,6 +149,7 @@ class TeamClient:
         pattern: str | None = None,
         force_create: bool = False,
         supervised: bool = False,
+        id: str | None = None,
     ) -> ApiResult:
         payload: dict[str, object] = {
             "title": title,
@@ -164,6 +165,8 @@ class TeamClient:
             payload["framework"] = framework
         if pattern:
             payload["pattern"] = pattern
+        if id:
+            payload["id"] = id
         try:
             resp = await self._client.post("/questions", json=payload)
             resp.raise_for_status()
@@ -181,12 +184,15 @@ class TeamClient:
         body: str,
         created_by: str,
         supervised: bool = False,
+        id: str | None = None,
     ) -> ApiResult:
-        payload = {
+        payload: dict[str, object] = {
             "body": body,
             "created_by": created_by,
             "supervised": supervised,
         }
+        if id:
+            payload["id"] = id
         try:
             resp = await self._client.post(f"/questions/{question_id}/answers", json=payload)
             resp.raise_for_status()
@@ -225,14 +231,17 @@ class TeamClient:
         body: str,
         created_by: str,
         supervised: bool = False,
+        id: str | None = None,
     ) -> ApiResult:
-        payload = {
+        payload: dict[str, object] = {
             "parent_id": parent_id,
             "parent_type": parent_type,
             "body": body,
             "created_by": created_by,
             "supervised": supervised,
         }
+        if id:
+            payload["id"] = id
         try:
             resp = await self._client.post("/comments", json=payload)
             resp.raise_for_status()
