@@ -55,7 +55,7 @@ ACTION="$1"
 shift
 
 TEAM_ADDR="http://localhost:8742"
-API_KEY="default-key"
+API_KEY=""
 AGENT_NAME="$(whoami)-pi"
 LOCAL_ONLY=0
 
@@ -136,6 +136,25 @@ write_file() {
     fi
     mv -f "${TMP_FILE}" "${dest}"
     TMP_FILE=""
+}
+
+# -- Team API key. --
+
+# There is no default key: a shared default is a credential anyone can read in
+# this repo. A reinstall keeps the key already configured for the same team
+# address, so rerunning the installer can't undo a rotation, and a different
+# address needs its own key so one server's credential is never sent to another.
+resolve_api_key() {
+    [[ ${LOCAL_ONLY} -eq 1 || -n "${API_KEY}" ]] && return 0
+    if [[ -f "${MCP_FILE}" ]]; then
+        API_KEY="$(jq -r --arg name "${SERVER_NAME}" --arg addr "${TEAM_ADDR}" \
+            '.mcpServers[$name].env // {} | select(.ACQ_TEAM_ADDR == $addr) | .ACQ_TEAM_API_KEY // empty' \
+            "${MCP_FILE}")"
+    fi
+    if [[ -z "${API_KEY}" ]]; then
+        echo "No team API key for ${TEAM_ADDR}. Pass --api-key <key> (API_KEY=<key> with make), or --local-only." >&2
+        exit 1
+    fi
 }
 
 # -- MCP configuration. --
@@ -301,6 +320,7 @@ remove_rules() {
 case "${ACTION}" in
     install)
         echo "Installing acq for pi..."
+        resolve_api_key
         configure_package
         configure_adapter
         configure_mcp
