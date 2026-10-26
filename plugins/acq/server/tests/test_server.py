@@ -16,6 +16,7 @@ from acq_mcp.server import (
     answer,
     ask,
     comment,
+    delete,
     edit,
     get_thread,
     search,
@@ -69,6 +70,7 @@ def _make_mock_team_client(
     get_status_result=None,
     export_since_result=None,
     edit_result=None,
+    delete_result=None,
 ) -> MagicMock:
     mock = MagicMock()
     mock.health = AsyncMock(return_value=health)
@@ -82,6 +84,7 @@ def _make_mock_team_client(
     mock.edit_question = AsyncMock(return_value=_to_api_result(edit_result))
     mock.edit_answer = AsyncMock(return_value=_to_api_result(edit_result))
     mock.edit_comment = AsyncMock(return_value=_to_api_result(edit_result))
+    mock.delete_content = AsyncMock(return_value=_to_api_result(delete_result))
     mock.base_url = "http://localhost:8742"
     return mock
 
@@ -472,6 +475,60 @@ class TestEdit:
         mock.edit_answer.assert_not_called()
         await _do_drain()
         assert mock.create_answer.await_args.kwargs["body"] == "second draft"
+
+
+class TestDelete:
+    @staticmethod
+    def _live_question(title: str = "Why does the ABM row duplicate a Mac?"):
+        store = server._get_store()
+        q = store.create_question(title, "body", "a", ["furl"], supervised=True)
+        return store, q
+
+    async def test_deleted_question_drops_out_of_search(self) -> None:
+        store, q = self._live_question()
+        assert [r["id"] for r in (await search(query="ABM duplicate Mac"))["results"]] == [q.id]
+
+        result = await delete(target_id=q.id, reason="Fixed by ENG-3012")
+
+        assert result == {"deleted": q.id, "source": "local"}
+        assert (await search(query="ABM duplicate Mac"))["results"] == []
+        assert store.store.get_question(q.id).deletion.reason == "Fixed by ENG-3012"
+
+    async def test_team_delete_is_written_through_locally(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, q = self._live_question()
+        mock = _make_mock_team_client(delete_result={"id": q.id, "status": "deleted"})
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await delete(target_id=q.id, reason="  Cause fixed  ")
+
+        assert result == {"deleted": q.id, "source": "team"}
+        mock.delete_content.assert_awaited_once_with(q.id, "Cause fixed")
+        assert store.store.get_question(q.id).status == "deleted"
+
+    async def test_unreachable_team_leaves_local_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, q = self._live_question()
+        mock = _make_mock_team_client(delete_result=None)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await delete(target_id=q.id, reason="Cause fixed")
+
+        assert result["error"].startswith("Delete not applied")
+        assert store.store.get_question(q.id).status == "open"
+
+    async def test_content_not_yet_on_the_team_is_not_deleted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Its answers are queued to follow it; deleting it would strand them."""
+        asked = await ask(title="How do I size a pool?", body="body", tags=["db"])
+        mock = _make_mock_team_client()
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        result = await delete(target_id=asked["question_id"], reason="Wrong")
+
+        assert "has not reached the team" in result["error"]
+        mock.delete_content.assert_not_called()
+
+    async def test_reason_is_required(self) -> None:
+        _, q = self._live_question()
+        assert await delete(target_id=q.id, reason="  ") == {"error": "reason must be non-blank."}
 
 
 class TestStatus:

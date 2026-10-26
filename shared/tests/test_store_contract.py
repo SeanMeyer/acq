@@ -10,7 +10,7 @@ import os
 import sqlite3
 
 import pytest
-from acq_shared.models import Answer, Comment, Question, Tag, Vote
+from acq_shared.models import Answer, Comment, Deletion, Question, Tag, Vote
 from acq_shared.sqlite_store import SqliteStore
 
 # ---------------------------------------------------------------------------
@@ -212,6 +212,22 @@ class TestRejectQuestion:
         store.create_question(q, [])
         store.reject_content(q.id)
         assert store.reject_content(q.id) is False
+
+    def test_a_deletion_records_who_and_why_until_restored(self, store):
+        q = _make_question()
+        store.create_question(q, [])
+        a = store.create_answer(_make_answer(q.id))
+        why = Deletion(by="agent-smith", by_type="agent", reason="Fixed by ENG-3012")
+
+        store.reject_content(q.id, why)
+        store.reject_content(a.id, why)
+
+        assert store.get_question(q.id).deletion.reason == "Fixed by ENG-3012"
+        assert store.get_answer(a.id).deletion.by == "agent-smith"
+        store.approve_content(q.id)
+        store.approve_content(a.id)
+        assert store.get_question(q.id).deletion is None
+        assert store.get_answer(a.id).deletion is None
 
     def test_reject_missing_returns_none(self, store):
         """None means "no such content" and False means "already deleted".

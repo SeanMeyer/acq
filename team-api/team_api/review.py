@@ -5,11 +5,12 @@ The edit routes are the exception: agents may call them with an API key too.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
+from acq_shared.models import Deletion
 from acq_shared.store import Store
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 
 from .auth import get_current_user, get_editor
 from .deps import get_store
@@ -232,6 +233,49 @@ def edit_comment(
     if result is None:
         raise HTTPException(status_code=404, detail="Comment not found")
     return result.model_dump(mode="json")
+
+
+# ------------------------------------------------------------------
+# Delete question / answer / comment
+#
+# Like an edit, a delete by a human or an agent takes effect immediately. It is
+# the same soft-delete as a rejection, plus a record of who removed the content
+# and why, so a curator can judge it and restore it through /review/{id}/approve.
+# ------------------------------------------------------------------
+
+
+class DeleteRequest(BaseModel):
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+def _is_pending(store: Store, content_id: str) -> bool:
+    for get in (store.get_question, store.get_answer, store.get_comment):
+        item = get(content_id)
+        if item is not None:
+            return item.status == "pending"
+    return False
+
+
+@router.post("/content/{content_id}/delete")
+def delete_content(
+    content_id: str,
+    request: DeleteRequest,
+    editor: tuple[str, Literal["agent", "human"]] = Depends(get_editor),
+    store: Store = Depends(get_store),
+) -> dict[str, str]:
+    by, by_type = editor
+    # Content still awaiting review is the reviewer's call, not an agent's.
+    if by_type == "agent" and _is_pending(store, content_id):
+        raise HTTPException(
+            status_code=409, detail="Pending content is decided in review."
+        )
+    deletion = Deletion(by=by, by_type=by_type, reason=request.reason)
+    result = store.reject_content(content_id, deletion)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+    if result is False:
+        raise HTTPException(status_code=409, detail="Content is already deleted")
+    return {"id": content_id, "status": "deleted"}
 
 
 # ------------------------------------------------------------------
