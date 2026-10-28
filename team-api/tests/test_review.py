@@ -731,7 +731,7 @@ class TestAgentDeletes:
         a = _create_answer(client, q["id"], supervised=True)
         resp = client.post(
             f"/content/{a['id']}/delete",
-            json={"reason": "Fixed by ENG-3012"},
+            json={"reason": "Fixed in version 2.4"},
             headers=_agent_headers(),
         )
         assert resp.status_code == 200
@@ -743,7 +743,7 @@ class TestAgentDeletes:
         [entry] = thread["answers"]
         assert entry["answer"]["status"] == "rejected"
         assert entry["answer"]["deletion"]["by"] == "agent-smith"
-        assert entry["answer"]["deletion"]["reason"] == "Fixed by ENG-3012"
+        assert entry["answer"]["deletion"]["reason"] == "Fixed in version 2.4"
 
         client.post(f"/review/{a['id']}/approve", headers=_auth_header(token))
         thread = client.get(
@@ -753,11 +753,15 @@ class TestAgentDeletes:
         assert thread["answers"][0]["answer"]["deletion"] is None
 
     def test_agent_deleted_question_leaves_search(self, client: TestClient) -> None:
-        q = _create_question(client, title="Why does the ABM row duplicate a Mac?")
+        q = _create_question(
+            client, title="Why does the nightly export write each row twice?"
+        )
 
         def found() -> bool:
             hits = client.get(
-                "/search", params={"q": "ABM duplicate Mac"}, headers=_agent_headers()
+                "/search",
+                params={"q": "nightly export twice"},
+                headers=_agent_headers(),
             ).json()
             return q["id"] in [h["question"]["id"] for h in hits]
 

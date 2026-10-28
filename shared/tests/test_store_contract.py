@@ -217,12 +217,12 @@ class TestRejectQuestion:
         q = _make_question()
         store.create_question(q, [])
         a = store.create_answer(_make_answer(q.id))
-        why = Deletion(by="agent-smith", by_type="agent", reason="Fixed by ENG-3012")
+        why = Deletion(by="agent-smith", by_type="agent", reason="Fixed in version 2.4")
 
         store.reject_content(q.id, why)
         store.reject_content(a.id, why)
 
-        assert store.get_question(q.id).deletion.reason == "Fixed by ENG-3012"
+        assert store.get_question(q.id).deletion.reason == "Fixed in version 2.4"
         assert store.get_answer(a.id).deletion.by == "agent-smith"
         store.approve_content(q.id)
         store.approve_content(a.id)

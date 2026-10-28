@@ -515,20 +515,20 @@ class TestEdit:
 
 class TestDelete:
     @staticmethod
-    def _live_question(title: str = "Why does the ABM row duplicate a Mac?"):
+    def _live_question(title: str = "Why does the nightly export write each row twice?"):
         store = server._get_store()
-        q = store.create_question(title, "body", "a", ["furl"], supervised=True)
+        q = store.create_question(title, "body", "a", ["exports"], supervised=True)
         return store, q
 
     async def test_deleted_question_drops_out_of_search(self) -> None:
         store, q = self._live_question()
-        assert [r["id"] for r in (await search(query="ABM duplicate Mac"))["results"]] == [q.id]
+        assert [r["id"] for r in (await search(query="nightly export twice"))["results"]] == [q.id]
 
-        result = await delete(target_id=q.id, reason="Fixed by ENG-3012")
+        result = await delete(target_id=q.id, reason="Fixed in version 2.4")
 
         assert result == {"deleted": q.id, "source": "local"}
-        assert (await search(query="ABM duplicate Mac"))["results"] == []
-        assert store.store.get_question(q.id).deletion.reason == "Fixed by ENG-3012"
+        assert (await search(query="nightly export twice"))["results"] == []
+        assert store.store.get_question(q.id).deletion.reason == "Fixed in version 2.4"
 
     async def test_team_delete_is_written_through_locally(self, monkeypatch: pytest.MonkeyPatch) -> None:
         store, q = self._live_question()

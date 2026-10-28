@@ -1,3 +1,6 @@
+# Installs the commit-msg hook as well, so commit messages are checked too.
+default_install_hook_types: [pre-commit, commit-msg]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -21,6 +24,21 @@ repos:
 
   - repo: local
     hooks:
+      # This repo is public. Checks staged changes and commit messages against
+      # a private list of employer-specific terms kept outside the repo; see
+      # scripts/check_private_terms.py. Passes when no list is configured.
+      - id: private-terms
+        name: private terms (staged changes)
+        entry: python3 scripts/check_private_terms.py --staged
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+      - id: private-terms-message
+        name: private terms (commit message)
+        entry: python3 scripts/check_private_terms.py --message-file
+        language: system
+        stages: [commit-msg]
       - id: ty-check-server
         name: ty (server)
         entry: bash -c 'cd plugins/acq/server && uvx ty check acq_mcp --python .venv'
