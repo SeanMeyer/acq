@@ -24,6 +24,9 @@ spec:
       containers:
         - name: team-api
           image: acq-team-api
+          # Explicit, so a pinned tag is pulled once and a restart never
+          # changes what runs.
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8000

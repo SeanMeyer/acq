@@ -12,7 +12,9 @@ file="${1:?usage: restore.sh FILE}"
 python3 -c 'import sqlite3, sys; assert sqlite3.connect(sys.argv[1]).execute("PRAGMA integrity_check").fetchone()[0] == "ok"' "${file}"
 
 kubectl -n acq scale deployment/acq --replicas=0
-kubectl -n acq wait --for=delete pod -l app=acq --timeout=120s || true
+# Whatever happens below, don't leave the app stopped.
+trap 'kubectl -n acq delete pod acq-restore --wait=false >/dev/null 2>&1 || true; kubectl -n acq scale deployment/acq --replicas=1 >/dev/null' EXIT
+kubectl -n acq wait --for=delete pod -l app=acq --timeout=120s
 
 kubectl -n acq apply -f - <<'POD'
 apiVersion: v1
@@ -36,7 +38,6 @@ spec:
       persistentVolumeClaim:
         claimName: acq-data
 POD
-trap 'kubectl -n acq delete pod acq-restore --wait=false >/dev/null 2>&1 || true' EXIT
 kubectl -n acq wait --for=condition=Ready pod/acq-restore --timeout=300s
 
 kubectl -n acq exec acq-restore -- rm -f /data/team.db /data/team.db-wal /data/team.db-shm
