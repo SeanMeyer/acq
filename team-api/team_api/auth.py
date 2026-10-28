@@ -10,11 +10,10 @@ from urllib.parse import urlencode
 import bcrypt
 import jwt
 import requests as http_requests
+from acq_shared.store import Store
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-
-from acq_shared.store import Store
 
 from .deps import get_store
 
@@ -86,6 +85,24 @@ def _get_api_keys() -> dict[str, str]:
         return {}
 
 
+def _require_allowed(github_username: str) -> None:
+    """Refuse a GitHub account that isn't on ACQ_ALLOWED_GITHUB_USERS.
+
+    GitHub sign-in proves who someone is, not that they belong to the team, so
+    a deployment reachable by people outside it lists the accounts it admits,
+    comma-separated and case-insensitive. Unset means no restriction. It is
+    checked on every request, so removing a name takes effect at once rather
+    than when that person's session or agent key would otherwise run out.
+    """
+    raw = os.environ.get("ACQ_ALLOWED_GITHUB_USERS", "")
+    allowed = {name.strip().lower() for name in raw.split(",") if name.strip()}
+    if allowed and github_username.lower() not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail=f"GitHub account {github_username} isn't allowed on this ACQ deployment.",
+        )
+
+
 def get_current_user(request: Request) -> str:
     """FastAPI dependency: validates Bearer JWT and returns username."""
     auth_header = request.headers.get("Authorization")
@@ -99,6 +116,7 @@ def get_current_user(request: Request) -> str:
         payload = verify_token(token, secret=secret)
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
+    _require_allowed(payload["sub"])
     return payload["sub"]
 
 
@@ -114,12 +132,14 @@ def get_agent_identity(request: Request) -> str:
 
     # Check database first (may fail if agent_keys table doesn't exist yet).
     store: Store = request.app.state.store
+    db_key = None
     try:
         db_key = store.get_agent_key(key)
-        if db_key is not None:
-            return db_key["agent_name"]
     except Exception:
         pass  # table may not exist; fall through to env var
+    if db_key is not None:
+        _require_allowed(db_key["github_username"])
+        return db_key["agent_name"]
 
     # Fallback to env var (dev/test only).
     api_keys = _get_api_keys()
@@ -253,6 +273,7 @@ def github_callback(
         raise HTTPException(status_code=401, detail="Failed to fetch GitHub user")
     gh_user = user_resp.json()
     username = gh_user["login"]
+    _require_allowed(username)
 
     # Ensure user exists in the store (auto-create on first login)
     if store.get_user(username) is None:
@@ -300,6 +321,7 @@ def create_agent_key(
         raise HTTPException(status_code=401, detail="Invalid GitHub token")
     gh_user = gh_resp.json()
     github_username = gh_user["login"]
+    _require_allowed(github_username)
 
     # Return existing key if user already has one.
     existing = store.get_agent_key_by_github(github_username)

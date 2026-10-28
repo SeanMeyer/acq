@@ -12,6 +12,7 @@ import jwt
 import pytest
 import requests
 from fastapi.testclient import TestClient
+
 from team_api.app import app
 from team_api.auth import create_token, hash_password, verify_password, verify_token
 
@@ -243,3 +244,72 @@ def test_github_callback_unreachable_returns_503(client, monkeypatch):
 
     assert resp.status_code == 503
     assert "ConnectionError" in resp.json()["detail"]
+
+
+class TestAllowedGithubUsers:
+    """Only listed GitHub accounts get in, and removing one takes effect at once."""
+
+    @staticmethod
+    def _github_user(login: str) -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"login": login}
+        return resp
+
+    def _agent_key(self, client: TestClient, login: str):
+        with patch(
+            "team_api.auth.http_requests.get", return_value=self._github_user(login)
+        ):
+            return client.post(
+                "/auth/agent-key", headers={"Authorization": "Bearer ghp_fake"}
+            )
+
+    def test_an_unlisted_account_gets_no_key(self, client, monkeypatch) -> None:
+        monkeypatch.setenv("ACQ_ALLOWED_GITHUB_USERS", "Alice, bob")
+        assert self._agent_key(client, "alice").status_code == 200
+        assert self._agent_key(client, "mallory").status_code == 403
+
+    def test_an_unlisted_account_cannot_sign_in(self, client, monkeypatch) -> None:
+        monkeypatch.setenv("ACQ_ALLOWED_GITHUB_USERS", "alice")
+        monkeypatch.setenv("GITHUB_CLIENT_ID", "id")
+        monkeypatch.setenv("GITHUB_CLIENT_SECRET", "secret")
+        token_resp = MagicMock()
+        token_resp.json.return_value = {"access_token": "gho_fake"}
+        with (
+            patch("team_api.auth.http_requests.post", return_value=token_resp),
+            patch(
+                "team_api.auth.http_requests.get",
+                return_value=self._github_user("mallory"),
+            ),
+        ):
+            resp = client.get(
+                "/auth/callback", params={"code": "abc"}, follow_redirects=False
+            )
+        assert resp.status_code == 403
+
+    def test_removing_a_name_revokes_existing_access(self, client, monkeypatch) -> None:
+        monkeypatch.setenv("ACQ_ALLOWED_GITHUB_USERS", "alice")
+        key = self._agent_key(client, "alice").json()["api_key"]
+        session = create_token(
+            "alice", secret="test-secret"
+        )  # pragma: allowlist secret
+        assert client.get("/status", headers={"X-API-Key": key}).status_code == 200
+        assert (
+            client.get(
+                "/auth/me", headers={"Authorization": f"Bearer {session}"}
+            ).status_code
+            != 403
+        )
+
+        monkeypatch.setenv("ACQ_ALLOWED_GITHUB_USERS", "bob")
+        assert client.get("/status", headers={"X-API-Key": key}).status_code == 403
+        assert (
+            client.get(
+                "/auth/me", headers={"Authorization": f"Bearer {session}"}
+            ).status_code
+            == 403
+        )
+
+    def test_unset_means_no_restriction(self, client, monkeypatch) -> None:
+        monkeypatch.delenv("ACQ_ALLOWED_GITHUB_USERS", raising=False)
+        assert self._agent_key(client, "anyone").status_code == 200

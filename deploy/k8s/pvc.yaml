@@ -1,0 +1,11 @@
+# The SQLite store. Prefer a storage class that retains the volume when the
+# claim is deleted, so removing the namespace by mistake loses nothing.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: acq-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
