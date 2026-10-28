@@ -8,8 +8,10 @@ their local copy meanwhile, and their writes wait in the outbox.
 This directory is a kustomize base. A real deployment adds an overlay for what
 depends on the cluster: how traffic reaches the `acq` Service (an Ingress or a
 Gateway API `HTTPRoute`), node placement, and the storage class. The app
-listens on IPv4; on a cluster that gives pods IPv6 addresses, the overlay sets
-`HOST=::`, or every probe is refused and the pod restarts in a loop.
+listens on IPv4. Where a pod's primary IP is IPv6 (an IPv6-only cluster, or
+dual-stack with IPv6 first), the overlay sets `ACQ_HOST=::`, or every probe is
+refused and the pod restarts in a loop. `::` accepts no IPv4, so don't set it
+where the primary IP is IPv4.
 
 ## First deploy
 
