@@ -43,7 +43,7 @@ anyone uses it.
 | Pick up a new image | set the overlay's tag to the new commit SHA, back up, then `kubectl apply -k <overlay>` |
 | Change who's allowed | edit `ACQ_ALLOWED_GITHUB_USERS` in the `acq-config` secret, then `kubectl -n acq rollout restart deployment/acq` |
 | Back up | `deploy/k8s/backup.sh [DEST]` |
-| Restore | `deploy/k8s/restore.sh FILE` (stops the app while it copies) |
+| Restore | `deploy/k8s/restore.sh FILE` (stops the app, checks the copy, then swaps it in) |
 
 `backup.sh` uses SQLite's online backup, so it is consistent while the app
 serves, and copies the result off the cluster. Keep backups somewhere other
