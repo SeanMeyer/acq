@@ -34,11 +34,9 @@ def _reset_server_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
     monkeypatch.setenv("ACQ_AGENT_NAME", "test-agent")
     server._close_store()
     server._team_client = None
-    server._drain_done = False
     yield
     server._close_store()
     server._team_client = None
-    server._drain_done = False
 
 
 def _to_api_result(value) -> ApiResult:
@@ -617,7 +615,6 @@ class TestDrainOnStartup:
         # Content stays in local (read replica) but drain queue is cleared
         assert len(store.all_questions()) == 1
         assert len(store.store.get_pending_drain()) == 0
-        assert server._drain_done is True
 
     async def test_drain_skips_when_no_team(self) -> None:
         store = server._get_store()
@@ -638,15 +635,15 @@ class TestDrainOnStartup:
 
         assert len(store.all_questions()) == 1
 
-    async def test_drain_runs_only_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock = _make_mock_team_client(create_question_result={"id": "q_team_1"})
+    async def test_an_empty_queue_costs_no_network_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Drains run before every hourly sync, so with nothing queued they must be free."""
+        mock = _make_mock_team_client()
         monkeypatch.setattr(server, "_get_team_client", lambda: mock)
 
         await _do_drain()
         await _do_drain()
 
-        # health() called only once — drain was skipped on second call
-        assert mock.health.call_count == 1
+        mock.health.assert_not_called()
 
     async def test_drain_keeps_pending_on_team_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         store = server._get_store()
@@ -713,6 +710,89 @@ class TestPullSync:
         await _do_pull()
 
         mock.export_since.assert_not_called()
+
+    async def test_writes_queued_while_offline_go_out_at_the_next_hourly_sync(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A VPN switch mid-session shouldn't hold contributions until the next restart."""
+        reachable = False
+        mock = _make_mock_team_client(create_question_result={"question": {"id": "q_x"}})
+        mock.health = AsyncMock(side_effect=lambda: reachable)
+        mock.create_question = AsyncMock(
+            side_effect=lambda **_: (
+                _to_api_result({"question": {"id": "q_x"}})
+                if reachable
+                else ApiResult(error="unreachable", warnings=["unreachable"])
+            )
+        )
+        mock.export_since = AsyncMock(return_value=_to_api_result({"next_since": "c"}))
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+        await ask(title="How do I size a pool?", body="body", tags=["db"])
+        store = server._get_store()
+        assert len(store.store.get_pending_drain()) == 1
+
+        sleeps = 0
+
+        async def fake_sleep(_seconds: int) -> None:
+            nonlocal sleeps, reachable
+            sleeps += 1
+            reachable = sleeps >= 2  # offline for the first hour, back for the second
+            if sleeps == 3:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(server.asyncio, "sleep", fake_sleep)
+        with pytest.raises(asyncio.CancelledError):
+            await _periodic_pull("c")
+
+        assert store.store.get_pending_drain() == []
+
+    async def test_a_write_that_reaches_the_team_sends_what_was_queued(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reachable = False
+
+        async def create_question(**_):
+            if not reachable:
+                return ApiResult(error="unreachable", warnings=["unreachable"])
+            return _to_api_result({"question": {"id": f"q_{create_question.n}"}})
+
+        create_question.n = 0
+        mock = _make_mock_team_client()
+        mock.health = AsyncMock(side_effect=lambda: reachable)
+        mock.create_question = AsyncMock(side_effect=create_question)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        await ask(title="Queued while on the other VPN", body="body", tags=["db"])
+        reachable = True
+        await ask(title="Asked once back", body="body", tags=["db"])
+        await asyncio.gather(*server._drain_tasks)
+
+        assert server._get_store().store.get_pending_drain() == []
+        assert mock.create_question.await_count == 3  # queued, live, then the drained one
+
+    async def test_an_edit_during_a_drain_still_reaches_the_team(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The drain reads the row, then waits on the network; an edit in that gap must not be lost."""
+        asked = await ask(title="How do I size a pool?", body="first draft", tags=["db"])  # no team: queued
+        qid = asked["question_id"]
+        sending, release = asyncio.Event(), asyncio.Event()
+
+        async def create_question(**kwargs):
+            sending.set()
+            await release.wait()
+            return _to_api_result({"question": {"id": kwargs["id"]}})
+
+        mock = _make_mock_team_client(edit_result={"id": qid, "body": "second draft"})
+        mock.create_question = AsyncMock(side_effect=create_question)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        drain = asyncio.create_task(server._do_drain())
+        await sending.wait()
+        edit_task = asyncio.create_task(edit(target_id=qid, body="second draft"))
+        await asyncio.sleep(0)
+        release.set()
+        await drain
+        result = await edit_task
+
+        assert result == {"edited": qid, "source": "team"}
+        mock.edit_question.assert_awaited_once()
 
     async def test_periodic_pull_keeps_cursor_after_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         empty_export = {
