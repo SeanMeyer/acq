@@ -33,6 +33,10 @@ spec:
           env:
             - name: ACQ_DB_PATH
               value: /data/team.db
+            # IPv6 only. The probes and Service reach the pod on its IP; on
+            # an IPv4 cluster, set this to 0.0.0.0 in an overlay.
+            - name: HOST
+              value: "::"
           envFrom:
             # ACQ_JWT_SECRET, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and
             # ACQ_ALLOWED_GITHUB_USERS. Created by hand; see README.md.

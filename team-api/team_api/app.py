@@ -399,4 +399,8 @@ if _STATIC_DIR.is_dir():
 
 def main() -> None:
     port = int(os.environ.get("PORT", "8000"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # 0.0.0.0 listens on IPv4 only and :: on IPv6 only (asyncio marks the
+    # socket IPv6-only). Where pods get IPv6 addresses, as on IPv6 Kubernetes
+    # clusters, set HOST=::.
+    host = os.environ.get("HOST", "0.0.0.0")
+    uvicorn.run(app, host=host, port=port)
