@@ -8,7 +8,8 @@ Writes (ask, answer, vote, comment) try the team API first (write-through
 to local on success), falling back to local-only on failure. Edits also go
 to the team API first but never fall back, because a queued edit could
 overwrite a newer one made on the team in the meantime.
-Sync: drain local buffer on startup, pull from team, then hourly incremental pull.
+Sync: send the local outbox and pull from the team on startup, then send the
+outbox again before each hourly pull and after any write that reaches the team.
 """
 
 from __future__ import annotations
@@ -162,11 +163,12 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        sync_task.cancel()
-        try:
-            await sync_task
-        except asyncio.CancelledError:
-            pass
+        # Stop background work before closing what it uses. Anything a
+        # cancelled drain didn't clear is sent again next startup, which the
+        # team treats as a replay.
+        for task in (sync_task, *_drain_tasks):
+            task.cancel()
+        await asyncio.gather(sync_task, *_drain_tasks, return_exceptions=True)
         await _close_team_client()
         _close_store()
 
@@ -685,20 +687,25 @@ async def edit(
 
     # Content created offline has not reached the team yet, so the team would
     # answer 404. Editing the local row is enough, because the drain sends
-    # whatever the row holds when it runs.
-    local_only = team_client is None or await asyncio.to_thread(store.is_pending_drain, target_id)
-    if local_only:
-        if passage:
-            current = await asyncio.to_thread(store.current_body, target_id)
-            if current is None:
+    # whatever the row holds when it runs. Holding the drain lock matters: a
+    # drain already sending this item would read the row before the edit and
+    # then clear it from the queue, so the edit would never reach the team.
+    # Waiting for that drain means the item is no longer pending, and the edit
+    # goes to the team below.
+    async with _drain_lock:
+        local_only = team_client is None or await asyncio.to_thread(store.is_pending_drain, target_id)
+        if local_only:
+            if passage:
+                current = await asyncio.to_thread(store.current_body, target_id)
+                if current is None:
+                    return {"error": f"{target_id} not found."}
+                try:
+                    body = replace_passage(current, old_text, new_text)
+                except PassageError as exc:
+                    return {"error": str(exc)}
+            if await _edit_locally(store, target_id, body, title, tags) is None:
                 return {"error": f"{target_id} not found."}
-            try:
-                body = replace_passage(current, old_text, new_text)
-            except PassageError as exc:
-                return {"error": str(exc)}
-        if await _edit_locally(store, target_id, body, title, tags) is None:
-            return {"error": f"{target_id} not found."}
-        return {"edited": target_id, "source": "local"}
+            return {"edited": target_id, "source": "local"}
 
     change = {"old_text": old_text, "new_text": new_text} if passage else {}
     if is_question:

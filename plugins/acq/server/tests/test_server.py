@@ -768,6 +768,32 @@ class TestPullSync:
         assert server._get_store().store.get_pending_drain() == []
         assert mock.create_question.await_count == 3  # queued, live, then the drained one
 
+    async def test_an_edit_during_a_drain_still_reaches_the_team(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The drain reads the row, then waits on the network; an edit in that gap must not be lost."""
+        asked = await ask(title="How do I size a pool?", body="first draft", tags=["db"])  # no team: queued
+        qid = asked["question_id"]
+        sending, release = asyncio.Event(), asyncio.Event()
+
+        async def create_question(**kwargs):
+            sending.set()
+            await release.wait()
+            return _to_api_result({"question": {"id": kwargs["id"]}})
+
+        mock = _make_mock_team_client(edit_result={"id": qid, "body": "second draft"})
+        mock.create_question = AsyncMock(side_effect=create_question)
+        monkeypatch.setattr(server, "_get_team_client", lambda: mock)
+
+        drain = asyncio.create_task(server._do_drain())
+        await sending.wait()
+        edit_task = asyncio.create_task(edit(target_id=qid, body="second draft"))
+        await asyncio.sleep(0)
+        release.set()
+        await drain
+        result = await edit_task
+
+        assert result == {"edited": qid, "source": "team"}
+        mock.edit_question.assert_awaited_once()
+
     async def test_periodic_pull_keeps_cursor_after_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         empty_export = {
             "questions": [],
