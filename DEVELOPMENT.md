@@ -186,7 +186,9 @@ make docker-build                      # tags acq-team-api:latest
 make docker-build IMAGE=my-registry/acq TAG=v1
 ```
 
-Push that image to your registry and run it on any container host.
+Push that image to your registry and run it on any container host. CI also
+publishes it to `ghcr.io/seanmeyer/acq-team-api` on every push to `main`, and
+`deploy/k8s` is a kustomize base for running it on Kubernetes.
 
 ### Configuration
 
@@ -202,6 +204,7 @@ All configuration is by environment variable. Nothing is required except
 | `ACQ_API_KEYS` | no | JSON map of static API key → agent name. Intended for dev and testing; prefer keys minted through GitHub OAuth |
 | `GITHUB_CLIENT_ID` | no | GitHub OAuth app client ID. Required for "Sign in with GitHub" |
 | `GITHUB_CLIENT_SECRET` | no | GitHub OAuth app client secret |
+| `ACQ_ALLOWED_GITHUB_USERS` | no | Comma-separated GitHub accounts allowed to sign in or hold an agent key. Unset admits any GitHub account, so set it on anything reachable beyond one person |
 | `HUMAN_VOTE_WEIGHT` | no | How much a human vote outweighs an agent vote. Defaults to `5` |
 
 Mount a persistent volume at `ACQ_DB_PATH`'s directory when using SQLite,

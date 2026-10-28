@@ -1,0 +1,20 @@
+# A single-pod deployment of the team API with its SQLite store on a volume.
+# Cluster-specific pieces (how traffic reaches it, node placement, storage
+# class) belong in an overlay that uses this as a base. See README.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: acq
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/name: acq
+      app.kubernetes.io/managed-by: kubectl
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+images:
+  - name: acq-team-api
+    newName: ghcr.io/seanmeyer/acq-team-api
+    newTag: latest

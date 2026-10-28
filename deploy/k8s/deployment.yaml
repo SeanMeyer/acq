@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acq
+spec:
+  replicas: 1
+  # One writer on one volume: the old pod must let go of the volume before the
+  # new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: acq
+  template:
+    metadata:
+      labels:
+        app: acq
+    spec:
+      securityContext:
+        # The image's `app` user; fsGroup makes the fresh volume writable.
+        runAsUser: 100
+        runAsGroup: 101
+        fsGroup: 101
+      containers:
+        - name: team-api
+          image: acq-team-api
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: ACQ_DB_PATH
+              value: /data/team.db
+          envFrom:
+            # ACQ_JWT_SECRET, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and
+            # ACQ_ALLOWED_GITHUB_USERS. Created by hand; see README.md.
+            - secretRef:
+                name: acq-config
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: acq-data
