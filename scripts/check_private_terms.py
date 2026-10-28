@@ -36,28 +36,58 @@ TERMS_FILE = Path.home() / ".config" / "acq" / "private-terms"
 
 
 def load_patterns() -> list[re.Pattern[str]]:
-    raw = os.environ.get("PRIVATE_TERMS") or (TERMS_FILE.read_text() if TERMS_FILE.exists() else "")
+    raw = os.environ.get("PRIVATE_TERMS") or (
+        TERMS_FILE.read_text(encoding="utf-8", errors="replace") if TERMS_FILE.exists() else ""
+    )
     lines = [line.strip() for line in raw.splitlines()]
     return [re.compile(line, re.IGNORECASE) for line in lines if line and not line.startswith("#")]
 
 
 def git(*args: str) -> str:
-    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+    # Replace undecodable bytes rather than crash: a non-UTF-8 file would
+    # otherwise block the commit with a traceback instead of a finding.
+    return subprocess.run(["git", *args], check=True, capture_output=True, encoding="utf-8", errors="replace").stdout
 
 
 def added_lines(diff: str):
-    """Yield (path, line number, text) for every added line of a unified diff."""
-    path, lineno = "?", 0
+    """Yield (path, line number, text) for every added line of a unified diff.
+
+    "+++ " names a file only in a file's header, before its first hunk. Inside
+    a hunk it is an added line that itself starts with "++ ", and reading it as
+    a header would both skip it and report its text as a path.
+    """
+    path, lineno, in_header = "?", 0, False
     for line in diff.splitlines():
-        if line.startswith("+++ "):
+        if line.startswith("diff --git "):
+            in_header = True
+        elif in_header and line.startswith("+++ "):
             path = line[6:] if line.startswith("+++ b/") else line[4:]
         elif line.startswith("@@"):
+            in_header = False
             lineno = int(re.search(r"\+(\d+)", line).group(1))
+        elif in_header:
+            continue
         elif line.startswith("+"):
             yield path, lineno, line[1:]
             lineno += 1
         elif not line.startswith("-"):
             lineno += 1
+
+
+def commit_message(raw: str) -> str:
+    """The message git will record: without its comment lines or the verbose diff.
+
+    The commit-msg hook sees the file before git strips it, including the
+    branch name, staged paths and, with `git commit -v`, the whole diff below
+    the scissors line, removed lines too.
+    """
+    kept = []
+    for line in raw.splitlines():
+        if re.match(r"^# -+ >8 -+$", line):
+            break
+        if not line.startswith("#"):
+            kept.append(line)
+    return "\n".join(kept)
 
 
 def main() -> int:
@@ -71,6 +101,14 @@ def main() -> int:
 
     patterns = load_patterns()
     if not patterns:
+        # In CI an empty list usually means the secret didn't arrive, and a
+        # green check would claim something was checked. Fork PRs never get
+        # secrets, so they only warn; elsewhere the workflow sets REQUIRE_TERMS.
+        if os.environ.get("REQUIRE_TERMS") == "true":
+            print("check_private_terms: PRIVATE_TERMS is empty, so nothing was checked.")
+            return 1
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print("::warning::check_private_terms: no terms available (expected on fork PRs); nothing was checked.")
         print("check_private_terms: no terms configured; skipping.")
         return 0
 
@@ -86,7 +124,7 @@ def main() -> int:
         for sha in git("rev-list", args.messages).split():
             if hit(git("log", "-1", "--format=%B", sha)):
                 findings.append(f"commit message of {sha[:12]}")
-    if args.message_file and hit(Path(args.message_file).read_text()):
+    if args.message_file and hit(commit_message(Path(args.message_file).read_text(encoding="utf-8", errors="replace"))):
         findings.append("this commit message")
     if args.text and hit(sys.stdin.read()):
         findings.append(args.text)

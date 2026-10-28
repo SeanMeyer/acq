@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PRIVATE_TERMS: ${{ secrets.PRIVATE_TERMS }}
+      # Fork PRs get no secrets, so only they may run without the list.
+      REQUIRE_TERMS: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@v6
         with:
