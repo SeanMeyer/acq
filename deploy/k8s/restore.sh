@@ -23,7 +23,7 @@ finish() {
         kubectl -n acq scale deployment/acq --replicas=1 >/dev/null
         [[ ${status} -eq 0 ]] || echo "Restore failed before the swap; the old store is untouched and the app is starting again." >&2
     else
-        echo "Restore failed after the swap. The app is left stopped. Check /data on the volume, then run this script again or scale deployment/acq to 1." >&2
+        echo "Restore failed during the swap. The app is left stopped. The previous store is in /data/pre-restore-* on the volume; put it back or run this script again, then scale deployment/acq to 1." >&2
     fi
 }
 trap finish EXIT
@@ -61,7 +61,18 @@ kubectl -n acq exec acq-restore -- /app/team-api/.venv/bin/python -c '
 import sqlite3
 assert sqlite3.connect("/data/team.db.restore").execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 '
-# Nothing else has the store open, so its WAL and SHM files belong to the old
-# database and must not be applied to the new one. Rename is atomic.
+# The old store's WAL can still hold committed writes, so its files move
+# aside as a set rather than being deleted; that set is how to undo this by
+# hand. From here the volume is no longer the old store, so a failure leaves
+# the app stopped.
 swapped=1
-kubectl -n acq exec acq-restore -- sh -c 'rm -f /data/team.db-wal /data/team.db-shm && mv /data/team.db.restore /data/team.db'
+kubectl -n acq exec acq-restore -- sh -c '
+set -e
+old=/data/pre-restore-$(date -u +%Y%m%dT%H%M%SZ)
+mkdir "$old"
+for f in /data/team.db /data/team.db-wal /data/team.db-shm; do
+    if [ -e "$f" ]; then mv "$f" "$old/"; fi
+done
+mv /data/team.db.restore /data/team.db
+echo "Previous store kept in $old"
+'
