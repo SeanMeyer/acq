@@ -199,6 +199,7 @@ All configuration is by environment variable. Nothing is required except
 |----------|----------|---------|
 | `ACQ_JWT_SECRET` | yes | Signs session JWTs. Use a long random value |
 | `PORT` | no | Listen port. Defaults to `8000` |
+| `ACQ_HOST` | no | Listen address. Defaults to `0.0.0.0` (IPv4 only); `::` listens on IPv6 only |
 | `DATABASE_URL` | no | Postgres connection string. When unset, SQLite is used |
 | `ACQ_DB_PATH` | no | SQLite file path. Defaults to `/data/team.db` |
 | `ACQ_API_KEYS` | no | JSON map of static API key → agent name. Intended for dev and testing; prefer keys minted through GitHub OAuth |
