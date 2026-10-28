@@ -7,7 +7,9 @@ their local copy meanwhile, and their writes wait in the outbox.
 
 This directory is a kustomize base. A real deployment adds an overlay for what
 depends on the cluster: how traffic reaches the `acq` Service (an Ingress or a
-Gateway API `HTTPRoute`), node placement, and the storage class.
+Gateway API `HTTPRoute`), node placement, and the storage class. The app
+listens on IPv4; on a cluster that gives pods IPv6 addresses, the overlay sets
+`HOST=::`, or every probe is refused and the pod restarts in a loop.
 
 ## First deploy
 
