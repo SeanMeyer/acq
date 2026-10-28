@@ -283,6 +283,10 @@ class LocalStore:
             ).fetchone()
         return None if row is None else json.loads(row[0])["body"]
 
+    def has_pending_drain(self) -> bool:
+        """Whether anything is waiting to be drained to the team."""
+        return self._locked_fetchone("SELECT 1 FROM pending_drain LIMIT 1", ()) is not None
+
     def is_pending_drain(self, entity_id: str) -> bool:
         """Whether this entity exists only locally, waiting to be drained."""
         row = self._locked_fetchone("SELECT 1 FROM pending_drain WHERE entity_id = ?", (entity_id,))
