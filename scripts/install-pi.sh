@@ -18,11 +18,11 @@
 # the same commands as /acq:reflect and /acq:status.
 #
 # The pi manifest has no field for MCP servers, so this script also writes an
-# entry to pi's mcp.json pointing at the working tree. pi core has no MCP
-# support of its own -- nothing outside its bundled chunks reads mcp.json --
-# so that entry is inert until the pi-mcp-adapter extension is present. The
-# installer adds it when missing, otherwise the skill would tell the model to
-# search ACQ with no tool able to do it.
+# entry to pi's mcp.json pointing at the working tree. pi 0.99 and later also
+# reads mcp.json through a built-in MCP extension, but ACQ's pi guidance and
+# session reminder are written for pi-mcp-adapter's `mcp` gateway. The
+# installer adds the adapter when missing, and the adapter turns pi's built-in
+# MCP off so the two don't both run.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

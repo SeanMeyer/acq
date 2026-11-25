@@ -146,11 +146,13 @@ package format instead, so the same four pieces come from different places:
 
 Two differences from OMP are worth knowing.
 
-pi core has no MCP support of its own, so `mcp.json` alone does nothing. The
-tools arrive through the `pi-mcp-adapter` extension, which the installer adds
-when it is missing. Without it you would get the skill and the slash commands
-but no way to actually query ACQ. Uninstall leaves the adapter in place, since
-other packages may depend on it.
+The tools arrive through the `pi-mcp-adapter` extension, which the installer
+adds when it is missing. pi 0.99 and later can also read `mcp.json` through its
+own built-in MCP, but ACQ's pi guidance and session reminder point the model at
+the adapter's `mcp` gateway, and the reminder only fires when a tool named the
+adapter's way is active. The adapter turns pi's built-in MCP off when it
+installs, so the two don't both run. Uninstall leaves the adapter in place,
+since other packages may depend on it.
 
 pi names a slash command after its file and ignores the `name` in frontmatter,
 so the commands are `/acq-reflect` and `/acq-status` rather than the
