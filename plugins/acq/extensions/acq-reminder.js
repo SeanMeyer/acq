@@ -2,7 +2,7 @@
 // standing guidance to search ACQ, delivered before the model has decided
 // whether to load the full ACQ skill. pi's own `session_start` event is
 // side-effect only and cannot contribute context, so the injection happens on
-// `before_agent_start`, once per session branch.
+// `before_agent_start`, once per session branch that can search ACQ.
 
 // Shorter than plugins/acq/guidance/agents-block.md by design: this fires once
 // per session to catch the model before it explores, so it carries only the
@@ -16,6 +16,9 @@ const REMINDER = [
 
 const CUSTOM_TYPE = "acq-reminder";
 
+// The mcp gateway, or pi-mcp-adapter's proxy and direct tools for the acq server.
+const reachesAcq = (name) => name === "mcp" || name === "mcp__acq" || name.startsWith("mcp__acq__");
+
 export default function (pi) {
   // Ask the session rather than tracking state here. The start reason doesn't
   // say whether the reminder is already present: `pi -c` and `--session`
@@ -23,6 +26,9 @@ export default function (pi) {
   // first prompt reports "fork" for one that doesn't. The injected message is
   // stored as a custom_message entry, so the branch answers it exactly.
   pi.on("before_agent_start", async (_event, ctx) => {
+    // A session that can't search ACQ, such as a tool-less subagent, would
+    // read the reminder as part of its task.
+    if (!pi.getActiveTools().some(reachesAcq)) return;
     const present = ctx.sessionManager
       .getBranch()
       .some((entry) => entry.type === "custom_message" && entry.customType === CUSTOM_TYPE);

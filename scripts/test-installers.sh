@@ -143,11 +143,13 @@ mkdir -p "${OMP_FRESH}"
 
 # The pi reminder is injected once per session branch, whether that branch is
 # new, resumed with `pi -c` (which reports "startup"), or forked from before the
-# first prompt (which reports "fork" but holds no reminder).
+# first prompt (which reports "fork" but holds no reminder). A session with no
+# tool that reaches ACQ, such as a tool-less subagent, never gets it.
 node --input-type=module -e '
 const { default: register } = await import(process.argv[1]);
 const handlers = {};
-register({ on: (event, fn) => { handlers[event] = fn; } });
+let activeTools = ["read", "bash", "mcp"];
+register({ on: (event, fn) => { handlers[event] = fn; }, getActiveTools: () => activeTools });
 // Each case starts with the session_start reason pi really reports for it.
 const turn = async (branch, reason) => {
   handlers.session_start?.({ type: "session_start", reason });
@@ -165,7 +167,12 @@ for (const [branch, reason] of [[fresh, "startup"], [resumed, "startup"], [forke
   got += await turn(branch, reason);
 }
 got += "/" + (await turn(fresh, "reload"));
-if (got !== "1011/0") { console.error(`got ${got}, want 1011/0`); process.exit(1); }
-' "${REPO_ROOT}/plugins/acq/extensions/acq-reminder.js" || fail "the pi reminder is injected into a branch that already holds it, or missing from one that doesn't"
+got += "/";
+for (const tools of [[], ["contact_supervisor"], ["read", "mcp__context7"], ["mcp__acq"], ["mcp__acq__acq_search"]]) {
+  activeTools = tools;
+  got += await turn([], "startup");
+}
+if (got !== "1011/0/00011") { console.error(`got ${got}, want 1011/0/00011`); process.exit(1); }
+' "${REPO_ROOT}/plugins/acq/extensions/acq-reminder.js" || fail "the pi reminder is injected into a branch that already holds it or can't search ACQ, or missing from one that needs it"
 
 printf '%s\n' "installer regression tests passed"
