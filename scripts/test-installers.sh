@@ -168,11 +168,12 @@ for (const [branch, reason] of [[fresh, "startup"], [resumed, "startup"], [forke
 }
 got += "/" + (await turn(fresh, "reload"));
 got += "/";
-for (const tools of [[], ["contact_supervisor"], ["read", "mcp__context7"], ["mcp__acq"], ["mcp__acq__acq_search"]]) {
+for (const tools of [[], ["contact_supervisor"], ["read", "mcp__context7"], ["mcp__acq_staging__search"],
+                     ["mcp__acq"], ["acq_search"], ["mcp__acq__search"]]) {
   activeTools = tools;
   got += await turn([], "startup");
 }
-if (got !== "1011/0/00011") { console.error(`got ${got}, want 1011/0/00011`); process.exit(1); }
+if (got !== "1011/0/0000111") { console.error(`got ${got}, want 1011/0/0000111`); process.exit(1); }
 ' "${REPO_ROOT}/plugins/acq/extensions/acq-reminder.js" || fail "the pi reminder is injected into a branch that already holds it or can't search ACQ, or missing from one that needs it"
 
 printf '%s\n' "installer regression tests passed"

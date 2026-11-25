@@ -16,8 +16,11 @@ const REMINDER = [
 
 const CUSTOM_TYPE = "acq-reminder";
 
-// The mcp gateway, or pi-mcp-adapter's proxy and direct tools for the acq server.
-const reachesAcq = (name) => name === "mcp" || name === "mcp__acq" || name.startsWith("mcp__acq__");
+// pi-mcp-adapter's names for a tool that reaches the acq server: its gateway,
+// the server's proxy, direct tools under the default "server" prefix, and tools
+// under the "mcp" prefix or loaded through tool search.
+const reachesAcq = (name) =>
+  name === "mcp" || name === "mcp__acq" || name.startsWith("acq_") || name.startsWith("mcp__acq__");
 
 export default function (pi) {
   // Ask the session rather than tracking state here. The start reason doesn't
